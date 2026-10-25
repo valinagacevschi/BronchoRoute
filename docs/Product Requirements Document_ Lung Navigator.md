@@ -106,7 +106,7 @@ arrive.
 |---|---|
 | SEG-01 | Airways: TotalSegmentator [8] task `lung_vessels` → `lung_airways`, unioned with `total` → `trachea`. Five lobes from `total` with `--roi_subset`. The `--legacy` option (`lung_vessels_LEGACY` → `lung_trachea_bronchia`) remains a fallback. |
 | SEG-02 | Full resolution by default. `--fast` is opt-in only, because distal airway detail is the priority. |
-| SEG-03 | `--higher_order_resampling` is adopted only if an A/B run on AeroPath 1–6 improves branches/generations while keeping all 8 named structures (build plan phase 0). Smoother output is not evidence of better anatomy. |
+| SEG-03 | `--higher_order_resampling` is not used. The phase 0 A/B run on AeroPath 1–6 improved only 1 of 6 cases and dropped case 6 to 6/8 named structures. Smoother output is not evidence of better anatomy. |
 | SEG-04 | Outputs are cached by options, so reruns rebuild only the derived masks. |
 | SEG-05 | Global low-HU thresholding and Hessian/vesselness methods are not used for the whole tree. BBT found that thresholding leaks into parenchyma and that Hessian/vesselness methods were not reliable for airways [7]. |
 
@@ -278,14 +278,14 @@ provenance detection (including bridges missed between sparse samples), target-g
 From `docs/Workflow and Build Plan.md`. Each phase: brief → coding agent → code review against the
 plan → fixes → its own commit.
 
-| Phase | Scope | Status (2026-10-25) |
+| Phase | Scope | Status (2026-10-25, late) |
 |---|---|---|
 | — | Pipeline: fallback segmentation, bridging, graph, naming, review gate and sign-off, provenance, route frame, prototype renderer | Done (committed) |
-| 0 | Path resolution, higher-order-resampling A/B, SNOMED codes | In progress |
-| 1 | Local server, browser shell, case list, CT crop endpoint, clinician identity, `case.json` version chain | Briefed |
-| 2 | Bronchoscopist frame in 3D / endoluminal / topology, camera presets, anterior tick | In progress |
-| 3 | CT panes, crosshair, windows, overlays, cross-view linking, Lesion marking | Planned (needs 1) |
-| 4 | Workflow steps in the app: import, segmentation, review (removal-only corrections, bridge confirmation), RouteTarget candidates, walk-through records, sign-off | Planned (needs 3) |
+| 0 | Path resolution, higher-order-resampling A/B (not adopted), SNOMED codes | Done |
+| 1 | Local server, browser shell, case list, CT crop endpoint, clinician identity, `case.json` version chain | Done |
+| 2 | Bronchoscopist frame in 3D / endoluminal / topology, camera presets, anterior tick | Done |
+| 3 | CT panes, crosshair, windows, overlays, cross-view linking, Lesion marking | In progress |
+| 4 | Workflow steps in the app: import, segmentation, review (removal-only corrections, bridge confirmation), RouteTarget candidates, walk-through records, sign-off | Briefed (4a: workflow jobs) |
 
 ---
 
