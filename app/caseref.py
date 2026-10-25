@@ -1,4 +1,7 @@
-"""Typed case id reference: local-NNN or AeroPath n, with resolved artifact paths."""
+"""Typed case id reference: local-NNN or AeroPath n, with resolved artifact paths.
+
+Phase 3 review: bridges path for airway_bridges.nii.gz (mask provenance labels).
+"""
 
 from __future__ import annotations
 
@@ -73,6 +76,10 @@ class CaseRef:
     @property
     def airways(self) -> Path:
         return self.ts_out / "airways.nii.gz"
+
+    @property
+    def bridges(self) -> Path:
+        return self.ts_out / "airway_bridges.nii.gz"
 
     @property
     def crop_cache_dir(self) -> Path:

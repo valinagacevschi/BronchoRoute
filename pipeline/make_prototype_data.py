@@ -3,6 +3,7 @@
 Throwaway: exists only to feed the renderer prototype for ticket 06.
 Decimates centrelines, rounds coordinates, and precomputes one route from the
 trachea to a distal target so the first-person variant has a path to follow.
+Phase 3: payload includes origin_mm (absolute RAS of the root) and lesion.
 """
 
 import json
@@ -299,10 +300,21 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
         for distance, route_pos in zip(fs, fe)
     ]
 
+    lesion_rec = case_record.get("lesion")
+    lesion_out = None
+    if isinstance(lesion_rec, dict) and lesion_rec.get("ras_mm") is not None:
+        lesion_out = {
+            "ras_mm": [float(v) for v in lesion_rec["ras_mm"]],
+            "confirmed_by": lesion_rec.get("confirmed_by"),
+            "at": lesion_rec.get("at"),
+        }
+
     return {
         "case": graph["case"],
         "source": source_label(case_id),
         "root": graph["root_node_id"],
+        "origin_mm": [round(float(root[i]), 3) for i in range(3)],
+        "lesion": lesion_out,
         "nodes": {str(k): {"p": rel(v["position_mm"]), "r": v["radius_mm"]}
                   for k, v in nodes.items()},
         "edges": out_edges,

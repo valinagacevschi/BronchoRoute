@@ -1,15 +1,23 @@
-"""Case inventory and locked record writes for the local app server."""
+"""Case inventory and locked record writes for the local app server.
+
+Phase 3 review: STEP_MARK_LESION, crop bounds [-0.5, n-0.5), shared aeropath record helper.
+"""
 
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
-
+import numpy as np
 import paths
 from atomic_json import atomic_write_json, json_file_lock
 from make_prototype_data import ReviewBlocked, build_payload, review_gate, source_label
 
 from app.caseref import CaseRef, UnknownCase
+from app.ct_crop import build_ct_crop
+
+# Workflow step 2 — Mark the Lesion (docs/Workflow and Build Plan.md).
+STEP_MARK_LESION = 2
 
 RECORD_KINDS = frozenset({
     "lesion_confirmed",
@@ -92,6 +100,102 @@ def case_payload(case_id: str, allow_review: bool = False) -> dict:
     return build_payload(graph, load_case_record(ref), allow_review)
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ras_inside_crop(ras_mm: list[float], meta: dict) -> bool:
+    """True when continuous voxel coords lie in [-0.5, n-0.5) per axis."""
+    affine = np.asarray(meta["affine"], dtype=float)
+    inv = np.linalg.inv(affine)
+    ijk = inv @ np.array([ras_mm[0], ras_mm[1], ras_mm[2], 1.0], dtype=float)
+    shape = meta["shape"]
+    for axis in range(3):
+        v = float(ijk[axis])
+        if v < -0.5 or v >= shape[axis] - 0.5:
+            return False
+    return True
+
+
+def validate_lesion_ras(case_id: str, ras_mm: object) -> list[float]:
+    if not isinstance(ras_mm, (list, tuple)) or len(ras_mm) != 3:
+        raise ValueError("ras_mm must be a length-3 list")
+    try:
+        coords = [float(ras_mm[0]), float(ras_mm[1]), float(ras_mm[2])]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ras_mm values must be numbers") from exc
+    if not all(math.isfinite(v) for v in coords):
+        raise ValueError("ras_mm values must be finite")
+    meta = build_ct_crop(case_id)
+    if not _ras_inside_crop(coords, meta):
+        raise ValueError("lesion ras_mm is outside the CT crop bounds")
+    return coords
+
+
+def default_aeropath_record(ref: CaseRef) -> dict:
+    """Empty case.json body for an AeroPath case that has no file yet."""
+    return {
+        "id": ref.case_id,
+        "source": ref.source_label,
+        "records": [],
+        "versions": [],
+    }
+
+
+def _load_or_init_record(ref: CaseRef, path: Path) -> dict:
+    if path.is_file():
+        return json.loads(path.read_text())
+    if ref.kind == "aeropath":
+        return default_aeropath_record(ref)
+    raise FileNotFoundError(f"case.json not found for {ref.case_id}")
+
+
+def set_lesion(case_id: str, ras_mm: list[float], clinician: str) -> dict:
+    """Store lesion and append lesion_confirmed under one case lock."""
+    coords = validate_lesion_ras(case_id, ras_mm)
+    ref = CaseRef.parse(case_id)
+    path = ref.case_json
+    at = _utc_now()
+    with json_file_lock(path):
+        record = _load_or_init_record(ref, path)
+        lesion = {
+            "ras_mm": coords,
+            "confirmed_by": clinician,
+            "at": at,
+        }
+        record["lesion"] = lesion
+        entry = {
+            "step": STEP_MARK_LESION,
+            "kind": "lesion_confirmed",
+            "data": {"ras_mm": coords},
+            "clinician": clinician,
+            "at": at,
+        }
+        record.setdefault("records", []).append(entry)
+        atomic_write_json(path, record)
+        return {"lesion": lesion, "record": entry}
+
+
+def clear_lesion(case_id: str, clinician: str) -> dict:
+    """Clear lesion and append lesion_cleared under one case lock."""
+    ref = CaseRef.parse(case_id)
+    path = ref.case_json
+    at = _utc_now()
+    with json_file_lock(path):
+        record = _load_or_init_record(ref, path)
+        record.pop("lesion", None)
+        entry = {
+            "step": STEP_MARK_LESION,
+            "kind": "lesion_cleared",
+            "data": {},
+            "clinician": clinician,
+            "at": at,
+        }
+        record.setdefault("records", []).append(entry)
+        atomic_write_json(path, record)
+        return {"lesion": None, "record": entry}
+
+
 def validate_record_data(data: object) -> None:
     try:
         serialised = json.dumps(data, separators=(",", ":"))
@@ -141,17 +245,7 @@ def append_record(
     ref = CaseRef.parse(case_id)
     path = ref.case_json
     with json_file_lock(path):
-        if path.is_file():
-            record = json.loads(path.read_text())
-        elif ref.kind == "aeropath":
-            record = {
-                "id": ref.case_id,
-                "source": ref.source_label,
-                "records": [],
-                "versions": [],
-            }
-        else:
-            raise FileNotFoundError(f"case.json not found for {case_id}")
+        record = _load_or_init_record(ref, path)
         entries = record.setdefault("records", [])
         entry = {
             "step": step,
@@ -187,14 +281,19 @@ def write_case_json(case_id: str, record: dict) -> Path:
 __all__ = [
     "ReviewBlocked",
     "RECORD_KINDS",
+    "STEP_MARK_LESION",
     "UnknownCase",
     "append_record",
     "atomic_write_json",
     "case_payload",
+    "clear_lesion",
+    "default_aeropath_record",
     "list_cases",
     "load_case_record",
     "load_versions",
     "read_case_json",
+    "set_lesion",
+    "validate_lesion_ras",
     "validate_record_data",
     "write_case_json",
 ]

@@ -1,4 +1,6 @@
-<!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload. Phase 2: anterior tick / __p2_debug. -->
+<!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
+     Phase 2: anterior tick / __p2_debug. Phase 3 review: CT panes race-safe mount,
+     Limitations collapses in CT view so it never covers toolbar/readouts. -->
 <title>Bronchial Tree Renderer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -163,6 +165,20 @@ kbd {
 .limitations { margin: 0; padding: 0; list-style: none; display: grid;
   grid-template-columns: 1fr 1fr; gap: 3px 10px; color: var(--muted); }
 .limitations li::before { content: "• "; color: var(--steel); }
+/* CT panes: collapse Limitations so it never covers toolbar / pane readouts. */
+body.ct-panes-active .limitations-panel {
+  width: auto; max-width: 200px; padding: 6px 10px; z-index: 5;
+  top: auto; bottom: 16px; right: 16px;
+}
+body.ct-panes-active .limitations-panel.collapsed .limitations,
+body.ct-panes-active .limitations-panel.collapsed .prov-legend { display: none; }
+body.ct-panes-active .limitations-panel h2 {
+  margin: 0; cursor: pointer; user-select: none;
+}
+body.ct-panes-active .limitations-panel h2::after {
+  content: " ▾"; font-size: 9px; opacity: .7;
+}
+body.ct-panes-active .limitations-panel.collapsed h2::after { content: " ▸"; }
 .prov-legend { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--edge);
   color: var(--muted); font-size: 9.5px; line-height: 1.3; }
 .prov-legend[hidden] { display: none; }
@@ -191,9 +207,68 @@ kbd {
   .rail .group-question { display: none; }
   .switcher { left: 50%; bottom: 14px; }
 }
+
+/* Phase 3 — CT panes ---------------------------------------------------- */
+#ct-stage {
+  display: none; position: fixed; inset: 0 0 0 236px; z-index: 2;
+  background: var(--ground); flex-direction: column; min-height: 0;
+}
+#ct-stage.active { display: flex; }
+.ct-offline {
+  margin: auto; padding: 24px; color: var(--muted); max-width: 28rem;
+  font-size: 15px; line-height: 1.5;
+}
+.ct-panes-root { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.ct-toolbar {
+  display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center;
+  padding: 8px 12px; border-bottom: 1px solid var(--edge);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  font-size: 12px;
+}
+.ct-toolbar button {
+  font: 500 12px/1 "IBM Plex Sans Condensed", sans-serif;
+  border: 1px solid var(--edge); border-radius: 4px; padding: 5px 9px;
+  background: var(--steel); color: #fff; cursor: pointer;
+}
+.ct-toolbar button.secondary { background: transparent; color: var(--steel); }
+.ct-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
+.ct-presets, .ct-overlays, .ct-lesion-box { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ct-wl { font-family: "IBM Plex Mono", monospace; color: var(--muted); }
+.ct-view-toggle select { font: inherit; border: 1px solid var(--edge); border-radius: 4px; padding: 4px 6px; background: var(--surface); color: var(--ink); }
+.ct-overlays label { display: inline-flex; gap: 4px; align-items: center; color: var(--ink); }
+.ct-overlay-hint { color: var(--mucosa); font-size: 11px; }
+.ct-lesion-status { color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
+.ct-grid {
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 6px; padding: 6px;
+}
+.ct-pane-axial { grid-column: 1; grid-row: 1; }
+.ct-pane-coronal { grid-column: 2; grid-row: 1; }
+.ct-pane-sagittal { grid-column: 1 / span 2; grid-row: 2; }
+.ct-pane {
+  position: relative; min-height: 0; border: 2px solid var(--pane-color, var(--edge));
+  border-radius: 4px; background: #0a0a0a; overflow: hidden;
+}
+.ct-pane-label {
+  position: absolute; top: 6px; left: 8px; z-index: 2;
+  font: 600 11px/1 "IBM Plex Sans Condensed", sans-serif; letter-spacing: .04em;
+  color: #fff; text-shadow: 0 1px 2px #000; pointer-events: none;
+}
+.ct-pane-meta {
+  position: absolute; top: 6px; right: 8px; z-index: 2;
+  font: 500 10px/1 "IBM Plex Mono", monospace; color: rgba(255,255,255,.75);
+  pointer-events: none;
+}
+.ct-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+.shared-marker-3d {
+  position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px;
+  border: 2px solid #e85d4c; border-radius: 50%; pointer-events: none; z-index: 3;
+  display: none;
+}
 </style>
 
-<div class="stage"><canvas id="c"></canvas></div>
+<div class="stage"><canvas id="c"></canvas><div class="shared-marker-3d" id="shared-marker-3d"></div></div>
+<div id="ct-stage" aria-label="CT panes"></div>
 
 <aside class="rail">
   <div class="brand"><span>Lung Navigator</span>Bronchial tree renderer</div>
@@ -253,8 +328,8 @@ kbd {
   <div id="review-banner-entries"></div>
 </div>
 
-<aside class="limitations-panel" id="limitations-panel" aria-label="View limitations">
-  <h2>Limitations</h2>
+<aside class="limitations-panel collapsed" id="limitations-panel" aria-label="View limitations">
+  <h2 id="limitations-toggle" title="Show or hide limitations">Limitations</h2>
   <ul class="limitations" id="limitations">
     <li>CT-derived pre-procedural view, not live tracking</li>
     <li>Simulated steering; roll is not measured scope orientation</li>
@@ -277,10 +352,11 @@ kbd {
 
 <script>
 "use strict";
-// Three renderers of the same airway graph:
+// Four renderers of the same airway graph:
 //   A — Anatomical 3D: orbit camera around the tree in the bronchoscopist frame
 //   B — Endoluminal: fly the lumen along the route with anterior at 12 o'clock
 //   C — Topology map: flat generation tree, patient-right on screen-right
+//   D — CT panes: linked axial/coronal/sagittal (server mode only)
 // Throwaway prototype for wayfinder ticket 06 (navigation renderer).
 // No libraries: raw canvas 2D with hand-rolled projection.
 // Embedded airway-data script still works; otherwise fetch payload for ?case=.
@@ -309,7 +385,20 @@ async function ensureAirway() {
   return window.AIRWAY;
 }
 
-ensureAirway().then((A) => {
+function loadCtPanesScript() {
+  if (window.CtPanes) return Promise.resolve();
+  if (!new URLSearchParams(location.search).get("case")) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "/ct_panes.js";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("failed to load ct_panes.js"));
+    document.head.appendChild(s);
+  });
+}
+
+ensureAirway().then(async (A) => {
+await loadCtPanesScript().catch(err => console.warn(err));
 document.getElementById("r-source").textContent = A.source || "unknown";
 if (A.review && A.review.length) {
   const banner = document.getElementById("review-banner");
@@ -349,12 +438,35 @@ const VARIANTS = [
     hint: "<kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · <kbd>Space</kbd> auto-play · <kbd>T</kbd> reset route" },
   { key: "topology", name: "Topology map",
     hint: "<kbd>drag</kbd> pan · <kbd>scroll</kbd> zoom · flat map: A/P depth not shown" },
+  { key: "ct-panes", name: "CT panes",
+    hint: "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L · Mark Lesion in axial" },
 ];
 
 const params = new URLSearchParams(location.search);
 const DEBUG = params.get("debug") === "1";
+const CASE_ID = params.get("case");
+const SERVER_MODE = !!CASE_ID;
 let variant = VARIANTS.findIndex(v => v.key === params.get("variant"));
 if (variant < 0) variant = 0;
+
+const originMm = A.origin_mm || [0, 0, 0];
+const toWorld = p => [p[0] + originMm[0], p[1] + originMm[1], p[2] + originMm[2]];
+const SharedPos = (window.CtPanes && window.CtPanes.createSharedPosition)
+  ? window.CtPanes.createSharedPosition(toWorld(A.nodes[String(A.root)].p))
+  : { get: () => null, set() {}, subscribe() { return () => {}; } };
+let nearestHighlight = null; // { world, dist } for 3D/topology
+let ctPanesApi = null;
+let ctPanesPromise = null;
+let ctViewPref = "feet";
+
+const limitationsPanel = document.getElementById("limitations-panel");
+const limitationsToggle = document.getElementById("limitations-toggle");
+if (limitationsToggle && limitationsPanel) {
+  limitationsToggle.addEventListener("click", () => {
+    if (!document.body.classList.contains("ct-panes-active")) return;
+    limitationsPanel.classList.toggle("collapsed");
+  });
+}
 
 const maxGen = Math.max(...A.edges.map(e => e.g));
 const totalLen = A.edges.reduce((s, e) => s + e.l, 0);
@@ -564,7 +676,31 @@ function drawAnatomical() {
     }
   }
   drawOrientationGizmo();
+  drawSharedPositionMarker3d();
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
+}
+
+function drawSharedPositionMarker3d() {
+  const marker = document.getElementById("shared-marker-3d");
+  if (!marker) return;
+  const pos = SharedPos.get();
+  if (!pos || variant !== 0) {
+    marker.style.display = "none";
+    return;
+  }
+  // Draw nearest centreline sample highlight (within 5 mm) when driven from CT.
+  const show = nearestHighlight && nearestHighlight.dist <= 5
+    ? nearestHighlight.world
+    : pos;
+  const rel = [show[0] - originMm[0], show[1] - originMm[1], show[2] - originMm[2]];
+  const pr = project(rel, cam);
+  if (!pr) {
+    marker.style.display = "none";
+    return;
+  }
+  marker.style.display = "block";
+  marker.style.left = `${pr.x}px`;
+  marker.style.top = `${pr.y}px`;
 }
 
 function drawOrientationGizmo() {
@@ -737,6 +873,8 @@ function drawEndoluminal() {
     turns: A.forks.filter(fork => fork.s > fly.s).length,
   });
   drawGuidance(right, up, dir, here.roll);
+  // Endoluminal fly camera drives the shared world position continuously.
+  SharedPos.set(toWorld(here.p), "endoluminal");
 }
 
 function drawAnteriorTick(rings, right, up, dir) {
@@ -983,6 +1121,21 @@ function drawTopology() {
   ctx.font = '500 11px "IBM Plex Sans", sans-serif';
   ctx.textAlign = "left";
   ctx.fillText("Flat map: anterior/posterior depth not shown", railRight + 16, H - 18);
+  if (nearestHighlight && nearestHighlight.dist <= 5) {
+    // Highlight nearest centreline-associated node when linked from CT.
+    let bestId = null, bestD = Infinity;
+    const hw = nearestHighlight.world;
+    for (const [id, node] of Object.entries(A.nodes)) {
+      const w = toWorld(node.p);
+      const d = Math.hypot(w[0] - hw[0], w[1] - hw[1], w[2] - hw[2]);
+      if (d < bestD) { bestD = d; bestId = +id; }
+    }
+    if (bestId != null && topoLayout.has(bestId)) {
+      const pt = topoToScreen(topoLayout.get(bestId));
+      ctx.strokeStyle = "#e85d4c"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, 11, 0, 7); ctx.stroke();
+    }
+  }
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
 }
 
@@ -995,6 +1148,10 @@ function setReadout(o) {
 }
 
 function frame() {
+  if (variant === 3) {
+    requestAnimationFrame(frame);
+    return;
+  }
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = tok("--ground"); ctx.fillRect(0, 0, W, H);
   if (variant === 0) drawAnatomical();
@@ -1005,22 +1162,82 @@ function frame() {
 
 /* input */
 let drag = null;
+let pointerDownAt = null;
 cv.addEventListener("pointerdown", e => {
+  if (variant === 3) return;
+  pointerDownAt = { x: e.clientX, y: e.clientY };
   drag = { x: e.clientX, y: e.clientY }; cv.classList.add("dragging");
   cv.setPointerCapture(e.pointerId);
 });
-cv.addEventListener("pointerup", e => { drag = null; cv.classList.remove("dragging"); });
+cv.addEventListener("pointerup", e => {
+  const start = pointerDownAt;
+  pointerDownAt = null;
+  drag = null; cv.classList.remove("dragging");
+  if (!start || variant === 3) return;
+  const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y);
+  if (moved > 4) return;
+  handleViewClick(e.clientX, e.clientY);
+});
 cv.addEventListener("pointermove", e => {
-  if (!drag) return;
+  if (!drag || variant === 3) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   drag = { x: e.clientX, y: e.clientY };
   if (variant === 2) { cam.panX += dx; cam.panY += dy; }
   else if (variant === 0) { orbitCamera(dx, dy); }
 });
 cv.addEventListener("wheel", e => {
+  if (variant === 3) return;
   e.preventDefault();
   cam.dist = Math.max(60, Math.min(900, cam.dist * (1 + Math.sign(e.deltaY) * 0.1)));
 }, { passive: false });
+
+function handleViewClick(clientX, clientY) {
+  const rect = cv.getBoundingClientRect();
+  const sx = clientX - rect.left, sy = clientY - rect.top;
+  if (variant === 0) {
+    // Nearest projected centreline sample within 8 px.
+    let best = null, bestD = 8;
+    for (const e of A.edges) {
+      for (const c of e.c) {
+        const pr = project(c, cam);
+        if (!pr) continue;
+        const d = Math.hypot(pr.x - sx, pr.y - sy);
+        if (d < bestD) {
+          bestD = d;
+          best = toWorld(c);
+        }
+      }
+    }
+    if (best) SharedPos.set(best, "anatomical");
+    return;
+  }
+  if (variant === 2) {
+    if (!topoLayout) buildTopology();
+    let bestId = null, bestD = 12;
+    for (const [id, p] of topoLayout) {
+      const pt = topoToScreen(p);
+      const d = Math.hypot(pt.x - sx, pt.y - sy);
+      if (d < bestD) { bestD = d; bestId = id; }
+    }
+    if (bestId != null) {
+      SharedPos.set(toWorld(A.nodes[String(bestId)].p), "topology");
+    }
+  }
+}
+
+SharedPos.subscribe((pos, source) => {
+  if (!pos) return;
+  if (source === "ct" || source === "ct-wheel" || source === "ct-key"
+      || source === "ct-axial-place" || source === "ct-init" || source === "debug") {
+    if (window.CtPanes && window.CtPanes.nearestCentrelineWorld) {
+      nearestHighlight = window.CtPanes.nearestCentrelineWorld(A, originMm, pos);
+    } else {
+      nearestHighlight = null;
+    }
+  } else if (source !== "endoluminal") {
+    nearestHighlight = null;
+  }
+});
 
 document.getElementById("presets").addEventListener("click", e => {
   const btn = e.target.closest("[data-preset]");
@@ -1030,8 +1247,8 @@ document.getElementById("presets").addEventListener("click", e => {
 const held = new Set();
 addEventListener("keydown", e => {
   const tag = (e.target.tagName || "").toLowerCase();
-  if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
-  if (e.key >= "1" && e.key <= "3") {
+  if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
+  if (e.key >= "1" && e.key <= "4") {
     setVariant(+e.key - 1);
     return;
   }
@@ -1044,6 +1261,7 @@ addEventListener("keydown", e => {
     fly.s = 0; fly.pausedFork = null; fly.armed = new Set(A.forks.map(f => f.fork));
   }
   if (e.key === " " && variant === 1) { fly.playing = !fly.playing; fly.pausedFork = null; e.preventDefault(); }
+  if (variant === 3) return;
   if (["ArrowUp", "ArrowDown"].includes(e.key)) {
     if (fly.pausedFork && e.key === "ArrowUp" && !e.repeat) {
       fly.pausedFork = null;
@@ -1087,6 +1305,85 @@ setInterval(() => {
 
 /* switcher */
 const sw = document.getElementById("switcher");
+const ctStage = document.getElementById("ct-stage");
+const mainStage = document.querySelector(".stage");
+
+async function ensureCtPanes() {
+  if (!SERVER_MODE) {
+    ctStage.innerHTML = "";
+    const msg = document.createElement("div");
+    msg.className = "ct-offline";
+    msg.textContent = "CT panes need the local app";
+    ctStage.appendChild(msg);
+    return null;
+  }
+  if (ctPanesApi) return ctPanesApi;
+  if (ctPanesPromise) return ctPanesPromise;
+  if (!window.CtPanes) {
+    ctStage.textContent = "CT panes module failed to load";
+    return null;
+  }
+  ctPanesPromise = (async () => {
+    if (ctPanesApi) {
+      try { ctPanesApi.destroy(); } catch (_) { /* ignore */ }
+      ctPanesApi = null;
+    }
+    try {
+      const clin = await fetch("/api/clinician").then(r => r.json());
+      ctViewPref = clin.ct_view === "head" ? "head" : "feet";
+    } catch (_) {
+      ctViewPref = "feet";
+    }
+    ctPanesApi = window.CtPanes.mount({
+      rootEl: ctStage,
+      caseId: CASE_ID,
+      airway: A,
+      sharedPos: SharedPos,
+      getCtView: () => ctViewPref,
+      setCtView: async (view) => {
+        ctViewPref = view;
+        try {
+          const res = await fetch("/api/clinician", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ct_view: view }),
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            if (res.status === 412) {
+              alert("Set a clinician in the app shell to save the CT view preference.");
+            } else {
+              console.warn(body.detail || res.statusText);
+            }
+          }
+        } catch (err) {
+          console.warn(err);
+        }
+      },
+      ensureClinician: async () => {
+        try {
+          const clin = await fetch("/api/clinician").then(r => r.json());
+          if (clin && clin.role && clin.initials) return true;
+          alert("Set a clinician (role + initials) in the app shell first.");
+          return false;
+        } catch (err) {
+          alert(String(err.message || err));
+          return false;
+        }
+      },
+      onLesionChange: (lesion) => { A.lesion = lesion; },
+      isViewActive: () => ctStage.classList.contains("active"),
+      debug: DEBUG,
+    });
+    return ctPanesApi;
+  })();
+  try {
+    return await ctPanesPromise;
+  } finally {
+    ctPanesPromise = null;
+  }
+}
+
 function setVariant(i) {
   variant = i;
   const u = new URL(location); u.searchParams.set("variant", VARIANTS[i].key);
@@ -1103,10 +1400,19 @@ function render() {
     sw.appendChild(b);
   });
   document.getElementById("hint").innerHTML = VARIANTS[variant].hint +
-    "<br><br>Switch renderer with <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>.";
+    "<br><br>Switch renderer with <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd>.";
   document.getElementById("g-nav").style.opacity = variant === 1 ? "1" : ".45";
   document.getElementById("g-cam").hidden = variant !== 0;
   syncPresetButtons();
+  const ctActive = variant === 3;
+  ctStage.classList.toggle("active", ctActive);
+  document.body.classList.toggle("ct-panes-active", ctActive);
+  mainStage.style.visibility = ctActive ? "hidden" : "visible";
+  if (limitationsPanel) {
+    if (ctActive) limitationsPanel.classList.add("collapsed");
+    else limitationsPanel.classList.remove("collapsed");
+  }
+  if (ctActive) ensureCtPanes();
 }
 
 if (DEBUG) {
@@ -1168,6 +1474,17 @@ if (DEBUG) {
       return { s: fly.s, pausedFork: fly.pausedFork, tick: { ...lastAnteriorTick } };
     },
     anteriorTick: () => ({ ...lastAnteriorTick }),
+  };
+  window.__p3_debug = {
+    setVariant,
+    getVariant: () => VARIANTS[variant].key,
+    sharedPos: () => SharedPos.get(),
+    setSharedPos: (p) => SharedPos.set(p, "debug"),
+    originMm: () => [...originMm],
+    airway: () => A,
+    ensureCtPanes: () => ensureCtPanes(),
+    ct: () => ctPanesApi,
+    mainBronchi: mainBronchusNodes,
   };
 }
 

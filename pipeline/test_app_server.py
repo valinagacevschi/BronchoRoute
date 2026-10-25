@@ -1,4 +1,7 @@
-"""Synthetic tiny volumes only — no patient data, no TotalSegmentator."""
+"""Synthetic tiny volumes only — no patient data, no TotalSegmentator.
+
+Phase 3 review: NaN lesion→422, empty role/initials→422, per-clinician ct_view map.
+"""
 
 from __future__ import annotations
 
@@ -50,6 +53,7 @@ def _write_case_tree(
     mask_box: tuple[slice, slice, slice] | None = None,
     marker_ijk: tuple[int, int, int] | None = None,
     marker_hu: int = 1234,
+    with_bridges: bool = True,
 ) -> dict[str, Path]:
     local = root / "data/extracted/local" / case_id
     local.mkdir(parents=True)
@@ -74,12 +78,19 @@ def _write_case_tree(
     trachea[11:13, 9:11, 10:14] = 1
     airways = np.zeros(shape, dtype=np.uint8)
     airways[10:14, 8:12, 6:12] = 1
+    bridges = np.zeros(shape, dtype=np.uint8)
+    # Overlap one airway voxel so bridge priority (label 2) can be asserted.
+    bridges[11, 9, 8] = 1
+    bridges[12, 10, 9] = 1
 
     ct_path = local / f"{case_id}_CT.nii.gz"
     nib.save(_nifti(ct, affine), ct_path)
     nib.save(_nifti(lobes, affine), ts / "lobes.nii.gz")
     nib.save(_nifti(trachea, affine), lobes_dir / "trachea.nii.gz")
     nib.save(_nifti(airways, affine), ts / "airways.nii.gz")
+    bridges_path = ts / "airway_bridges.nii.gz"
+    if with_bridges:
+        nib.save(_nifti(bridges, affine), bridges_path)
 
     graph = {
         "case": case_id,
@@ -106,6 +117,7 @@ def _write_case_tree(
     return {
         "local": local, "ts": ts, "out": out, "case": case_path,
         "graph": graph_path, "ct": ct_path, "root": root,
+        "bridges": bridges_path if with_bridges else None,
     }
 
 
@@ -321,13 +333,53 @@ def test_clinician_validation_and_persistence(client):
     nasty = client.put("/api/clinician", json={"role": "Rad<script>", "initials": "A.B."})
     assert nasty.status_code == 422
 
+    empty = client.put("/api/clinician", json={"role": "", "initials": ""})
+    assert empty.status_code == 422
+
+    empty_one = client.put("/api/clinician", json={"role": "Radiologist", "initials": ""})
+    assert empty_one.status_code == 422
+
     good = client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
     assert good.status_code == 200
-    assert good.json() == {"role": "Radiologist", "initials": "A.B."}
+    assert good.json() == {
+        "role": "Radiologist", "initials": "A.B.", "ct_view": "feet",
+    }
 
     got = client.get("/api/clinician")
     assert got.status_code == 200
-    assert got.json() == {"role": "Radiologist", "initials": "A.B."}
+    assert got.json() == {
+        "role": "Radiologist", "initials": "A.B.", "ct_view": "feet",
+    }
+
+    view = client.put("/api/clinician", json={"ct_view": "head"})
+    assert view.status_code == 200
+    assert view.json()["ct_view"] == "head"
+    assert client.get("/api/clinician").json()["ct_view"] == "head"
+
+
+def test_per_clinician_ct_view(client, harness):
+    a = client.put("/api/clinician", json={
+        "role": "Radiologist", "initials": "A.B.", "ct_view": "feet",
+    })
+    assert a.status_code == 200
+    assert a.json()["ct_view"] == "feet"
+    assert client.put("/api/clinician", json={"ct_view": "head"}).json()["ct_view"] == "head"
+
+    b = client.put("/api/clinician", json={
+        "role": "Pulmonologist", "initials": "C.D.",
+    })
+    assert b.status_code == 200
+    assert b.json()["ct_view"] == "feet"  # default for new clinician
+    assert client.put("/api/clinician", json={"ct_view": "head"}).json()["ct_view"] == "head"
+
+    back = client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    assert back.status_code == 200
+    assert back.json()["ct_view"] == "head"  # restored from prefs map
+
+    settings = json.loads((harness["root"] / "app_state" / "settings.json").read_text())
+    assert "Radiologist, A.B." in settings["clinician_prefs"]
+    assert settings["clinician_prefs"]["Radiologist, A.B."]["ct_view"] == "head"
+    assert settings["clinician_prefs"]["Pulmonologist, C.D."]["ct_view"] == "head"
 
 
 def test_records_require_clinician_then_stamp(client, harness):
@@ -464,3 +516,119 @@ def test_build_payload_raises_when_blocked(harness):
         build_payload(graph, record, allow_review=False)
     payload = build_payload(graph, record, allow_review=True)
     assert payload["review"]
+    assert payload["origin_mm"] == [0.0, 0.0, 0.0]
+    assert payload["lesion"] is None
+
+
+def test_masks_share_ct_crop_grid(client, harness):
+    from app.masks import LABEL_CT, LABEL_INTERPOLATED, build_masks_crop, read_masks_bytes
+
+    ct_meta = client.get("/api/cases/local-001/ct/meta").json()
+    masks_meta = client.get("/api/cases/local-001/masks/meta").json()
+    assert masks_meta["shape"] == ct_meta["shape"]
+    assert masks_meta["affine"] == ct_meta["affine"]
+    assert masks_meta["spacing_mm"] == ct_meta["spacing_mm"]
+    assert masks_meta["crop_offset_voxels"] == ct_meta["crop_offset_voxels"]
+    assert masks_meta["memory_order"] == MEMORY_ORDER
+    assert masks_meta["dtype"] == "uint8"
+    assert "path" not in json.dumps(masks_meta)
+
+    raw_res = client.get("/api/cases/local-001/masks")
+    assert raw_res.status_code == 200
+    raw = raw_res.content
+    assert len(raw) == int(np.prod(masks_meta["shape"]))
+    assert raw_res.headers["x-content-sha256"] == masks_meta["sha256"]
+
+    nx, ny, nz = masks_meta["shape"]
+    labels = np.frombuffer(raw, dtype=np.uint8).reshape((nx, ny, nz), order="F")
+    assert set(np.unique(labels)).issubset({0, LABEL_CT, LABEL_INTERPOLATED})
+    assert LABEL_CT in labels
+    assert LABEL_INTERPOLATED in labels
+    # Bridge voxels win over CT airway (synthetic bridge at source ijk 11,9,8).
+    offset = np.asarray(masks_meta["crop_offset_voxels"], dtype=int)
+    bi, bj, bk = 11 - int(offset[0]), 9 - int(offset[1]), 8 - int(offset[2])
+    assert labels[bi, bj, bk] == LABEL_INTERPOLATED
+    bridge_count = int((labels == LABEL_INTERPOLATED).sum())
+    assert bridge_count >= 1
+
+    again = build_masks_crop("local-001")
+    assert again["sha256"] == masks_meta["sha256"]
+    raw2, _ = read_masks_bytes("local-001")
+    assert raw2 == raw
+
+
+def test_masks_404_without_airways(client, harness, tmp_path):
+    airways = harness["ts"] / "airways.nii.gz"
+    airways.unlink()
+    # Bust any prior crop fingerprint by also removing bridges companion.
+    res = client.get("/api/cases/local-001/masks/meta")
+    assert res.status_code == 404
+    assert "airways" in res.json()["detail"].lower()
+
+
+def test_payload_origin_and_lesion_roundtrip(client, harness):
+    ok = client.get("/api/cases/local-001/payload?allow_review=true")
+    assert ok.status_code == 200
+    payload = ok.json()
+    assert payload["origin_mm"] == [0.0, 0.0, 0.0]
+    assert payload["lesion"] is None
+
+    # Centre of the CT crop in world mm.
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    ijk = np.array([
+        meta["shape"][0] / 2,
+        meta["shape"][1] / 2,
+        meta["shape"][2] / 2,
+        1.0,
+    ])
+    ras = (affine @ ijk)[:3].tolist()
+
+    missing = client.put("/api/cases/local-001/lesion", json={"ras_mm": ras})
+    assert missing.status_code == 412
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    outside = client.put(
+        "/api/cases/local-001/lesion",
+        json={"ras_mm": [1e6, 1e6, 1e6]},
+    )
+    assert outside.status_code == 422
+
+    nan_lesion = client.put(
+        "/api/cases/local-001/lesion",
+        content=f'{{"ras_mm":[NaN,{ras[1]},{ras[2]}]}}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert nan_lesion.status_code == 422
+
+    inf_lesion = client.put(
+        "/api/cases/local-001/lesion",
+        content=f'{{"ras_mm":[Infinity,{ras[1]},{ras[2]}]}}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert inf_lesion.status_code == 422
+
+    confirmed = client.put("/api/cases/local-001/lesion", json={"ras_mm": ras})
+    assert confirmed.status_code == 200
+    body = confirmed.json()
+    assert body["lesion"]["confirmed_by"] == "Radiologist, A.B."
+    assert body["record"]["kind"] == "lesion_confirmed"
+    assert body["record"]["step"] == 2
+    assert body["record"]["data"]["ras_mm"] == pytest.approx(ras)
+
+    on_disk = json.loads(harness["case"].read_text())
+    assert on_disk["lesion"]["ras_mm"] == pytest.approx(ras)
+    assert on_disk["records"][-1]["kind"] == "lesion_confirmed"
+
+    payload2 = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert payload2["lesion"]["ras_mm"] == pytest.approx(ras)
+    assert payload2["lesion"]["confirmed_by"] == "Radiologist, A.B."
+
+    cleared = client.delete("/api/cases/local-001/lesion")
+    assert cleared.status_code == 200
+    assert cleared.json()["lesion"] is None
+    assert cleared.json()["record"]["kind"] == "lesion_cleared"
+    on_disk2 = json.loads(harness["case"].read_text())
+    assert "lesion" not in on_disk2
+    assert on_disk2["records"][-1]["kind"] == "lesion_cleared"
+    assert client.get("/api/cases/local-001/payload?allow_review=true").json()["lesion"] is None

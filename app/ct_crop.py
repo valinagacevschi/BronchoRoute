@@ -2,21 +2,20 @@
 
 Wire format: little-endian int16, shape (x, y, z), memory_order "x fastest"
 (Fortran / column-major: voxel (i, j, k) at byte offset 2 * (i + j*nx + k*nx*ny)).
+
+Phase 3 review: public assert_affine_match; shared cache_pair; corrupt meta → rebuild.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
-import tempfile
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
 from atomic_json import json_file_lock
+from termcolor import cprint
 
-import paths
+from app.cache_pair import publish_binary_pair, read_cached_binary_pair, read_meta_json
 from app.caseref import CaseRef
 
 MARGIN_MM = 10.0
@@ -61,9 +60,14 @@ def _hu_to_int16(crop: np.ndarray) -> np.ndarray:
     return np.clip(rounded, info.min, info.max).astype(np.int16)
 
 
-def _assert_affine_match(ct_affine: np.ndarray, other: np.ndarray, label: str) -> None:
+def assert_affine_match(ct_affine: np.ndarray, other: np.ndarray, label: str) -> None:
+    """Public affine equality check (atol=AFFINE_ATOL); used by masks too."""
     if not np.allclose(ct_affine, other, atol=AFFINE_ATOL, rtol=0):
         raise ValueError(f"{label} affine does not match CT affine (atol={AFFINE_ATOL})")
+
+
+# Back-compat alias for internal callers.
+_assert_affine_match = assert_affine_match
 
 
 def _inputs_fingerprint(ref: CaseRef) -> dict[str, dict]:
@@ -74,9 +78,9 @@ def _inputs_fingerprint(ref: CaseRef) -> dict[str, dict]:
 
 
 def _cache_hit(bin_path: Path, meta_path: Path, inputs: dict) -> dict | None:
-    if not bin_path.is_file() or not meta_path.is_file():
+    meta = read_meta_json(meta_path)
+    if meta is None or not bin_path.is_file():
         return None
-    meta = json.loads(meta_path.read_text())
     if meta.get("inputs") != inputs or not meta.get("sha256"):
         return None
     if meta.get("memory_order") != MEMORY_ORDER:
@@ -92,55 +96,6 @@ def _cache_hit(bin_path: Path, meta_path: Path, inputs: dict) -> dict | None:
     if cached_mtime is not None and stat.st_mtime_ns != cached_mtime:
         return None
     return meta
-
-
-def _publish_crop_pair(bin_path: Path, meta_path: Path, raw: bytes, meta: dict) -> dict:
-    """Write bin then meta (meta carries sha256); publish each via replace."""
-    bin_path.parent.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256(raw).hexdigest()
-    tmp_bin_name: str | None = None
-    tmp_meta_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=bin_path.parent,
-            prefix=".ct_crop.bin.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp_bin:
-            tmp_bin.write(raw)
-            tmp_bin.flush()
-            os.fsync(tmp_bin.fileno())
-            tmp_bin_name = tmp_bin.name
-        os.replace(tmp_bin_name, bin_path)
-        tmp_bin_name = None
-        published = dict(meta)
-        published["sha256"] = digest
-        published["bin_size"] = len(raw)
-        published["bin_mtime_ns"] = bin_path.stat().st_mtime_ns
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=meta_path.parent,
-            prefix=".ct_crop.json.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp_meta:
-            json.dump(published, tmp_meta, indent=2)
-            tmp_meta.write("\n")
-            tmp_meta.flush()
-            os.fsync(tmp_meta.fileno())
-            tmp_meta_name = tmp_meta.name
-        os.replace(tmp_meta_name, meta_path)
-        tmp_meta_name = None
-        return published
-    finally:
-        for name in (tmp_bin_name, tmp_meta_name):
-            if name is not None:
-                try:
-                    os.unlink(name)
-                except OSError:
-                    pass
 
 
 def build_ct_crop(case_id: str, *, force: bool = False) -> dict:
@@ -159,13 +114,14 @@ def build_ct_crop(case_id: str, *, force: bool = False) -> dict:
             if hit is not None:
                 return hit
 
+        cprint(f"building CT crop for {case_id}", "cyan")
         ct_img = _load_canonical(ref.ct)
         lobes_img = _load_canonical(ref.lobes)
         trachea_img = _load_canonical(ref.trachea)
         airways_img = _load_canonical(ref.airways)
-        _assert_affine_match(ct_img.affine, lobes_img.affine, "lobes")
-        _assert_affine_match(ct_img.affine, trachea_img.affine, "trachea")
-        _assert_affine_match(ct_img.affine, airways_img.affine, "airways")
+        assert_affine_match(ct_img.affine, lobes_img.affine, "lobes")
+        assert_affine_match(ct_img.affine, trachea_img.affine, "trachea")
+        assert_affine_match(ct_img.affine, airways_img.affine, "airways")
 
         ct = np.asanyarray(ct_img.dataobj)
         lobes = np.asanyarray(lobes_img.dataobj) > 0
@@ -181,7 +137,6 @@ def build_ct_crop(case_id: str, *, force: bool = False) -> dict:
         mask = lobes | trachea | airways
         lo, hi = _bbox(mask, spacing)
         crop = _hu_to_int16(ct[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]])
-        # Fortran / x-fastest layout to match memory_order.
         wire = np.asarray(np.asfortranarray(crop), dtype="<i2", order="F")
         raw = wire.tobytes(order="F")
         origin = (ct_img.affine @ np.array([lo[0], lo[1], lo[2], 1.0], dtype=float))[:3]
@@ -200,23 +155,31 @@ def build_ct_crop(case_id: str, *, force: bool = False) -> dict:
             "window_presets": WINDOW_PRESETS,
             "inputs": inputs,
         }
-        return _publish_crop_pair(bin_path, meta_path, raw, meta)
+        return publish_binary_pair(
+            bin_path,
+            meta_path,
+            raw,
+            meta,
+            bin_prefix=".ct_crop.bin.",
+            meta_prefix=".ct_crop.json.",
+        )
 
 
 def read_ct_bytes(case_id: str) -> tuple[bytes, dict]:
-    meta = build_ct_crop(case_id)
     ref = CaseRef.parse(case_id)
-    bin_path, _meta_path = crop_paths(ref)
-    raw = bin_path.read_bytes()
-    # Cheap integrity: size must match; sha comes from meta (no full re-hash on hit).
-    expected = meta.get("bin_size")
-    if expected is not None and len(raw) != expected:
-        meta = build_ct_crop(case_id, force=True)
-        raw = bin_path.read_bytes()
-    elif len(raw) != int(np.prod(meta["shape"])) * 2:
-        meta = build_ct_crop(case_id, force=True)
-        raw = bin_path.read_bytes()
-    return raw, meta
+    bin_path, meta_path = crop_paths(ref)
+
+    def _nbytes(meta: dict) -> int:
+        return int(np.prod(meta["shape"])) * 2
+
+    return read_cached_binary_pair(
+        case_id,
+        bin_path,
+        meta_path,
+        ensure_meta=build_ct_crop,
+        force_rebuild=lambda cid: build_ct_crop(cid, force=True),
+        expected_nbytes=_nbytes,
+    )
 
 
 def voxel_byte_offset(i: int, j: int, k: int, shape: tuple[int, int, int]) -> int:
