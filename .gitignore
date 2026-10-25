@@ -5,3 +5,6 @@ pipeline/out/
 pipeline/.venv/
 __pycache__/
 .DS_Store
+
+# Agent briefs are working notes, not project history.
+.codex-briefs/

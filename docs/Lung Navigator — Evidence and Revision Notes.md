@@ -18,9 +18,9 @@
 - Replace slice-wise circle detection as the core imaging plan with volumetric segmentation → topology cleanup → centerline/radius extraction → clinician quality assurance → de-identified export.
 - Define measurable outcomes: anatomy recognition, route accuracy, time to target, wrong-turn rate, wall-contact proxy, retention, workload, and transfer assessment.
 - Build data governance, consent/de-identification, access controls, and clinical/regulatory separation into the concept from the outset.
-- Adopt the anatomical provenance rules (PRD §6.7), the `target_gap_mm` rule for POIs beyond the visible airway (PRD §7.1) and the endoluminal orientation aids (PRD §8.3) from the BBT 3D Slicer workflow.[^5] That workflow found that global low-HU thresholding leaks into parenchyma and that Hessian/vesselness approaches were not reliable for airways; TotalSegmentator gave the best automated starting point but distal airways still need review. These are practitioner findings from one prototype dataset, not published validation.
+- Adopt BBT's anatomical rules and orientation aids [^5]: provenance and separately stored bridges (PRD §2, §6.2–6.3), Lesion ≠ RouteTarget with `target_gap_mm` (PRD §2, §7), and the endoluminal orientation aids (PRD §8.1). BBT found that global low-HU thresholding leaks into parenchyma and that Hessian/vesselness approaches were not reliable for airways; TotalSegmentator gave the best automated starting point, but distal airways still need review. These are practitioner findings from the author's prototype work, not a validation study.
 
-[^5]: T. Toma, *BBT Slicer Skill* and BBT Python scripts (CT-based Bronchial Branch Tracing, 3D Slicer 5.12), 2026. Unpublished; local copy reviewed October 2026.
+[^5]: Toma T. *CT-based Bronchial Branch Tracing (BBT)*, v1.0.0, 2026. Zenodo, doi:10.5281/zenodo.23190857; https://github.com/ttoma1068/CT-Bronchial-Branch-Tracing (Apache-2.0). Lung Navigator adapts its ideas and does not include its code. Under its NOTICE, a modified distribution must identify itself as modified and must not imply the author's endorsement or clinical validation.
 
 [^1]: https://pmc.ncbi.nlm.nih.gov/articles/PMC9064612/
 [^2]: https://pmc.ncbi.nlm.nih.gov/articles/PMC6028313/

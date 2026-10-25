@@ -1,678 +1,320 @@
 # Product Requirements Document: Lung Navigator
-## Target-First CT Airway Exploration, Route Planning, and Learning Platform
+## CT-derived airway route planning and bronchial branch tracing
 
 | Document field | Value |
 |---|---|
-| **Document owner** | Product and technical leadership |
-| **Version** | 1.0 |
-| **Status** | Implementation-ready specification |
-| **Primary scope** | Educational and simulation-research workflow |
-| **Out of scope** | Diagnosis, treatment planning, autonomous procedural guidance, and clinical decision support |
-| **Primary principle** | A selected point of interest must yield transparent, reviewable, and ranked airway routes from the tracheal root. |
+| **Version** | 2.0 (2026-10-25). Replaces v1.0, which described a cloud learning platform built on DICOMweb. |
+| **Status** | Current. `docs/Workflow and Build Plan.md` is the build spec that code reviews check against; this PRD explains the requirements behind it. Where the two differ, the plan wins and this document is corrected. |
+| **Primary scope** | Research, education and pre-procedural planning by clinicians, on a local machine |
+| **Out of scope** | Real-time bronchoscope localisation, electromagnetic or robotic navigation, diagnosis, treatment decisions, any medical-device claim |
+| **Origin** | Re-implements, as one app, the 3D Slicer workflow *CT-based Bronchial Branch Tracing (BBT)* by T. Toma [7] |
 
 ---
 
-## 1. Executive Decision Summary
+## 1. Summary
 
-**Lung Navigator** is a graph-first platform that converts a reviewed CT airway volume into two connected experiences. The first is a visual learning environment where users explore branching airway anatomy. The second is a **target-first planning workflow**: a user browses a CT volume, places a point of interest (POI), and receives a ranked set of airway routes that approach that destination. The ranked routes can then be visualised in the CT viewer, inspected in 3D, and used as targets in an anatomy-learning or simulation scenario.
+Lung Navigator takes a chest CT and helps a clinician produce a reviewed airway route towards a
+peripheral lesion, together with a branch-by-branch tracing sequence for bronchoscopy planning.
+Every step happens in one local app. 3D Slicer is not used.
 
-The implementation must not interpret CT images in a browser-only static site. A credible workflow needs controlled DICOM ingestion, de-identification, asynchronous 3D image processing, graph construction, quality assurance, traceability, and permissions. The existing website is the **experience and interaction prototype**; it is not the production imaging application.
+The clinician imports the CT and marks the lesion. The app segments the airways automatically. The
+clinician reviews the result against the CT, chooses where the CT-supported route ends, walks the
+route in linked CT, 3D, endoluminal and topology views, confirms each bifurcation, and signs off a
+frozen version. Every step writes its own record.
 
-> **Purpose boundary:** The first production release is an educational and research platform. It must not present its path ranking as a diagnostic recommendation, a navigation instruction for a live procedure, or evidence of clinical competence.
+> **Purpose boundary.** Output is a CT-derived pre-procedural representation. It must never be
+> described as real-time localisation, as a navigation instruction for a live procedure, or as
+> evidence of improved diagnostic yield or safety.
 
-The recommended technical strategy is to build a full-stack research application around a DICOMweb-compatible archive, a browser imaging viewer, a dedicated processing service, a versioned canonical airway graph, and an auditable case-release workflow. DICOMweb formally separates study query, object retrieval, and object storage through QIDO-RS, WADO-RS, and STOW-RS, respectively; Lung Navigator should preserve that separation in both technical design and access control.[1]
-
----
-
-## 2. Product Vision, Scope, and Success Measures
-
-### 2.1 Product vision
-
-Lung Navigator makes the bronchial tree **navigable, interpretable, and measurable**. It creates a shared representation of airway anatomy that supports three distinct purposes without conflating them: public exploration, structured learning, and carefully governed simulation research.
-
-| Product tier | Intended audience | Product promise | Evidence standard |
-|---|---|---|---|
-| **Explore** | Science-curious visitors and general learners | An atmospheric, approachable airway exploration experience | Usability, accessibility, engagement |
-| **Learn** | Anatomy students and early trainees | Structured practice in branch recognition, route recall, and spatial orientation | Learning and retention measurement |
-| **Validate** | Simulation researchers and clinical educators | A controlled environment for testing route-planning and navigation hypotheses | Expert review and pre-specified study protocol |
-
-### 2.2 In-scope release capabilities
-
-The first research-capable release must permit an authorised user to select a de-identified chest CT study, review the axial, coronal, sagittal, and 3D representations, place a POI in physical coordinates, inspect the airway mask and graph quality, receive ranked candidate routes, and launch a corresponding visualisation or learning scenario. Each result must identify its source case, source volume version, segmentation version, graph version, ranking algorithm version, and reviewer status.
-
-### 2.3 Explicit non-goals
-
-The product must not claim lesion detection, classify a target as a tumour, propose biopsy locations, assess procedural safety, prescribe a clinical route, or infer clinical competence from game performance. The platform may accept a user-labelled POI such as “target lesion” or “area for learning exercise,” but that label is user-supplied context and must not be transformed into a diagnostic conclusion.
-
-### 2.4 North-star outcome and supporting measures
-
-The north-star outcome for the learning product is **successful independent navigation to an anatomically defined target with retained route knowledge**. The north-star outcome for the planning product is **a reproducible, auditable, expert-reviewable route plan generated from a reviewed airway graph**.
-
-| Dimension | Primary metric | Operational definition | Release interpretation |
-|---|---|---|---|
-| **Route-plan reliability** | Reviewed route-plan success rate | Percentage of quality-approved cases where an expert accepts at least one ranked candidate as anatomically plausible for the stated educational purpose | Primary planning gate |
-| **Graph integrity** | Reviewed branch continuity | Proportion of sampled parent–child links judged topologically coherent by the QA protocol | Core processing gate |
-| **Interaction usability** | POI-to-route completion rate | Users who select a POI, understand the ranking, and inspect a route without moderator assistance | Product usability gate |
-| **Learning outcome** | Delayed route-recall accuracy | Correct target navigation after an appropriate delay and without guidance | Learning evidence |
-| **Governance health** | Complete provenance coverage | Released cases whose required source, version, and review records are present | Hard release control |
+Learner-facing game and training modes (the "Explore / Learn" tiers of v1.0) are deferred
+(§16).
 
 ---
 
-## 3. Users, Jobs, and Permissions
+## 2. Principles
 
-### 3.1 Primary users
+These are product rules, not preferences. Each traces to the build plan's Principles section and
+to BBT's safety rules [7].
 
-| User | Primary job | Product need | Access level |
-|---|---|---|---|
-| **Learner** | Understand how airway branches relate and reach a target | Clear landmarks, safe practice, feedback, and progress context | Released educational cases only |
-| **Clinical educator** | Assemble or assign anatomy-learning exercises | Reviewed route plans, labels, difficulty controls, and learner summaries | Educational case authoring and review |
-| **Imaging/research operator** | Prepare a CT-derived case | Study inspection, segmentation status, graph QC, POI workflows, and release controls | Controlled case-processing workspace |
-| **Clinical reviewer** | Assess educational anatomical validity | Synchronized CT, airway mask, graph, routes, reviewer comments, and release decision | Review and approval workspace |
-| **Study administrator** | Govern research use | Participant access, consent state, audit export, retention and case permissions | Administration and audit only |
-
-### 3.2 Role model
-
-The platform must use role-based access control and must additionally restrict access by case release state. A learner may see a released teaching case but must not access raw DICOM objects, quality-control notes, hidden algorithmic candidates, or any record linking the case to a person or source institution. A reviewer may inspect pre-release imagery and algorithm output but may not modify the immutable processing provenance.
-
-| Role | Can read raw DICOM | Can set POI | Can run processing | Can edit graph labels | Can approve case | Can access learner analytics |
-|---|---:|---:|---:|---:|---:|---:|
-| Learner | No | Only scenario POIs | No | No | No | Own summary only |
-| Educator | No by default | Yes, in released derivative case | No | Limited annotation | No | Assigned cohort only |
-| Research operator | Controlled | Yes | Yes | Proposed edits only | No | De-identified study data |
-| Clinical reviewer | Controlled | Yes | Re-run approved jobs only | Approve/reject labels | Yes | De-identified study data |
-| Administrator | Configuration only | No | No | No | No | Governed audit access |
-
----
-
-## 4. Core Target-First Workflow
-
-### 4.1 Product principle
-
-The initial user action is **not** to start a virtual journey. It is to locate a meaningful point in the volume. The platform then explains how that point relates to the airway tree before rendering a path. This creates a transparent chain of reasoning:
-
-```mermaid
-flowchart LR
-  A[Select approved CT study] --> B[Review multiplanar volume]
-  B --> C[Place point of interest in physical coordinates]
-  C --> D[Load approved airway graph]
-  D --> E[Find closest eligible airway candidates]
-  E --> F[Compute constrained paths from tracheal root]
-  F --> G[Rank and explain alternatives]
-  G --> H[Reviewer approval or learning scenario launch]
-```
-
-### 4.2 Detailed workflow states
-
-| State | User action | System behaviour | Required output | Failure or warning state |
-|---|---|---|---|---|
-| **Study selection** | Select an authorised, de-identified study | Fetch metadata and released derivative availability | Study summary and data-use state | Block if no approved derivative or permission |
-| **Volume review** | Navigate axial, coronal, sagittal, and optional 3D view | Stream only permitted image data; preserve orientation and measurement context | Synchronized viewports | Display “image quality not approved” if blocked |
-| **POI placement** | Click, crosshair-adjust, or enter coordinates | Transform viewport location to patient/volume physical coordinates | Immutable POI record in millimetres | Require confirmation if target is outside valid volume bounds |
-| **Graph readiness** | Request route planning | Verify graph version, QA state, and spatial registration | Graph summary and confidence state | Block if no QA-approved graph exists |
-| **Candidate search** | Confirm target | Find nearest eligible centreline samples and/or terminal branches | Candidate list with distance and confidence | Explain if no candidate satisfies policy threshold |
-| **Route calculation** | Inspect output | Compute root-to-candidate graph paths using explicit score weights | Ranked route list and reasons | Flag disconnected graph or invalid root |
-| **Route review** | Select a candidate | Render CT overlays, branch list, 3D fly-through, and provenance | Selected route-plan revision | Require clinical reviewer before educational release when case policy requires it |
-| **Scenario launch** | Start learning activity | Convert approved route to an exercise objective with declared fidelity | Scenario configuration and telemetry session | Do not expose non-released graph artefacts |
-
-### 4.3 POI placement requirements
-
-The POI must be stored in **physical patient/volume coordinates in millimetres**, not merely as a pixel coordinate in the active slice. The record must retain its source study, series, frame of reference, image orientation, slice/volume reference, and the viewport state used at placement. This enables the platform to reproduce the point in any compatible multiplanar view.
-
-The user interface must show a reticle, a small coordinate readout, the point label, and an explicit note that the selected point is user-defined. It must support at least three point categories: **educational target**, **user-marked area of interest**, and **research annotation**. Any more specific clinical label must be provisioned only by the governed research protocol.
-
-| Requirement ID | Requirement | Priority | Acceptance criterion |
-|---|---|---:|---|
-| **POI-01** | Enable a user to place, drag, label, and remove a POI in a synchronized multiplanar view. | Must | The same POI renders within ±1 voxel or defined spatial tolerance across axial, coronal, and sagittal views. |
-| **POI-02** | Persist physical coordinate, source volume version, creator, timestamp, and intended purpose. | Must | Every saved POI has complete provenance fields. |
-| **POI-03** | Permit an authorised reviewer to lock a POI for a released educational case. | Must | Locked POIs cannot be altered by learner-role accounts. |
-| **POI-04** | Display a target-to-airway proximity summary before route ranking. | Must | The user sees units, selected candidate count, and eligibility state. |
-
----
-
-## 5. CT Review and DICOM Integration
-
-### 5.1 Recommended transport pattern
-
-The imaging layer should use standard web imaging interfaces rather than direct browser access to a filesystem or ad hoc upload endpoints. DICOMweb defines QIDO-RS for query, WADO-RS for retrieval, and STOW-RS for object storage.[1] The product must map its permissions and logs onto those actions independently.
-
-| DICOMweb capability | Lung Navigator use | Product rule |
-|---|---|---|
-| **QIDO-RS** | Query authorised studies, series, and metadata | Return only minimum metadata required for the user role and task. |
-| **WADO-RS** | Retrieve permitted image frames, derived masks, and structured objects | Use signed/authorised requests; never expose unrestricted archive credentials to the browser. |
-| **STOW-RS** | Store permitted DICOM derivatives if selected for interoperability | Restrict to authorised service accounts and retain immutable audit records. |
-
-### 5.2 Viewer recommendation
-
-Use an imaging-specific browser viewer rather than recreating radiology primitives from scratch. OHIF supports DICOMweb data-source configuration, while Cornerstone3D supports streamed volume viewing, multiplanar reconstruction, and labelmap segmentation rendering.[2] [3] The product should integrate or extend these components for review, but it should own the business workflow around permissioning, case release, POI governance, graph processing, and route review.
-
-| Viewer capability | Required implementation | Acceptance criterion |
-|---|---|---|
-| **Multiplanar review** | Axial, coronal, sagittal, and optional 3D layout with linked crosshair | Crosshair and POI location synchronize across views. |
-| **Window/level and presets** | Provide configurable CT airway/lung and mediastinal display presets | User can inspect a selected POI in each preset without changing physical location. |
-| **Segment overlay** | Overlay approved airway segmentation with adjustable opacity and outline | User can distinguish raw CT, mask, and graph without ambiguity. |
-| **Graph overlay** | Render centreline and branch ID/label overlays with visibility controls | Selecting a route highlights only the relevant path and its candidates. |
-| **Derived object state** | Clearly label images, masks, and graphs as source or derivative | Every visible derivative shows version and approval state. |
-
-### 5.3 Important implementation correction: “colour” and scan direction
-
-CT does not supply a universal “air colour.” It is a grayscale modality whose pixels encode attenuation values; display colours are viewer choices. The production algorithm must therefore use calibrated voxel values, image metadata, and 3D context—not the user-visible colour in a screenshot—to identify air-filled lumen.
-
-Similarly, the system must not hard-code “start at the top slice.” Different studies can be stored in different instance orders or orientations. The pipeline must derive the anatomic direction from DICOM orientation and position metadata, identify the tracheal region within the physical volume, and record the selected seed. The system may search in a configurable superior central thoracic region as a candidate-detection heuristic, but the final seed must be validated by 3D connectivity and quality checks.
-
----
-
-## 6. Airway Segmentation and Canonical Graph Construction
-
-### 6.1 Engineering decision
-
-The production pipeline must use **volumetric, topology-aware segmentation**. A slice-by-slice Hough-circle method may be retained as an educational visualisation or research baseline, but it is not an acceptable principal implementation because airway branches are oblique, irregular, partially volumed, and variable in radius. Airway segmentation and centreline extraction are linked problems in the technical literature and should be implemented as a single governed pipeline.[4]
-
-### 6.2 Processing stages
-
-```mermaid
-flowchart TD
-  A[Approved DICOM study] --> B[De-identification and ingest validation]
-  B --> C[Volume canonicalisation]
-  C --> D[Tracheal-lumen seed proposal]
-  D --> E[3D airway segmentation]
-  E --> F[Leakage and artefact control]
-  F --> G[Centreline and radius extraction]
-  G --> H[Topology reconstruction and branch pruning]
-  H --> I[Quality score and reviewer workspace]
-  I --> J[Versioned canonical airway graph]
-  J --> K[Target-first route planning]
-```
-
-### 6.3 Detailed pipeline specification
-
-| Stage | Processing requirement | Output | Required quality control |
-|---|---|---|---|
-| **Ingest** | Validate modality, image consistency, orientation, spacing, and de-identification state. | Immutable source manifest | Reject unsupported or incomplete series. |
-| **Canonicalisation** | Convert images to a physical-coordinate volume while retaining original DICOM references. | Canonical volume and transform metadata | Verify spacing/orientation transformation. |
-| **Tracheal seed proposal** | Identify candidate air lumen in central upper thorax using attenuation, size, location, and continuity features. | Ranked seed candidates | Require automated confidence and operator confirmation for low-confidence seeds. |
-| **Lumen segmentation** | Use a 3D algorithm, preferably with multi-threshold, region-growing, morphological, and/or model-based components. | Airway mask and confidence volume | Detect leakage into lung parenchyma and disconnected fragments. |
-| **Topology recovery** | Skeletonise or extract centreline, estimate local radius, identify nodes and edges, and remove noise branches. | Directed airway graph | Preserve branch-to-voxel references. |
-| **Semantic enrichment** | Add optional lobe/segment labels, landmarks, and reviewer annotations. | Labelled graph | Distinguish algorithmic label from reviewer-approved label. |
-| **Case release** | Bind graph, QA result, and allowed purpose into one immutable release revision. | Released case package | Block learner use of unapproved revisions. |
-
-### 6.4 Tracheal-lumen seed strategy
-
-The seed-finding service must use a **candidate-and-validate** strategy rather than assume the first air-filled region is the trachea. The candidate score should combine centrality, superior–inferior position in physical space, connected-component volume, expected lumen shape, proximity to the airway axis, and continuity across neighbouring slices. The exact model may evolve, but it must emit a confidence score and a visual candidate overlay.
-
-The initial release should provide an operator control to choose among top seed candidates when automated confidence is below the approved threshold. The selected seed becomes a signed input to the processing run and must be visible in the quality-control workspace.
-
-### 6.5 Graph model
-
-The canonical graph is the system of record for navigation and learning. It must be separate from any renderer, game scene, or 3D mesh.
-
-```json
-{
-  "graph_version_id": "agv_01JXYZ",
-  "case_revision_id": "case_004_r03",
-  "coordinate_system": "patient_physical_mm",
-  "root_node_id": "node_trachea",
-  "nodes": [
-    {
-      "id": "node_carina",
-      "position_mm": [12.4, -83.1, 41.7],
-      "radius_mm": 8.2,
-      "kind": "bifurcation",
-      "confidence": 0.96,
-      "qa_status": "reviewed"
-    }
-  ],
-  "edges": [
-    {
-      "id": "edge_r_main",
-      "from_node_id": "node_carina",
-      "to_node_id": "node_r_main_distal",
-      "centreline_mm": [[12.4, -83.1, 41.7], [13.1, -88.9, 36.2]],
-      "radius_samples_mm": [8.2, 7.6, 7.1],
-      "length_mm": 9.7,
-      "branch_order": 1,
-      "semantic_label": "right main bronchus",
-      "confidence": 0.95,
-      "qa_status": "reviewed"
-    }
-  ]
-}
-```
-
-### 6.6 Graph-quality policy
-
-Every graph must carry a **case quality profile** rather than a single opaque accuracy score. The profile must separately report source-image adequacy, seed confidence, segmentation confidence, leakage flags, branch connectivity, graph completeness, label completeness, reviewer state, and permitted use. This supports the key product rule: a visually interesting case may be eligible for public exploration, while a low-confidence graph must be blocked from assessed learning or research use.
-
-### 6.7 Anatomical provenance rules
-
-The source CT is the anatomical authority. Segmentation masks, graphs, routes and endoluminal views are derivatives and must never present more anatomy than the CT demonstrates.[7]
-
-| Rule | Requirement |
+| Principle | Requirement |
 |---|---|
-| **No invented airway** | The pipeline must not extend, synthesise or probabilistically complete distal airways. Upsampling or resampling a volume does not recover anatomy and must not be presented as doing so. |
-| **No silent bridging** | Disconnected fragments are dropped or flagged, never joined without record. Any bridge between components is an *interpolated* object, not airway. |
-| **Separate provenance classes** | Every graph edge and mask region carries `provenance`: `ct` (segmented from the source CT), `manual` (reviewer correction supported by the CT) or `interpolated` (bridge not demonstrated on CT). Interpolated objects are stored separately, rendered in a visibly different style, record their endpoints and dimensions, and are listed in the audit trail. |
-| **Geometry is not edited for convenience** | Diameter, branch orientation, bifurcation position and branch length must not be altered to make a route connect or look smoother. |
-| **Display smoothing is display-only** | Smoothed surfaces or curves produced for presentation are tagged display-only and are never used for centreline extraction, route construction or QA measurement. |
-| **Route-level topology** | A single route curve does not establish sibling-branch anatomy. Branch-choice information (for example clock positions at a fork) must be derived from the segmented bifurcation topology in the graph, not inferred from the route alone. |
-
-Interpolated content may be used for an explicitly requested experimental route, but such a route inherits the `interpolated` flag and is ineligible for learner release under §7.2.
+| **The CT is the anatomical authority** | Masks, graphs, routes and rendered views are derivatives. None may show more anatomy than the CT demonstrates. A smooth 3D model is not evidence of completeness. |
+| **Lesion ≠ RouteTarget** | The Lesion is the clinical target, marked on the CT. RouteTarget is the end of the airway route that the CT demonstrates. The distance between them is `target_gap_mm`, always shown as uncertainty; no airway is ever drawn across it. |
+| **Provenance everywhere** | Each piece of airway is `ct`, `interpolated` (a bridge across a gap of 4 mm or less) or `manual` (a clinician correction). Interpolated and manual layers are stored separately from the CT mask and are always visible as such. |
+| **Records as you go** | Every step writes its record to `case.json` (who, when, version, content fingerprint). Nothing waits for a final save. |
+| **Patient data stays out** | Source DICOM never enters the repository. Identifiers are never printed, logged or written (§11). |
+| **One frame for every view** | Bronchoscopist's frame: patient supine, viewer at the head looking caudally, anterior at the top of the screen, patient's right on screen right (to be confirmed against clinicians' bronchoscope screens, §15). |
+| **Clinician decides** | Automation proposes. The clinician confirms the series, Lesion, corrections, bridges, RouteStart, RouteTarget, each bifurcation and the final sign-off. |
 
 ---
 
-## 7. Target-to-Airway Candidate Search and Route Ranking
+## 3. Users
 
-### 7.1 Candidate selection problem
-
-The POI can reside inside an airway, adjacent to an airway, or outside the airway tree. The product must therefore distinguish the user’s selected destination from the graph node used as the route endpoint. The planning service should evaluate the nearest valid graph samples, branch termini, and eligible branch segments—not simply snap to the globally nearest vertex without context.
-
-For a target point \(t\) and a graph edge \(e\) represented by centreline samples, define a proximity function:
-
-\[
-d(t,e) = \min_{p \in e} \lVert t - p \rVert_2
-\]
-
-The service finds candidate endpoint records \(C = \{c_1, c_2, ... c_k\}\) among graph samples/edges that satisfy all release and quality constraints. Each candidate retains the nearest point, distance in millimetres, branch confidence, and a reason for eligibility or rejection.
-
-When the POI lies beyond the last CT-demonstrated airway, the route terminates at the most distal reliable airway sample. The remaining straight-line distance from that endpoint to the POI is stored as `target_gap_mm` and shown as uncertainty in every route view. The system must not draw or describe an airway across that gap (§6.7).
-
-### 7.2 Eligibility policy
-
-| Criterion | Purpose | Initial policy |
+| User | Job | Notes |
 |---|---|---|
-| **Case release state** | Prevent planning against non-approved derivative graphs | Candidate must come from an approved graph revision. |
-| **Graph continuity** | Prevent paths through broken components | Candidate must be reachable from the tracheal root. |
-| **Segmentation confidence** | Avoid low-confidence geometry | Candidate branch confidence must meet configured use-tier threshold. |
-| **Target proximity** | Avoid implausibly remote branch matches | Candidate must be within configured research/education threshold or be explicitly marked “distant.” |
-| **Minimum radius** | Avoid routes unsuitable for selected learning fidelity | Apply a configurable scenario constraint; do not represent as clinical suitability. |
-| **Reviewer exclusions** | Honour known artefacts or anatomically unsuitable regions | Excluded branches never appear in learner release. |
+| **Clinician (bronchoscopist / respiratory physician)** | Prepares, reviews and signs off a case | Identified by role + initials only (e.g. `Consultant, T.T.`), entered once and saved locally; stamped on every confirmation, correction and sign-off. No login in the MVP. |
+| **Developer / research operator** | Runs the pipeline, evaluates segmentation, maintains the app | Works on public data (AeroPath) and de-identified local cases |
+| **Learner** | Deferred | See §16 |
 
-### 7.3 Route construction
+---
 
-For each eligible candidate, calculate the unique root-to-candidate path in the rooted airway tree. In the rare event of a graph that contains cycles due to processing artefact, the system must either repair the graph before release or apply a cycle-safe shortest-path algorithm and flag the graph for review. A tree structure is the expected canonical form.
+## 4. Workflow
 
-The initial ranking score should be transparent and configurable:
+Eight steps, from the build plan. The *Phase* column refers to the build plan's phases (§14).
 
-\[
-\text{score}(c) = w_d\,\hat d(t,c) + w_l\,\hat L(root,c) + w_b\,B(root,c) + w_q\,(1-Q(c)) + w_a\,A(c)
-\]
+| # | Step | System | Clinician | Recorded | Phase |
+|---|---|---|---|---|---|
+| 1 | **Import and choose the reconstruction** | `import_dicom.py` proposes a series and lists every skipped series with its reason | Confirms or overrides | Chosen series (folder + SeriesNumber, description, kernel, spacing, size, SHA-256 of the SeriesInstanceUID); skipped series with reasons | Import done; in-app step: 4 |
+| 2 | **Mark the Lesion**, before any airway is shown | Linked axial (red), coronal (green) and sagittal (yellow) panes | Clicks the lesion centre, adjusts it in the other panes, confirms | One point, patient RAS mm | 3 |
+| 3 | **Segment automatically** | TotalSegmentator airways + trachea + five lobes; bridges detached pieces (§6.2) | — | Tool versions, options, outputs with fingerprints | Pipeline done; in-app step: 4 |
+| 4 | **Review and correct** | Shows the mask by provenance on the CT, plus review flags | Confirms or rejects each bridge; removes branches the CT does not support (v1 corrections are removal-only, each with a CT-evidence note); signs off review flags | Bridge decisions, `manual` removal layer, sign-offs (role + initials, finding, date) | Sign-off CLI done; in-app step: 4 |
+| 5 | **Build model and route** | Builds the graph; places RouteStart at the trachea automatically | Confirms RouteStart | Graph version and fingerprint, RouteStart | Graph done; confirmation: 4 |
+| 6 | **Choose RouteTarget** | Proposes the 3 CT-seen endpoints nearest the Lesion (§7) | Picks one, or clicks another point on a CT-seen centreline | RouteTarget, `target_gap_mm`, candidates shown | 4 |
+| 7 | **Walk the route** | Endoluminal fly-through with all views linked; pauses before each bifurcation | Confirms the branch taken at each bifurcation | Per bifurcation: node, position mm, branch name + clock position, yes/no, note, who, when. A "no" returns the case to step 4 or 6 and the record says which. | Fly-through done; records: 4 |
+| 8 | **Sign off and freeze version N** | Lists the remaining uncertainty: target gap, interpolated spans on the route, open notes | Signs off | Frozen version chain. Any later change starts N+1 and needs a new sign-off. | 4 |
 
-where \(\hat d\) is normalised target proximity, \(\hat L\) is normalised route length, \(B\) is branch complexity, \(Q\) is quality confidence, and \(A\) is an optional educational constraint penalty. The product must store the exact weights, values, and algorithm version that produced each result.
+---
 
-> **Interpretation requirement:** A lower score means “more suitable under the declared educational/research policy.” It must never be labelled “best clinical route” or imply procedural safety.
+## 5. CT import and series choice
 
-### 7.4 Explainable ranking output
+| ID | Requirement |
+|---|---|
+| CT-01 | Import reads DICOM headers without exporting identifiers. Output is NIfTI in canonical RAS with empty descriptive header fields and a neutral case id (`local-NNN`). |
+| CT-02 | A series is proposed by rule: thinnest axial, non-contrast, preferred kernel. Scouts, localisers, secondary captures, structured reports, reformats, contrast phases and thick series are skipped with a stated reason. Non-CT DICOM objects are reported by SOP class name, separately from truly unreadable files. |
+| CT-03 | Duplicate import is detected by SHA-256 of the SeriesInstanceUID. The UID itself is never stored or printed. |
+| CT-04 | The orientation of the volume comes from the DICOM geometry, never from slice order or "start at the top slice". |
+| CT-05 | The clinician confirms or overrides the proposal in the app. The record keeps both the choice and the skipped list. |
 
-The ranked route panel must provide more than a numbered list. It must answer: *Which branch is closest? How close is it? How many bifurcations are involved? Why was it ranked before alternatives? Is the graph reviewed?* 
+**Kernel: open decision (§15).** The importer currently prefers standard/soft kernels
+(`STANDARD|SOFT|B30`) and keeps lung/sharp series for comparison only. BBT's published guidance
+recommends the opposite: "a lung or relatively sharp reconstruction kernel, provided noise does not
+make the airway lumen difficult to follow" [7], and its series ranker scores sharp kernels above
+standard ones. The one local case has both a `STANDARD` 1.25 mm series (used) and a `LUNG`
+series, so the two can be compared directly.
 
-| Output field | Example | Purpose |
-|---|---|---|
-| **Rank** | 1 of 3 | Establishes ordered candidate list |
-| **Path** | Trachea → right main → right lower lobe lateral basal | Shows the branch sequence |
-| **POI proximity** | 11.8 mm from nearest centreline point | Separates target from route endpoint |
-| **Graph path length** | 142.6 mm | Supports comparison without clinical overclaim |
-| **Branch count** | 5 decision points | Supports learning difficulty design |
-| **Confidence state** | Reviewed graph · 0.94 algorithm confidence | Shows evidence and review level |
-| **Ranking rationale** | Closest eligible branch with lowest configured route score | Supports human interpretation |
-| **Restrictions** | Educational use only | Makes governing purpose visible |
+---
 
-### 7.5 Route-plan data contract
+## 6. Segmentation and airway graph
+
+### 6.1 Segmentation
+
+| ID | Requirement |
+|---|---|
+| SEG-01 | Airways: TotalSegmentator [8] task `lung_vessels` → `lung_airways`, unioned with `total` → `trachea`. Five lobes from `total` with `--roi_subset`. The `--legacy` option (`lung_vessels_LEGACY` → `lung_trachea_bronchia`) remains a fallback. |
+| SEG-02 | Full resolution by default. `--fast` is opt-in only, because distal airway detail is the priority. |
+| SEG-03 | `--higher_order_resampling` is adopted only if an A/B run on AeroPath 1–6 improves branches/generations while keeping all 8 named structures (build plan phase 0). Smoother output is not evidence of better anatomy. |
+| SEG-04 | Outputs are cached by options, so reruns rebuild only the derived masks. |
+| SEG-05 | Global low-HU thresholding and Hessian/vesselness methods are not used for the whole tree. BBT found that thresholding leaks into parenchyma and that Hessian/vesselness methods were not reliable for airways [7]. |
+
+### 6.2 Bridges (interpolation)
+
+| ID | Requirement |
+|---|---|
+| BR-01 | The largest 26-connected component is the tree. Detached pieces of at least 20 mm³ whose gap to the tree is 4 mm or less are joined by a 1 mm-radius straight tube, greedily and nearest first. Everything else is dropped. The final mask must be one component, or the run fails. |
+| BR-02 | Tube voxels are written separately as `airway_bridges.nii.gz`, with `airway_bridges.json` recording each bridge's endpoints (world mm), gap, piece volume and radius. The CT-derived pieces stay `ct`. |
+| BR-03 | Bridges are proposals. In step 4 the clinician confirms or rejects each one on the CT. A rejected bridge removes the piece beyond it from routing. |
+| BR-04 | A bridge is never described or displayed as a demonstrated bronchus. BBT allows bridges of up to 15 mm with explicit authorisation [7]; this product is stricter (4 mm automatic proposal, clinician confirmation). |
+
+### 6.3 Graph
+
+| ID | Requirement |
+|---|---|
+| GR-01 | Mask → kimimaro skeleton (loop-free, radius per vertex) → tree graph. Coordinates stay in patient RAS mm throughout. Any conversion to screen space is the renderer's job. |
+| GR-02 | Root = widest terminal vertex (the cut end of the trachea). Position heuristics are not used: the mask may not reach the top of the trachea. |
+| GR-03 | Branches carry generation, length, radius, full-resolution centreline, lobe (from the lobe masks, or inferred when a branch's whole subtree drains one lobe) and names. Named structures come from topology and lobe drainage: trachea, main bronchi, bronchus intermedius and the five lobar bronchi. SNOMED CT codes for lobes and trachea are added in phase 0. |
+| GR-04 | Provenance per edge: `provenance` (`ct` / `interpolated`), `interpolated_mm`, `interpolated_spans_mm` (arc-length intervals along the edge) and `downstream_of_interpolated`. Detection samples the centreline every 0.25 mm or less against the bridge mask. Graph-level `provenance_source` names the bridge mask or states `no bridge mask`. A graph written before provenance existed is shown as `unrecorded`, never assumed `ct`. |
+| GR-05 | Review flags: `small_lobe` and `lobe_without_airways`. Learner-facing export is refused while flags are unresolved, unless a clinician sign-off (role + initials, finding, date) resolves them. Flags are recomputed on every build, so a changed flag needs a new sign-off. |
+| GR-06 | Display smoothing is display-only. It is never used for centreline extraction, routing or measurement. |
+
+Graph JSON (current fields):
 
 ```json
 {
-  "route_plan_id": "rp_01JXYZ",
-  "case_revision_id": "case_004_r03",
-  "graph_version_id": "agv_01JXYZ",
-  "poi_id": "poi_01JXYZ",
-  "algorithm": {
-    "name": "rooted-airway-route-ranker",
-    "version": "0.1.0",
-    "weights": { "proximity": 0.45, "length": 0.20, "branchComplexity": 0.10, "quality": 0.20, "scenarioPenalty": 0.05 }
-  },
-  "candidates": [
-    {
-      "rank": 1,
-      "endpoint_edge_id": "edge_rll_lateral_basal",
-      "nearest_point_mm": [22.1, -104.6, 9.7],
-      "poi_distance_mm": 11.8,
-      "path_edge_ids": ["edge_trachea", "edge_r_main", "edge_bronchus_intermedius", "edge_rll_lateral_basal"],
-      "graph_path_length_mm": 142.6,
-      "bifurcation_count": 4,
-      "score": 0.214,
-      "confidence": 0.94,
-      "qa_status": "reviewed",
-      "explanation": ["closest eligible endpoint", "continuous root path", "meets scenario radius constraint"]
-    }
-  ]
+  "case": "6", "coordinate_system": "patient_physical_mm", "source": "airway mask airways.nii.gz",
+  "voxel_spacing_mm": [0.684, 0.684, 0.5], "root_node_id": 0,
+  "provenance_source": "bridge mask airway_bridges.nii.gz", "review": [],
+  "nodes": [{"id": 0, "position_mm": [0, 0, 0], "radius_mm": 9.9}],
+  "edges": [{"from": 0, "to": 1, "generation": 0, "length_mm": 46.6, "radius_mm": 9.9,
+             "lobe": null, "lobe_name": null, "lobe_source": null, "lobe_confidence": 0.0,
+             "airway_name": "trachea", "centreline_mm": [[0, 0, 0]],
+             "provenance": "ct", "interpolated_mm": 0.0, "interpolated_spans_mm": [],
+             "downstream_of_interpolated": false}]
 }
 ```
 
 ---
 
-## 8. Learning and Simulation Experience
+## 7. RouteTarget and route
 
-### 8.1 Fidelity tiers
-
-The product must not use a single renderer for all purposes. The airway graph is shared, but visual fidelity is purpose-specific.
-
-| Tier | Representation | Use | Product limitation |
-|---|---|---|---|
-| **Stylised Explore** | 2D/2.5D SDF or procedural branch world | Engagement and early orientation | Does not preserve complete 3D anatomy. |
-| **Anatomy Learn** | Native 3D graph, CT-derived surfaces or volume view | Segment recognition and route knowledge | Does not independently establish procedural skill. |
-| **Research Simulation** | Reviewed CT-derived graph, scenario controls, reproducible telemetry | Controlled learning and simulation studies | Requires protocol-specific validation. |
-
-### 8.2 Learning modes
-
-| Mode | Route relationship | Instructional purpose | Required telemetry |
-|---|---|---|---|
-| **Guided orientation** | Primary route visible | Encode landmarks and branch hierarchy | Assistance use, landmark recognition |
-| **Target recall** | Primary route hidden | Retrieve a familiar path | Wrong turns, time, route efficiency |
-| **Reverse navigation** | Start at target, end at trachea | Test flexible route knowledge | Reverse-route accuracy |
-| **Randomised reroute** | New start–target pair | Reduce pure sequence memorisation | Success from unseen start point |
-| **Path comparison** | Primary and alternate routes visible after attempt | Explain branching and error recovery | Decision-point reflection completion |
-
-Spatial-navigation research supports the distinction between flexible map-like knowledge and familiar route sequences; Lung Navigator should design for both while treating clinical transfer as a hypothesis to test.[5] Simulation training literature further supports structured practice and assessment rather than relying on a single internal score.[6]
-
-### 8.3 Endoluminal orientation aids
-
-The first-person (virtual bronchoscopy) view is a CT-derived pre-procedural representation. It must not be described as real-time localisation or as registration of a bronchoscope to the patient.
-
-- **Camera frame.** The camera follows the route centreline with a minimal-twist (parallel-transported) frame initialised with patient anterior as "up", so airway curvature alone never rotates the image.
-- **Simulated steering.** Approaching a fork, the camera rolls so the chosen daughter branch reaches 12 o'clock, pauses shortly before the fork, then advances (roll → deflect → advance). Roll is locked between forks. The roll is labelled *simulated steering*: CT cannot determine shaft torsion, operator hand rotation, scope looping or real camera orientation.
-- **Clock convention.** Clock positions are measured in the transported frame at each fork: 12 = frame up (anterior at the trachea), 3 = right, 6 = down, 9 = left. The dial itself never rotates.
-- **Anterior indicator.** An arrow shows patient anterior projected into the image plane. When the view runs nearly along the anterior–posterior axis the arrow is hidden and the view states that anterior is undefined.
-- **Engineering parameters.** Roll onset (≈10 mm before a fork), pause distance (≈5 mm) and look-ahead are engineering parameters, not validated clinical values, and must not be presented as such.
-- **Single camera model.** Recorded playback and video export use the same camera function as interactive navigation.
-- **Visible limitations.** The view must keep visible: CT-to-body divergence, inspiratory CT versus procedural lung volume, respiratory motion, atelectasis, patient positioning and incomplete distal segmentation.
-
-### 8.4 Telemetry requirements
-
-Telemetry must be purpose-limited. The platform should record events needed to improve product usability and evaluate the learning protocol, such as session start/end, target assignment, decision-point choices, assistance requests, route completion, and reflection response. It must not silently record raw patient DICOM data, clinician identity in learner events, or unneeded browser/device identifiers.
-
----
-
-## 9. Reference Architecture and Deployment Choices
-
-### 9.1 Implementation options
-
-The project has two viable routes. The lighter option supports product discovery and safe UX iteration; the recommended option supports approved imaging cases and reproducible research. The team should decide based on whether real CT-derived cases are required.
-
-| Approach | Trade-offs | Cost | Setup complexity |
-|---|---|---|---|
-| **Interactive prototype with synthetic or pre-approved derivative data** | Fastest way to validate interface, route explanation, and learning loop. It cannot accept real DICOM studies or produce new airway graphs. | Lowest | Low |
-| **Full research platform with controlled imaging pipeline** **(recommended for CT-derived cases)** | Supports governed DICOM review, processing, graph versioning, and route-plan auditability. Requires backend services, access control, queue processing, QA operations, and governance. | Higher infrastructure and operating cost | High |
-
-### 9.2 Recommended logical architecture
-
-```mermaid
-flowchart TB
-  subgraph Browser[Authorised browser client]
-    V[CT review workspace\nOHIF/Cornerstone integration]
-    P[POI and route-plan UI]
-    L[Learning/simulation renderer]
-  end
-
-  subgraph App[Application services]
-    API[Application API and authorization]
-    CASE[Case and release service]
-    ROUTE[Route-ranking service]
-    AUDIT[Audit and telemetry service]
-  end
-
-  subgraph Imaging[Imaging and compute boundary]
-    DICOM[DICOMweb archive]
-    Q[Asynchronous job queue]
-    PROC[Segmentation and graph worker]
-    OBJ[Encrypted object storage]
-  end
-
-  subgraph Data[Governed data]
-    DB[(Relational metadata database)]
-    GRAPH[(Versioned graph store)]
-  end
-
-  V --> API
-  P --> API
-  L --> API
-  API --> DICOM
-  API --> CASE
-  API --> ROUTE
-  API --> AUDIT
-  CASE --> DB
-  API --> Q
-  Q --> PROC
-  PROC --> OBJ
-  PROC --> GRAPH
-  ROUTE --> GRAPH
-  DICOM --> OBJ
-```
-
-### 9.3 Service responsibilities
-
-| Component | Responsibility | Must not own |
-|---|---|---|
-| **Browser client** | Imaging interaction, POI placement, route inspection, learning UX | De-identification, raw segmentation compute, long-lived credentials |
-| **Application API** | Authentication, authorization, orchestration, business rules, case state transitions | Pixel-level image-processing algorithms |
-| **DICOMweb archive** | Governed query, retrieval, and controlled storage of DICOM objects | Learning analytics or route scoring policy |
-| **Processing worker** | Canonicalisation, segmentation, graph extraction, mesh/derivative generation | Human release decision |
-| **Graph service** | Graph version storage, spatial candidate search, route ranking | Source DICOM identity resolution |
-| **Case/release service** | Quality state, reviewer decision, release tier, provenance | Render implementation details |
-| **Audit service** | Append-only security and workflow events | Mutable case anatomy records |
-
-### 9.4 Compute and hosting insight
-
-The public-facing experience can remain a managed web application. However, high-resolution DICOM normalisation, image-processing libraries, long-running segmentation, and job queues should be treated as backend compute workloads rather than browser work. A managed full-stack application is appropriate for interactive review, metadata, and short jobs within its resource limits; a separate controlled compute environment is appropriate when image-processing dependencies, containerisation, or resource requirements exceed those limits. The runtime choice must be made from the actual workload profile, not from a preferred language or framework.
-
-### 9.5 Suggested technology boundaries
-
-| Concern | Suggested implementation direction | Rationale |
-|---|---|---|
-| **Viewer** | OHIF/Cornerstone3D integration or custom viewer built on Cornerstone3D | Avoid reimplementing medical-image orientation, MPR, and segmentation overlay primitives. |
-| **Archive** | DICOMweb-compatible archive | Retain standard query/retrieve/store boundaries. |
-| **Processing** | Python or native-image-processing worker with explicit versioned container/environment | Mature ecosystem for volumetric image operations and reproducibility. |
-| **API and workflow** | Typed backend API with role checks and task state machine | Clear domain contracts and auditable transitions. |
-| **Metadata** | Relational database | Strong fit for case state, permissions, versions, reviews, and audit joins. |
-| **Graph index** | Persisted graph plus spatial index | Efficient nearest-centreline and root-path queries. |
-| **Object storage** | Encrypted immutable-ish storage for derived artefacts | Preserve reproducible source-to-derivative chain. |
-
----
-
-## 10. API and Domain Specifications
-
-### 10.1 Core entities
-
-| Entity | Purpose | Immutable fields | Mutable fields |
-|---|---|---|---|
-| **Study manifest** | Records authorised source-study context | Source references, ingest checksum, de-ID state | Operational retention state |
-| **Case revision** | Defines a purpose-bound derivative case | Source graph/version links, release provenance | Draft metadata before release |
-| **Processing run** | Records one processing execution | Input revision, code version, config, timestamps | Terminal status and review annotations |
-| **Airway graph version** | Canonical structural model | Nodes, edges, geometry, transform, algorithm version | Never mutate; supersede with new version |
-| **POI** | User-selected target | Coordinate, source revision, creator, timestamp | Label/purpose until locked |
-| **Route plan** | Ranked candidate path result | Input POI, graph version, algorithm/weights | Review status and approved candidate |
-| **Scenario** | Learning exercise definition | Case, route plan, task rules | Copy/visual settings until published |
-| **Review decision** | Human approval or rejection | Reviewer, decision, decision time | Addendum only; never overwrite decision |
-
-### 10.2 Illustrative API surface
-
-| Endpoint | Method | Purpose | Authorization |
-|---|---|---|---|
-| `/studies` | `GET` | Query permitted study metadata | Operator/reviewer |
-| `/studies/{id}/viewer-session` | `POST` | Issue scoped viewer session/configuration | Role and case-policy checked |
-| `/cases/{id}/processing-runs` | `POST` | Request governed processing run | Operator only |
-| `/processing-runs/{id}` | `GET` | Read job status, quality artefacts, and errors | Operator/reviewer |
-| `/case-revisions/{id}/pois` | `POST` | Create a provenance-bound POI | Operator/reviewer/educator by policy |
-| `/case-revisions/{id}/route-plans` | `POST` | Generate ranked candidates from a POI | Role and graph QA checked |
-| `/route-plans/{id}` | `GET` | Retrieve candidates, explanation, versions, and selected route | Policy-controlled |
-| `/case-revisions/{id}/reviews` | `POST` | Add approval, rejection, or required correction | Reviewer only |
-| `/scenarios/{id}/launch` | `POST` | Issue learner session for released content | Learner or educator |
-
-### 10.3 Processing job state machine
-
-```mermaid
-stateDiagram-v2
-  [*] --> Queued
-  Queued --> Running
-  Running --> NeedsSeedReview: low confidence seed
-  NeedsSeedReview --> Queued: operator selects seed
-  Running --> NeedsGraphReview: processing complete
-  NeedsGraphReview --> Approved: reviewer accepts
-  NeedsGraphReview --> Rework: reviewer rejects
-  Rework --> Queued
-  Running --> Failed: processing error
-  Approved --> Released: case release approved
-  Released --> Superseded: new approved revision
-```
-
----
-
-## 11. Quality Assurance, Validation, and Acceptance Criteria
-
-### 11.1 Processing QA
-
-The platform must treat quality assurance as a functional product capability, not a project-management step. The reviewer workspace must support synchronized inspection of source CT, airway mask, centreline, graph nodes/edges, route overlays, and errors/flags. Reviewers must be able to approve, reject, or request rework with a structured reason code.
-
-| QA domain | Required check | Pass condition |
-|---|---|---|
-| **Input volume** | Correct series and physical geometry | No blocking orientation, spacing, or completeness issue |
-| **Seed** | Tracheal-lumen seed plausibility | Seed lies in review-accepted airway lumen region |
-| **Mask** | Leakage, discontinuity, and artefact inspection | No unreviewed major leakage; exceptions documented |
-| **Graph** | Root connectivity, centreline placement, branch pruning | Selected routes trace continuously from tracheal root |
-| **POI** | Location and purpose validity | Coordinate/label confirmed by authorised role |
-| **Ranking** | Candidate eligibility and score explanation | Each candidate is reproducible from stored inputs and weights |
-| **Release** | Case purpose and access tier | Required approvals and provenance complete |
-
-### 11.2 Product acceptance criteria
-
-| Requirement group | Acceptance criterion |
+| ID | Requirement |
 |---|---|
-| **Viewer** | An authorised user can load an approved case in synchronized multiplanar views and identify source vs derivative objects. |
-| **POI** | A POI placed in one viewport reproduces in all linked viewports, remains attached to the correct case revision, and logs its purpose. |
-| **Processing** | A processing run creates immutable logs, produces required derivative artefacts, and exposes clear terminal failure states. |
-| **Graph** | The graph contains a declared root, consistent physical units, directed edges, local radius information, and QA metadata. |
-| **Ranking** | A route plan returns the configured number of eligible candidates, each with distance, path, score, algorithm version, and explanation. |
-| **Review** | A reviewer can reject a graph or route plan with structured feedback; rejected content cannot be released. |
-| **Learning** | A released route plan can be transformed into a learner scenario without exposing restricted data. |
-| **Audit** | Every route plan can be traced to its input POI, graph, processing run, case revision, and user actions. |
+| RT-01 | Candidates are the 3 endpoints on CT-seen airway nearest the Lesion. They are ranked by `target_gap_mm`, then fewer generations, then shorter route. Each shows its gap, generation and route length. |
+| RT-02 | The clinician picks a candidate or clicks any other point, which must lie on a CT-seen centreline. |
+| RT-03 | A route may cross an interpolated bridge only if that bridge was confirmed in step 4. Branches reachable only through unconfirmed bridges are shown but cannot be selected. |
+| RT-04 | The route runs from RouteStart to RouteTarget along the tree, truncated at the exact RouteTarget sample. `target_gap_mm` is the distance from Lesion to RouteTarget. If the Lesion lies within the local airway radius, it is recorded as "inside airway". |
+| RT-05 | Output language never says "best" or "optimal" route. The ranking order is explained by its three criteria. |
 
-### 11.3 Learning and research validation
-
-The system must distinguish *software verification* from *educational or research validation*. Software verification confirms that a POI renders correctly and that a route score is reproducible. Educational validation asks whether the structured learning experience improves targeted learning outcomes. Clinical transfer, if studied, must use an independently governed protocol and an appropriate external assessment—not in-app performance alone.
-
-| Gate | Question | Evidence required before progression |
-|---|---|---|
-| **G1: Usable** | Can intended users understand POI placement and route explanation? | Formative testing, observed task completion, issue log |
-| **G2: Technically reliable** | Do graph and route outputs reproduce from controlled inputs? | Automated regression suite, QA review sample, provenance audit |
-| **G3: Educationally credible** | Can learners use the system to acquire and recall anatomy/route knowledge? | Pre-defined learning study and retention measurement |
-| **G4: Simulation credible** | Do experts judge scenario cues and outcomes fit for the stated simulation purpose? | Structured expert review and content-validity evidence |
-| **G5: Transfer hypothesis** | Does performance relate to an independently defined external simulation outcome? | Protocol-driven research study; no automatic clinical claim |
+Interim implementation: `make_prototype_data.py --target X,Y,Z` routes to the single nearest
+centreline sample and reports `target_gap_mm`. Phase 4 replaces it with RT-01 to RT-03.
 
 ---
 
-## 12. Security, Privacy, and Governance Requirements
+## 8. Views
 
-### 12.1 Non-negotiable controls
+All four views share one current position: picking a branch in 3D, moving the fly-through camera
+or clicking a topology node moves the CT crosshair, and vice versa.
 
-The platform must operate under the data-use, privacy, security, and ethics requirements applicable to the deployment context. The PRD does not substitute for institutional policy, legal review, or research governance. Product implementation must therefore expose the controls those functions require rather than assume that de-identification alone resolves every obligation.
-
-| Control | Requirement |
+| View | Requirement |
 |---|---|
-| **De-identification** | Perform and document de-identification before any imaging case is exposed to a learner or public-facing experience. |
-| **Least privilege** | Use role- and case-policy access checks for study query, retrieval, processing, review, and scenario launch. |
-| **Scoped credentials** | Browser receives only short-lived, purpose-limited access—not archive-wide credentials. |
-| **Encryption** | Protect data in transit and at rest according to deployment policy. |
-| **Auditability** | Log access to source/derivative case data, POI creation, processing runs, route plans, reviews, releases, and exports. |
-| **Retention** | Define source, derivative, audit, and telemetry retention schedules before production use. |
-| **Data minimisation** | Store only information needed for the approved learning or research purpose. |
-| **Export controls** | Restrict raw DICOM and derived graph exports; log authorised releases. |
+| **CT panes** | Red axial, green coronal, yellow sagittal. Shared crosshair (a click in any pane moves the others); the wheel scrolls the pane under the cursor; lung and mediastinal window presets; toggleable overlays: airway mask by provenance, route, Lesion, RouteTarget. |
+| **Anatomical 3D** | Default camera at the head end, about 45° elevated, looking caudally onto the chest; presets *operator* (0°) and *top-down* (90°); free orbit; orientation gizmo. Interpolated spans are dashed amber; branches reachable only through a bridge are marked; the Lesion→RouteTarget gap is a dashed line labelled "no airway shown". |
+| **Endoluminal** | See §8.1. |
+| **Topology map** | Trachea at the top, branches downward, patient's right on screen right; legend notes that anterior/posterior depth is not shown. |
 
-### 12.2 Governance UX
+### 8.1 Endoluminal orientation aids
 
-Governance must be visible in the user interface. Every case should expose a clear purpose badge, release status, graph/review state, and any use restriction. The route panel must state whether the output is a **learning route**, **research planning artefact**, or **unreleased draft**. These labels prevent a polished interface from implying an unsupported level of clinical certainty.
+| ID | Requirement |
+|---|---|
+| EN-01 | **Camera frame.** The camera follows the route centreline with a parallel-transported (minimal-twist) frame that starts with patient anterior as "up". Curvature alone never rolls the image. Route geometry is computed once in the pipeline (`route_frame.py`) and the renderer only reads it. |
+| EN-02 | **Simulated steering.** Approaching a bifurcation, the camera rolls so the chosen daughter branch reaches 12 o'clock, pauses, then advances (roll → deflect → advance). Roll is locked between bifurcations; closely spaced forks chain their rolls without jumps. The roll is labelled *simulated*: CT cannot determine shaft torsion, hand rotation, looping or real camera orientation. |
+| EN-03 | **Clock positions** are measured in the transported frame at each fork: 12 = frame up (anterior at the trachea), 3 = right, 6 = down, 9 = left. They are derived from the segmented bifurcation, never from the route curve alone. A daughter almost parallel to its parent is "straight ahead". |
+| EN-04 | **HUD.** A fixed dial that never rotates, with markers for the next fork's daughters at their current on-screen angle; an anterior arrow, hidden with a warning when the view runs along the anterior–posterior axis; next-fork text; a pause notice; an "Interpolated segment" warning on bridged spans; and the target-gap notice near the end. The HUD sits on a dark panel that stays readable on both themes. |
+| EN-05 | **Engineering parameters.** Look-ahead 6 mm, roll start 10 mm and roll end 6 mm before a fork, pause 5 mm before. BBT's published script uses 8 / 2 / 2 mm [7]. None of these are validated clinical values, and none may be presented as such. |
+| EN-06 | **Limitations** stay visible in every view: CT-derived pre-procedural view, not live tracking; simulated steering; CT-to-body divergence; inspiratory CT vs procedural lung volume; respiratory motion; atelectasis; patient positioning; incomplete distal segmentation; and "provenance not recorded" for older graphs. |
+| EN-07 | Any future recording or video export uses the same camera function as interactive navigation. |
 
 ---
 
-## 13. Non-Functional Requirements
+## 9. Walk-through, branch tracing and sign-off
+
+| ID | Requirement |
+|---|---|
+| WK-01 | At each bifurcation the fly-through pauses and the CT panes show the same point. The clinician confirms the branch taken (yes/no + note). |
+| WK-02 | The confirmations, in order, are the branch-tracing sequence: node, position, branch name, clock position, decision, note, who, when. |
+| WK-03 | A "no" returns the case to step 4 (segmentation) or step 6 (RouteTarget), and the record says which. |
+| WK-04 | Sign-off lists the remaining uncertainty (target gap, interpolated spans on the route, open notes) and freezes version N. Any later change starts N+1. |
+
+---
+
+## 10. App
+
+| ID | Requirement |
+|---|---|
+| APP-01 | Local app on the clinician's Mac. A Python server runs the pipeline steps and owns case records; the browser holds the four views and the workflow steps. This replaces the per-case single-file HTML prototypes. |
+| APP-02 | CT to the browser: thorax crop (lungs + trachea + 10 mm), native resolution, int16, canonical RAS, raw binary plus a JSON header (shape, spacing, affine), loaded once per case. |
+| APP-03 | Identity: role + initials, saved in a local gitignored settings file, with a "change clinician" control. No login in the MVP. |
+| APP-04 | Versions: every artifact (CT crop, segmentation, bridges, corrections, graph, route, walk-through) gets a version number and a SHA-256 fingerprint in `case.json`. Sign-off freezes the chain. |
+| APP-05 | Pipeline paths resolve independently of the working directory (phase 0). |
+
+---
+
+## 11. Patient data and governance
+
+| ID | Requirement |
+|---|---|
+| PD-01 | Never print, log, write or embed PatientName, PatientID, PatientBirthDate, InstitutionName, AccessionNumber, ReferringPhysicianName, StudyDate, or any UID, in any file, stdout or test fixture. Allowed series facts: SeriesNumber, SeriesDescription, Modality, SOP class name, ConvolutionKernel, SliceThickness, spacing, size, plane, file count. |
+| PD-02 | Cases are NIfTI with neutral ids. Source DICOM, extracted data and pipeline outputs are gitignored (`pipeline/data/`, `pipeline/ts_out/`, `pipeline/out/`). |
+| PD-03 | Reviewer identity is role + initials only. Anything that looks like a full name is rejected. |
+| PD-04 | Screenshots shared outside the machine must have no burned-in identifiers. |
+| PD-05 | Use of any clinical case follows the applicable research, information-governance and ethics approvals. This document does not replace them. |
+
+---
+
+## 12. Quality and acceptance
+
+### 12.1 Development data and measures
+
+- **AeroPath** [9] cases 1–6 (MIT): CT plus expert airway masks; used for regression and
+  segmentation comparison. TotalSegmentator `lung_airways` on case 1: Dice 0.858 against the expert
+  mask before trachea union and bridging; the upper trachea was missing until the `trachea` class
+  was added.
+- **Naming completeness gate:** a case passes when all 8 named structures are found: trachea,
+  right/left main bronchus, right upper/middle/lower lobe bronchus, left upper/lower lobe
+  bronchus. Failing cases rerun with `--legacy`, then go to manual review. There is no
+  region-growing fallback.
+- **Local cases:** de-identified, imported with `import_dicom.py`; review flags must be signed off
+  before learner-facing export.
+
+### 12.2 Automated checks
+
+Unit tests (pytest, synthetic data only) cover bridging geometry and connectivity, the review
+gate and sign-off validation, route frame and fork clock maths (including roll sign and wrap), and
+provenance detection (including bridges missed between sparse samples), target-gap truncation and
+`unrecorded` provenance. Renderer changes are checked headlessly (no console errors; layout at
+1280×800 and 1024×700) with screenshots reviewed by a person.
+
+### 12.3 Acceptance per step
+
+| Step | Acceptance |
+|---|---|
+| Import | Proposed series and every skipped series carry a reason; no identifier appears in any output |
+| Lesion | One point reproduces in all three panes within a voxel |
+| Segmentation | Single connected mask; bridges listed separately; 8/8 names on AeroPath regression |
+| Review | Every bridge has a decision; every removal has a note; every flag is resolved or blocks export |
+| Route | RouteTarget lies on CT-seen centreline; `target_gap_mm` recorded; no unconfirmed bridge on the route |
+| Walk-through | Every bifurcation on the route has a decision record |
+| Sign-off | Version chain complete with fingerprints; later edits create N+1 |
+
+---
+
+## 13. Non-functional requirements
 
 | Area | Requirement |
 |---|---|
-| **Reproducibility** | The same approved volume, seed, processing configuration, graph version, POI, and ranking weights must yield the same route-plan result. |
-| **Performance** | Viewer should progressively stream the volume and keep POI interaction responsive; processing should run asynchronously with user-visible status rather than block the browser. |
-| **Availability** | A processing failure must not corrupt a released case or route plan. |
-| **Accessibility** | Provide keyboard-accessible controls, readable contrast, reduced-motion support, non-colour-only status cues, and a non-first-person alternative for motion-sensitive learners. |
-| **Observability** | Capture structured application metrics, processing logs, error traces, and audit events with correlation IDs. |
-| **Versioning** | Never mutate a released graph or route plan in place. Supersede with a new version and preserve lineage. |
-| **Internationalisation readiness** | Separate labels and scenario copy from anatomy/graph IDs so educational content can be localised later. |
-| **Testability** | Provide deterministic fixtures: small synthetic CT volume, expected mask, expected graph, POI set, and expected ranked route output. |
+| Reproducibility | The same CT, tool versions, options and clinician inputs yield the same graph, route and fork clocks. |
+| Performance | Segmentation runs in the background with visible status; CT panes and the fly-through stay interactive. Cached TotalSegmentator outputs avoid model reruns. |
+| Accessibility | Keyboard control for flying (↑/↓, Space, T), readable contrast on both themes, and status cues that never rely on colour alone. |
+| Versioning | Never mutate a signed-off artifact; supersede it. |
+| Hardware | Apple Silicon Mac (TotalSegmentator on `--device mps`). |
 
 ---
 
-## 14. Delivery Roadmap
+## 14. Build plan and status
 
-### Phase 0 — Product and governance foundation
+From `docs/Workflow and Build Plan.md`. Each phase: brief → coding agent → code review against the
+plan → fixes → its own commit.
 
-Define the allowed data sources, user roles, case-purpose taxonomy, research/education boundary, and approval workflow. Produce a synthetic fixture dataset and a prototype user-test script. **Exit criterion:** Product, privacy, and review stakeholders agree on purpose, case states, and initial success measures.
-
-### Phase 1 — Interaction prototype
-
-Extend the existing website into a high-fidelity interaction prototype using non-identifying fixture data. Validate POI placement, route explanations, terminology, hierarchy, and the relationship between CT context and learning scenario. **Exit criterion:** Users can complete the POI-to-route workflow and understand the difference between primary and alternate candidates.
-
-### Phase 2 — Controlled imaging workspace
-
-Introduce authenticated case metadata, approved study selection, a DICOMweb-connected viewer, and scoped imaging sessions. Do not yet expose raw imaging outside the authorised operator/reviewer workspace. **Exit criterion:** An authorised user can review an approved fixture study in synchronized multiplanar views and create a fully provenance-bound POI.
-
-### Phase 3 — Segmentation and graph MVP
-
-Implement the asynchronous processing pipeline for canonicalisation, seed selection, volumetric airway segmentation, graph extraction, quality profile generation, and reviewer workspace. **Exit criterion:** The system generates a versioned graph from a fixture dataset, exposes review artefacts, and blocks release on QA failure.
-
-### Phase 4 — Route-plan MVP
-
-Implement candidate search, root-to-target path construction, transparent scoring, route-plan review, and regression tests. **Exit criterion:** A saved POI yields deterministic ranked candidates with complete explanations and provenance.
-
-### Phase 5 — Learning integration
-
-Convert approved route plans into guided, recall, reverse, and randomised scenarios. Add learner-facing safeguards that separate stylised experiences from CT-derived anatomy. **Exit criterion:** An approved plan can create a learner scenario with role-appropriate data exposure and consent-aware telemetry.
-
-### Phase 6 — Validation and scale-out
-
-Run formal usability, processing QA, educational, and simulation-research validation gates. Expand case catalogue only after release controls and operational monitoring are stable. **Exit criterion:** Stakeholders approve the evidence needed for the next use tier.
-
----
-
-## 15. Key Risks and Design Responses
-
-| Risk | Why it matters | Design response |
+| Phase | Scope | Status (2026-10-25) |
 |---|---|---|
-| **Slice-only detection fails** | Branches are not reliably represented as circles in individual slices. | Use volumetric segmentation and topology-aware graph extraction. |
-| **Seed identifies wrong air space** | A wrong seed can propagate an incorrect graph. | Use candidate scoring, 3D validation, confidence threshold, and operator review. |
-| **POI appears precise but is poorly contextualised** | A point may be far from an eligible airway or reflect uncertain anatomy. | Show physical distance, candidate confidence, and explicit “no eligible path” state. |
-| **Route score is mistaken for clinical advice** | The interface can overstate algorithmic authority. | Use purpose badges, explainable scoring, and non-diagnostic language everywhere. |
-| **Derivative/version drift** | A route may no longer correspond to its source graph or case. | Immutable versions, lineage links, and no in-place mutation of released records. |
-| **Heavy processing degrades interactive UX** | Volumetric work can block the UI or fail unpredictably. | Isolate processing in asynchronous jobs with status, retry, and error states. |
-| **Insufficient data governance** | Medical imaging creates sensitive-data and institutional obligations. | Enforce de-ID, scoped access, audit, retention, and reviewer release gates. |
-| **Gamified metrics are overinterpreted** | In-app scores may not represent procedural performance. | Treat learning/transfer as separate, staged validation questions. |
+| — | Pipeline: fallback segmentation, bridging, graph, naming, review gate and sign-off, provenance, route frame, prototype renderer | Done (committed) |
+| 0 | Path resolution, higher-order-resampling A/B, SNOMED codes | In progress |
+| 1 | Local server, browser shell, case list, CT crop endpoint, clinician identity, `case.json` version chain | Briefed |
+| 2 | Bronchoscopist frame in 3D / endoluminal / topology, camera presets, anterior tick | In progress |
+| 3 | CT panes, crosshair, windows, overlays, cross-view linking, Lesion marking | Planned (needs 1) |
+| 4 | Workflow steps in the app: import, segmentation, review (removal-only corrections, bridge confirmation), RouteTarget candidates, walk-through records, sign-off | Planned (needs 3) |
 
 ---
 
-## 16. Open Decisions Required Before Build
+## 15. Open decisions
 
-| Decision | Why it changes implementation | Owner | Recommended initial choice |
+| Decision | Why it matters | Owner | Current position |
 |---|---|---|---|
-| **Data source** | Determines archive, de-ID, and access architecture | Product + governance | Use synthetic fixtures until a governed research dataset is approved. |
-| **Case purpose taxonomy** | Controls who may see what and which QA threshold applies | Product + clinical education | Start with Explore, Learn, and Validate tiers. |
-| **Segmentation approach** | Determines worker dependencies, GPU/CPU needs, review burden, and accuracy profile | Technical lead + imaging expert | Begin with a reproducible 3D baseline and retain pluggable model interface. |
-| **Graph-label depth** | Determines annotation workload | Educator + reviewer | Start with major branches and landmarks; add fine segment labels after QA workflow matures. |
-| **Ranking policy** | Determines path behaviour and explanation language | Product + clinical reviewer | Use transparent configurable score; prohibit clinical-optimality language. |
-| **Hosting/compute boundary** | Determines job execution and operations | Technical lead | Keep browser UI managed; isolate imaging compute in a controlled asynchronous service. |
-| **Validation protocol** | Determines telemetry, sample, and evidence requirements | Research lead | Define before learner analytics are implemented. |
+| **Reconstruction kernel** | Importer prefers standard; BBT recommends lung/sharp (§5) | Clinicians | Compare both on the local case that has both; then decide the default or offer both with reasons |
+| **Screen frame** | All views assume anterior up and patient right on screen right | Clinicians | Confirm against a real bronchoscope screen |
+| **Roll and pause parameters** | Ours 10 / 6 / 5 mm vs BBT 8 / 2 / 2 mm | Clinicians | Keep ours until clinicians try both |
+| **Fork clock validation** | Automatic clock positions have no clinical ground truth yet | Clinicians + developer | Compare with a clinician's hand-marked bifurcation clocks on one case |
+| **Corrections beyond removal** | v1 corrections are removal-only | Clinicians | Revisit after v1 use |
+| **Bridge limits** | 4 mm / 20 mm³ are engineering limits | Clinicians | Keep; review against confirmation decisions |
+| **Learner modes** | Deferred tiers (§16) | Product | After the planning workflow is validated |
+
+---
+
+## 16. Deferred from v1.0
+
+Dropped from the MVP, with reasons:
+
+- **Cloud platform with a DICOMweb archive, OHIF/Cornerstone viewer, job queue and multi-role
+  access control.** Replaced by a local app with role + initials identity. Revisit only if
+  multi-site or shared use is needed.
+- **Explore / Learn / Validate tiers, game modes, learner telemetry and route-recall assessment.**
+  Not started. Any future learner use must keep §2 and §8.1 intact and use only signed-off cases.
+- **Weighted route-ranking score.** Replaced by the three-criterion ordering in §7.
+- **Tracheal seed proposal.** Not needed: TotalSegmentator plus widest-terminal rooting replaced
+  it.
 
 ---
 
 ## 17. References
-
-[1] [DICOM Standard. *DICOMweb™.*](https://www.dicomstandard.org/using/dicomweb)
-
-[2] [Open Health Imaging Foundation. *DICOMweb Data Source Configuration.*](https://docs.ohif.org/configuration/datasources/dicom-web/)
-
-[3] [Cornerstone.js. *Overview: Rendering and Segmentation Capabilities.*](https://www.cornerstonejs.org/docs/getting-started/overview/)
 
 [4] [Reynisson, P. J., et al. *Airway Segmentation and Centerline Extraction from Thoracic CT.*](https://pmc.ncbi.nlm.nih.gov/articles/PMC4676651/)
 
@@ -680,19 +322,27 @@ Run formal usability, processing QA, educational, and simulation-research valida
 
 [6] [Vieira, L. M. N., Camargos, P. A. M., & Ibiapina, C. da C. *Bronchoscopy simulation training in the post-pandemic world.*](https://pmc.ncbi.nlm.nih.gov/articles/PMC9064612/)
 
-[7] Toma, T. *BBT Slicer Skill* and BBT Python scripts (CT-based Bronchial Branch Tracing in 3D Slicer 5.12). Unpublished practitioner workflow, 2026; see Evidence and Revision Notes.
+[7] Toma T. *CT-based Bronchial Branch Tracing (BBT): CT-derived virtual bronchoscopy and bronchial branch tracing workflow.* Version 1.0.0. 2026. Zenodo. [doi:10.5281/zenodo.23190857](https://doi.org/10.5281/zenodo.23190857). Repository: <https://github.com/ttoma1068/CT-Bronchial-Branch-Tracing> (Apache-2.0).
+
+[8] [TotalSegmentator](https://github.com/wasserth/TotalSegmentator): Wasserthal J., et al. *TotalSegmentator: Robust Segmentation of 104 Anatomic Structures in CT Images.* Radiology: Artificial Intelligence, 2023.
+
+[9] [AeroPath](https://github.com/raidionics/AeroPath): airway segmentation benchmark dataset with challenging pathology (MIT licence).
+
+References [1]–[3] of v1.0 (DICOMweb, OHIF, Cornerstone) were removed with the cloud architecture. The
+remaining numbers are kept so that existing citations elsewhere stay valid.
 
 ---
 
-## Appendix A — Definition of Terms
+## Appendix A — Terms
 
 | Term | Definition |
 |---|---|
-| **Airway graph** | Versioned tree-like representation of airway nodes, centreline edges, radius samples, hierarchy, and review state. |
-| **Candidate endpoint** | A valid graph location near a POI that can serve as a route endpoint under configured rules. |
-| **Canonicalisation** | Conversion of a DICOM series into a consistent physical-coordinate volume while retaining source references. |
-| **Case revision** | Immutable, purpose-bound release package that links volume derivatives, graph, review state, and access policy. |
-| **Centreline** | A curve representing the central path through a segmented airway branch. |
-| **POI** | User-selected point of interest located in physical volume coordinates. |
-| **Route plan** | Versioned result containing ranked, explained, root-to-candidate graph paths for a specific POI. |
-| **Tracheal-lumen seed** | Validated initial air-filled region used to begin airway segmentation. |
+| **Lesion** | Clinical target point marked by the clinician on the CT, in patient RAS mm |
+| **RouteStart** | Route origin in the trachea, placed automatically at the widest terminal and confirmed by the clinician |
+| **RouteTarget** | End of the airway route that the CT demonstrates; lies on a CT-seen centreline |
+| **target_gap_mm** | Distance from Lesion to RouteTarget; shown as uncertainty, never bridged by drawn airway |
+| **Bridge** | Straight 1 mm tube joining a detached airway piece across a gap of 4 mm or less; `interpolated`, stored separately |
+| **Provenance** | Origin of a piece of airway: `ct`, `interpolated`, `manual`, or `unrecorded` for older graphs |
+| **Fork clock** | Direction of a daughter branch in the transported camera frame at a bifurcation (12 = anterior at the trachea) |
+| **Branch-tracing sequence** | Ordered bifurcation confirmations from the walk-through |
+| **Version N** | Frozen, signed-off chain of artifacts for a case |
