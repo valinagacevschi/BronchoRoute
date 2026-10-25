@@ -1,0 +1,7 @@
+# Patient-derived and generated data never enters git.
+pipeline/data/
+pipeline/ts_out/
+pipeline/out/
+pipeline/.venv/
+__pycache__/
+.DS_Store

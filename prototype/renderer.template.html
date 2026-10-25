@@ -1,0 +1,653 @@
+<title>Bronchial Tree Renderer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500&display=swap">
+
+<style>
+:root {
+  --ground:  #EDF1F3;
+  --surface: #FFFFFF;
+  --edge:    #C7D3DA;
+  --ink:     #17242B;
+  --muted:   #5D7280;
+  --steel:   #2E6E88;
+  --mucosa:  #B4522F;
+  --grid:    #D6DFE4;
+  --shadow:  0 1px 2px rgba(23,36,43,.10), 0 8px 24px rgba(23,36,43,.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:  #0C1216;
+    --surface: #161F25;
+    --edge:    #27343C;
+    --ink:     #DDE7ED;
+    --muted:   #7C8E9A;
+    --steel:   #5E93A8;
+    --mucosa:  #C9603F;
+    --grid:    #1B252C;
+    --shadow:  0 1px 2px rgba(0,0,0,.5), 0 10px 30px rgba(0,0,0,.45);
+  }
+}
+:root[data-theme="dark"] {
+  --ground:  #0C1216;
+  --surface: #161F25;
+  --edge:    #27343C;
+  --ink:     #DDE7ED;
+  --muted:   #7C8E9A;
+  --steel:   #5E93A8;
+  --mucosa:  #C9603F;
+  --grid:    #1B252C;
+  --shadow:  0 1px 2px rgba(0,0,0,.5), 0 10px 30px rgba(0,0,0,.45);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 400 15px/1.5 "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  height: 100dvh;
+  overflow: hidden;
+}
+canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+canvas.dragging { cursor: grabbing; }
+
+.stage { position: fixed; inset: 0; }
+
+/* Instrument rail ------------------------------------------------------- */
+.rail {
+  position: fixed; top: 0; left: 0; bottom: 0; width: 236px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border-right: 1px solid var(--edge);
+  padding: 20px 18px;
+  display: flex; flex-direction: column; gap: 22px;
+  overflow-y: auto;
+}
+.brand {
+  font-family: "IBM Plex Sans Condensed", sans-serif;
+  font-weight: 600; font-size: 19px; letter-spacing: .01em;
+  line-height: 1.2; text-wrap: balance;
+}
+.brand span { display: block; font-size: 11px; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--mucosa); font-weight: 500;
+  margin-bottom: 5px; }
+
+.group { display: flex; flex-direction: column; gap: 7px; }
+.group h2 {
+  margin: 0; font-size: 10px; font-weight: 500; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--muted);
+  font-family: "IBM Plex Sans Condensed", sans-serif;
+}
+.readout { display: flex; justify-content: space-between; gap: 10px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px;
+  font-variant-numeric: tabular-nums; }
+.readout dt { color: var(--muted); }
+.readout dd { margin: 0; text-align: right; }
+.readout dd.warm { color: var(--mucosa); }
+
+.hint { font-size: 12px; color: var(--muted); line-height: 1.55; margin: 0; }
+kbd {
+  font-family: "IBM Plex Mono", monospace; font-size: 11px;
+  border: 1px solid var(--edge); border-bottom-width: 2px;
+  border-radius: 4px; padding: 1px 5px; color: var(--ink);
+  background: var(--ground);
+}
+
+/* Depth legend ---------------------------------------------------------- */
+.ramp { height: 7px; border-radius: 4px; border: 1px solid var(--edge); }
+.ramp-labels { display: flex; justify-content: space-between;
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px;
+  color: var(--muted); }
+
+/* Variant switcher ------------------------------------------------------ */
+.switcher {
+  position: fixed; bottom: 22px; left: calc(50% + 118px);
+  transform: translateX(-50%);
+  display: flex; align-items: stretch; gap: 2px;
+  background: var(--surface); border: 1px solid var(--edge);
+  border-radius: 999px; padding: 4px; box-shadow: var(--shadow);
+  z-index: 5;
+}
+.switcher button {
+  font: 500 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
+  letter-spacing: .04em;
+  border: 0; border-radius: 999px; padding: 9px 15px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  display: flex; align-items: center; gap: 7px;
+}
+.switcher button:hover { color: var(--ink); }
+.switcher button[aria-pressed="true"] { background: var(--mucosa); color: #fff; }
+.switcher button:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+.switcher .num {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; opacity: .65;
+}
+.proto {
+  position: fixed; top: 14px; right: 16px; z-index: 5;
+  font: 500 10px/1 "IBM Plex Mono", monospace; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--mucosa);
+  border: 1px dashed var(--mucosa); border-radius: 4px; padding: 6px 9px;
+}
+
+@media (max-width: 720px) {
+  .rail { width: 100%; height: auto; bottom: auto; flex-direction: row;
+    flex-wrap: wrap; gap: 14px; padding: 12px 14px; border-right: 0;
+    border-bottom: 1px solid var(--edge); }
+  .rail .group:nth-of-type(n+3) { display: none; }
+  .switcher { left: 50%; bottom: 14px; }
+}
+</style>
+
+<div class="stage"><canvas id="c"></canvas></div>
+
+<aside class="rail">
+  <div class="brand"><span>Lung Navigator</span>Bronchial tree renderer</div>
+
+  <div class="group">
+    <h2>Case</h2>
+    <dl class="readout"><dt>Source</dt><dd>AeroPath 1</dd></dl>
+    <dl class="readout"><dt>Branches</dt><dd id="r-branches">—</dd></dl>
+    <dl class="readout"><dt>Generations</dt><dd id="r-gens">—</dd></dl>
+    <dl class="readout"><dt>Centreline</dt><dd id="r-length">—</dd></dl>
+  </div>
+
+  <div class="group" id="g-nav">
+    <h2>Position</h2>
+    <dl class="readout"><dt>Generation</dt><dd id="r-gen" class="warm">—</dd></dl>
+    <dl class="readout"><dt>Lumen radius</dt><dd id="r-rad">—</dd></dl>
+    <dl class="readout"><dt>To target</dt><dd id="r-togo">—</dd></dl>
+    <dl class="readout"><dt>Turns ahead</dt><dd id="r-turns">—</dd></dl>
+  </div>
+
+  <div class="group">
+    <h2>Depth</h2>
+    <div class="ramp" id="ramp"></div>
+    <div class="ramp-labels"><span>trachea</span><span>distal</span></div>
+  </div>
+
+  <div class="group">
+    <h2>Controls</h2>
+    <p class="hint" id="hint"></p>
+  </div>
+
+  <div class="group">
+    <h2>Question</h2>
+    <p class="hint">Does a navigable airway tree read as anatomy? Compare a
+    truthful 3D tree against a legible 2D map, and fly the lumen to judge
+    whether moving through it teaches anything.</p>
+  </div>
+</aside>
+
+<div class="proto">Prototype</div>
+
+<nav class="switcher" id="switcher" aria-label="Renderer variant"></nav>
+
+<script>
+/*DATA*/
+</script>
+
+<script>
+"use strict";
+// Throwaway prototype for wayfinder ticket 06 (navigation renderer).
+// Three structurally different answers to "how is the airway rendered".
+// No libraries: raw canvas 2D with hand-rolled projection.
+
+const A = window.AIRWAY;
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const css = getComputedStyle(document.documentElement);
+const tok = n => css.getPropertyValue(n).trim();
+
+const VARIANTS = [
+  { key: "anatomical", name: "Anatomical 3D",
+    hint: "<kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>R</kbd> reset" },
+  { key: "endoluminal", name: "Endoluminal",
+    hint: "<kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · <kbd>Space</kbd> auto-play · <kbd>T</kbd> reset route" },
+  { key: "topology", name: "Topology map",
+    hint: "<kbd>drag</kbd> pan · <kbd>scroll</kbd> zoom · spatially false, deliberately" },
+];
+
+const params = new URLSearchParams(location.search);
+let variant = VARIANTS.findIndex(v => v.key === params.get("variant"));
+if (variant < 0) variant = 0;
+
+const maxGen = Math.max(...A.edges.map(e => e.g));
+const totalLen = A.edges.reduce((s, e) => s + e.l, 0);
+
+// Depth ramp: steel at the trachea warming to mucosa distally, so generation
+// depth is legible without a legend lookup.
+function depthColor(g, alpha = 1) {
+  const t = Math.min(1, g / Math.max(1, maxGen));
+  const a = [0x5E, 0x93, 0xA8], b = [0xC9, 0x60, 0x3F];
+  const c = a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  return `rgba(${c[0]},${c[1]},${c[2]},${alpha})`;
+}
+document.getElementById("ramp").style.background =
+  `linear-gradient(90deg, ${depthColor(0)}, ${depthColor(maxGen)})`;
+
+/* ---------------------------------------------------------------- camera */
+const cam = { yaw: -0.6, pitch: 0.25, dist: 260, panX: 0, panY: 0 };
+let dpr = 1, W = 0, H = 0;
+
+function resize() {
+  dpr = Math.min(2, devicePixelRatio || 1);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener("resize", resize);
+
+// Patient axes are NIfTI world RAS: +x right, +y anterior, +z superior. The tree hangs below the
+// trachea, which sits at the origin because the data was centred on it.
+function project(p, c) {
+  const cy = Math.cos(c.yaw), sy = Math.sin(c.yaw);
+  const cp = Math.cos(c.pitch), sp = Math.sin(c.pitch);
+  let x = p[0] * cy - p[1] * sy;
+  let y = p[0] * sy + p[1] * cy;
+  const z = -p[2] - 60;                    // superior is up on screen
+  const yy = y * cp - z * sp;
+  const zz = y * sp + z * cp + c.dist;
+  if (zz < 1) return null;
+  const f = (Math.min(W, H) * 0.9) / zz;
+  return { x: W / 2 + x * f + c.panX, y: H / 2 + yy * f + c.panY, z: zz, f };
+}
+
+/* ------------------------------------------------------- variant A: tree */
+function drawAnatomical() {
+  const segs = [];
+  for (const e of A.edges) {
+    for (let i = 1; i < e.c.length; i++) {
+      const p = project(e.c[i - 1], cam), q = project(e.c[i], cam);
+      if (!p || !q) continue;
+      segs.push({ p, q, e, z: (p.z + q.z) / 2 });
+    }
+  }
+  segs.sort((a, b) => b.z - a.z);           // painter's algorithm
+  ctx.lineCap = "round";
+  for (const s of segs) {
+    const w = Math.max(0.7, s.e.r * 2 * s.p.f * 0.5);
+    const fog = Math.max(0.18, Math.min(1, 320 / s.z));
+    ctx.strokeStyle = depthColor(s.e.g, fog);
+    ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y); ctx.lineTo(s.q.x, s.q.y); ctx.stroke();
+  }
+  // Target marker
+  const t = A.nodes[String(A.target)];
+  const tp = t && project(t.p, cam);
+  if (tp) {
+    ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(tp.x, tp.y, 9, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.arc(tp.x, tp.y, 2.5, 0, 7); ctx.fillStyle = tok("--mucosa"); ctx.fill();
+  }
+  setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
+}
+
+/* ------------------------------------------------ variant B: endoluminal */
+const fly = { s: 0, playing: false, pausedFork: null, armed: new Set(A.forks.map(f => f.fork)) };
+
+function flyAt(s) {
+  const route = A.fly;
+  const sample = Math.max(0, Math.min(route.s.length - 1, s / route.step_mm));
+  const before = Math.floor(sample);
+  const fraction = sample - before;
+  const after = Math.min(before + 1, route.s.length - 1);
+  const mix = (a, b) => a.map((value, i) => value + (b[i] - value) * fraction);
+  const tangent = norm(mix(route.t[before], route.t[after]));
+  const rawUp = mix(route.up[before], route.up[after]);
+  const up = norm(rawUp.map((value, i) => value - tangent[i] * dot(rawUp, tangent)));
+  return {
+    p: mix(route.p[before], route.p[after]),
+    t: tangent,
+    up,
+    roll: route.roll[before] + (route.roll[after] - route.roll[before]) * fraction,
+    r: route.r[before] + (route.r[after] - route.r[before]) * fraction,
+    g: route.g[before] + (route.g[after] - route.g[before]) * fraction,
+  };
+}
+
+function drawEndoluminal() {
+  const here = flyAt(fly.s);
+  const pos = here.p;
+  const right0 = norm(cross(here.t, here.up));
+  const up = norm(here.up.map((value, i) =>
+    value * Math.cos(here.roll) + right0[i] * Math.sin(here.roll)));
+  const right = norm(cross(here.t, up));
+  const dir = here.t;
+  const aheadEnd = Math.min(A.fly.s[A.fly.s.length - 1], fly.s + 90);
+  const ahead = [];
+  for (let s = fly.s; s <= aheadEnd; s += 1) {
+    ahead.push(flyAt(s));
+  }
+  if (ahead.length < 2) {
+    ctx.fillStyle = tok("--ground");
+    ctx.fillRect(0, 0, W, H);
+    return;
+  }
+
+  const toView = p => {
+    const d = sub(p, pos);
+    return [dot(d, right), dot(d, up), dot(d, dir)];
+  };
+  const project = v => {
+    if (v[2] < 0.8) return null;
+    const f = (Math.min(W, H) * 0.62) / v[2];
+    return { x: W / 2 + v[0] * f, y: H / 2 - v[1] * f, f, z: v[2] };
+  };
+
+  ctx.fillStyle = tok("--ground");
+  ctx.fillRect(0, 0, W, H);
+  const rings = [];
+  for (let i = ahead.length - 1; i >= 1; i--) {
+    const point = project(toView(ahead[i].p));
+    if (point) rings.push({ point, radius: ahead[i].r, generation: ahead[i].g, i });
+  }
+  for (const ring of rings) {
+    const pixels = ring.radius * ring.point.f;
+    if (pixels < 0.5) continue;
+    const depth = Math.max(0.04, 1 - ring.i / ahead.length);
+    const gradient = ctx.createRadialGradient(
+      ring.point.x, ring.point.y, pixels * 0.25,
+      ring.point.x, ring.point.y, pixels,
+    );
+    gradient.addColorStop(0, "rgba(0,0,0,0)");
+    gradient.addColorStop(1, mucosa(depth));
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(ring.point.x, ring.point.y, pixels, 0, 7);
+    ctx.fill();
+    if (ring.i % 6 === 0) {
+      ctx.strokeStyle = mucosa(depth * 0.5);
+      ctx.lineWidth = Math.max(0.5, pixels * 0.05);
+      ctx.beginPath();
+      ctx.arc(ring.point.x, ring.point.y, pixels * 0.97, 0, 7);
+      ctx.stroke();
+    }
+  }
+
+  const nextFork = A.forks.find(fork => fork.s >= fly.s);
+  let guideSample = Math.min(20, ahead.length - 1);
+  if (nextFork && nextFork.s + 5 <= aheadEnd) {
+    guideSample = Math.round(nextFork.s + 5 - fly.s);
+  }
+  const guide = project(toView(ahead[guideSample].p));
+  if (guide) {
+    ctx.strokeStyle = tok("--steel");
+    ctx.lineWidth = 1.25;
+    ctx.setLineDash([4, 5]);
+    ctx.beginPath();
+    ctx.arc(guide.x, guide.y, 16, 0, 7);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  const remaining = Math.max(0, A.fly.s[A.fly.s.length - 1] - fly.s);
+  setReadout({
+    gen: here.g.toFixed(0),
+    rad: here.r.toFixed(2) + " mm",
+    togo: remaining.toFixed(0) + " mm",
+    turns: A.forks.filter(fork => fork.s > fly.s).length,
+  });
+  drawGuidance(right, up, dir, here.roll);
+}
+
+function drawGuidance(right, up, dir, roll) {
+  const rail = document.querySelector(".rail").getBoundingClientRect();
+  const switcher = document.getElementById("switcher").getBoundingClientRect();
+  const left = rail.right + 16;
+  const switcherTop = switcher.top || H - 22;
+  const bottom = Math.min(H - 16, switcherTop - 12);
+  const cx = left + 42;
+  const cy = bottom - 42;
+  const radius = 35;
+  const anterior = [0, 1, 0];
+  const next = A.forks.find(fork => fork.s >= fly.s);
+
+  ctx.save();
+  ctx.font = "12px system-ui";
+  ctx.fillStyle = "#d8e2e8";
+  ctx.strokeStyle = "#81909a";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, 7);
+  ctx.stroke();
+
+  for (const [clock, angle] of [
+    [12, -Math.PI / 2], [3, 0], [6, Math.PI / 2], [9, Math.PI],
+  ]) {
+    ctx.fillText(clock, cx + Math.cos(angle) * (radius + 12) - 4,
+      cy + Math.sin(angle) * (radius + 12) + 4);
+  }
+
+  const projected = anterior.map((value, i) => value - dir[i] * dot(anterior, dir));
+  const projectedLength = Math.hypot(...projected);
+  const textX = left + 94;
+  const maxTextWidth = Math.max(80, W - textX - 16);
+  if (projectedLength >= 0.10) {
+    const x = dot(projected, right) / projectedLength;
+    const y = -dot(projected, up) / projectedLength;
+    ctx.strokeStyle = "#48a9ff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + x * radius * 0.72, cy + y * radius * 0.72);
+    ctx.stroke();
+  } else {
+    ctx.fillText("Anterior undefined: view along AP axis", textX, bottom - 70, maxTextWidth);
+  }
+
+  if (next) {
+    for (const child of next.children) {
+      if (child.clock == null) continue;
+      const screenAngle = (child.angle - roll * 180 / Math.PI) * Math.PI / 180
+        - Math.PI / 2;
+      ctx.fillStyle = child.on_route ? "#58b8ff" : "#87939b";
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(screenAngle) * radius,
+        cy + Math.sin(screenAngle) * radius, child.on_route ? 5 : 3, 0, 7);
+      ctx.fill();
+    }
+  }
+
+  if (next) {
+    const chosen = next.children.find(child => child.on_route);
+    const clockText = chosen.clock == null
+      ? "straight ahead"
+      : `branch at ${chosen.clock} o'clock${next.name ? ` (${next.name})` : ""}, rolling to 12`;
+    const line = `Fork ${next.fork} in ${Math.max(0, next.s - fly.s).toFixed(0)} mm — ${clockText}`;
+    ctx.fillStyle = "#e5edf1";
+    ctx.fillText(line, textX, bottom - 50, maxTextWidth);
+  }
+  if (fly.pausedFork) {
+    ctx.fillStyle = "#e5edf1";
+    ctx.fillText(`Paused before fork ${fly.pausedFork} — Space / ↑ to continue`,
+      textX, bottom - 30, maxTextWidth);
+  }
+  ctx.fillStyle = "#9aa8b0";
+  ctx.fillText("Simulated steering · CT-derived · not live tracking",
+    textX, bottom - 10, maxTextWidth);
+  ctx.restore();
+}
+
+function mucosa(d) {
+  const t = Math.max(0, Math.min(1, d));
+  return `rgba(${Math.round(201 * t)},${Math.round(96 * t)},${Math.round(63 * t)},1)`;
+}
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                         a[0] * b[1] - a[1] * b[0]];
+function norm(v) { const l = Math.hypot(...v) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
+
+/* --------------------------------------------------- variant C: topology */
+let topoLayout = null;
+function buildTopology() {
+  // Radial tree: angle by subtree share, radius by generation. Preserves
+  // topology exactly and discards real geometry — the Lung Navigator
+  // proposal, included so the trade-off is visible rather than argued.
+  const kids = new Map();
+  for (const e of A.edges) {
+    if (!kids.has(e.f)) kids.set(e.f, []);
+    kids.get(e.f).push(e);
+  }
+  const leaves = n => {
+    const k = kids.get(n);
+    if (!k || !k.length) return 1;
+    return k.reduce((s, e) => s + leaves(e.t), 0);
+  };
+  const pos = new Map();
+  const place = (n, a0, a1, gen) => {
+    const a = (a0 + a1) / 2;
+    pos.set(n, { a, gen, x: Math.cos(a) * gen * 34, y: Math.sin(a) * gen * 34 });
+    const k = kids.get(n) || [];
+    const total = k.reduce((s, e) => s + leaves(e.t), 0) || 1;
+    let cur = a0;
+    for (const e of k) {
+      const span = (a1 - a0) * (leaves(e.t) / total);
+      place(e.t, cur, cur + span, gen + 1);
+      cur += span;
+    }
+  };
+  place(A.root, -Math.PI, Math.PI, 0);
+  topoLayout = pos;
+}
+
+function drawTopology() {
+  if (!topoLayout) buildTopology();
+  const s = 260 / cam.dist;
+  const ox = W / 2 + cam.panX, oy = H / 2 + cam.panY;
+  ctx.lineCap = "round";
+  for (const e of A.edges) {
+    const a = topoLayout.get(e.f), b = topoLayout.get(e.t);
+    if (!a || !b) continue;
+    ctx.strokeStyle = depthColor(e.g, 0.95);
+    ctx.lineWidth = Math.max(0.8, Math.min(9, e.r * 1.6) * s);
+    ctx.beginPath();
+    ctx.moveTo(ox + a.x * s, oy + a.y * s);
+    ctx.lineTo(ox + b.x * s, oy + b.y * s);
+    ctx.stroke();
+  }
+  const t = topoLayout.get(A.target);
+  if (t) {
+    ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(ox + t.x * s, oy + t.y * s, 9, 0, 7); ctx.stroke();
+  }
+  // Generation rings, so depth is readable as distance from centre.
+  ctx.strokeStyle = tok("--grid"); ctx.lineWidth = 1;
+  for (let g = 5; g <= maxGen; g += 5) {
+    ctx.beginPath(); ctx.arc(ox, oy, g * 34 * s, 0, 7); ctx.stroke();
+  }
+  setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
+}
+
+/* ------------------------------------------------------------- plumbing */
+function setReadout(o) {
+  document.getElementById("r-gen").textContent = o.gen;
+  document.getElementById("r-rad").textContent = o.rad;
+  document.getElementById("r-togo").textContent = o.togo;
+  document.getElementById("r-turns").textContent = o.turns;
+}
+
+function frame() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = tok("--ground"); ctx.fillRect(0, 0, W, H);
+  if (variant === 0) drawAnatomical();
+  else if (variant === 1) drawEndoluminal();
+  else drawTopology();
+  requestAnimationFrame(frame);
+}
+
+/* input */
+let drag = null;
+cv.addEventListener("pointerdown", e => {
+  drag = { x: e.clientX, y: e.clientY }; cv.classList.add("dragging");
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener("pointerup", e => { drag = null; cv.classList.remove("dragging"); });
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag = { x: e.clientX, y: e.clientY };
+  if (variant === 2) { cam.panX += dx; cam.panY += dy; }
+  else { cam.yaw += dx * 0.006; cam.pitch = Math.max(-1.4, Math.min(1.4, cam.pitch + dy * 0.006)); }
+});
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  cam.dist = Math.max(60, Math.min(900, cam.dist * (1 + Math.sign(e.deltaY) * 0.1)));
+}, { passive: false });
+
+const held = new Set();
+addEventListener("keydown", e => {
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+  if (e.key >= "1" && e.key <= String(VARIANTS.length)) { setVariant(+e.key - 1); return; }
+  if (e.key === "r" || e.key === "R") { cam.yaw = -0.6; cam.pitch = 0.25; cam.dist = 260; cam.panX = cam.panY = 0; }
+  if (e.key === "t" || e.key === "T") { fly.s = 0; fly.pausedFork = null; fly.armed = new Set(A.forks.map(f => f.fork)); }
+  if (e.key === " " && variant === 1) { fly.playing = !fly.playing; fly.pausedFork = null; e.preventDefault(); }
+  if (["ArrowUp", "ArrowDown"].includes(e.key)) {
+    if (fly.pausedFork && e.key === "ArrowUp" && !e.repeat) {
+      fly.pausedFork = null;
+    }
+    held.add(e.key);
+    e.preventDefault();
+  }
+});
+addEventListener("keyup", e => held.delete(e.key));
+
+setInterval(() => {
+  if (variant !== 1) return;
+  const delta = fly.playing || held.has("ArrowUp")
+    ? 0.6
+    : held.has("ArrowDown") ? -0.6 : 0;
+  if (fly.pausedFork && delta > 0) return;
+
+  const previous = fly.s;
+  const next = Math.max(0, Math.min(A.fly.s.at(-1), previous + delta));
+  if (delta > 0) {
+    const fork = A.forks.find(item => fly.armed.has(item.fork)
+      && item.pause_s > previous && item.pause_s <= next);
+    if (fork) {
+      fly.s = fork.pause_s;
+      fly.armed.delete(fork.fork);
+      fly.pausedFork = fork.fork;
+      fly.playing = false;
+      held.delete("ArrowUp");
+      return;
+    }
+  }
+
+  fly.s = next;
+  if (delta < 0) {
+    // A backward crossing re-arms the fork for the next forward pass.
+    for (const fork of A.forks) {
+      if (fork.pause_s > fly.s) fly.armed.add(fork.fork);
+    }
+  }
+}, 16);
+
+/* switcher */
+const sw = document.getElementById("switcher");
+function setVariant(i) {
+  variant = i;
+  const u = new URL(location); u.searchParams.set("variant", VARIANTS[i].key);
+  history.replaceState(null, "", u);
+  render();
+}
+function render() {
+  sw.innerHTML = "";
+  VARIANTS.forEach((v, i) => {
+    const b = document.createElement("button");
+    b.setAttribute("aria-pressed", String(i === variant));
+    b.innerHTML = `<span class="num">${i + 1}</span>${v.name}`;
+    b.onclick = () => setVariant(i);
+    sw.appendChild(b);
+  });
+  document.getElementById("hint").innerHTML = VARIANTS[variant].hint +
+    "<br><br>Switch renderer with <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>.";
+  document.getElementById("g-nav").style.opacity = variant === 1 ? "1" : ".45";
+}
+
+document.getElementById("r-branches").textContent = A.edges.length;
+document.getElementById("r-gens").textContent = maxGen;
+document.getElementById("r-length").textContent = (totalLen / 10).toFixed(0) + " cm";
+resize(); render(); frame();
+</script>
