@@ -1,4 +1,9 @@
-"""Select and import an axial CT series without exporting DICOM identifiers."""
+"""Select and import an axial CT series without exporting DICOM identifiers.
+
+Geometry fix: build the NIfTI volume from pydicom (sort by slice normal,
+LPS→RAS affine from IOP/IPP/PixelSpacing) instead of SimpleITK ImageSeriesReader,
+which mirrored superior/inferior for local-001.
+"""
 
 import argparse
 import hashlib
@@ -10,7 +15,6 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import pydicom
-import SimpleITK as sitk
 from paths import LOCAL_CASES
 
 
@@ -18,6 +22,9 @@ VERSION = "1.0"
 PREFERRED_KERNEL = re.compile(r"STANDARD|SOFT|B30", re.IGNORECASE)
 CONTRAST_WORDS = re.compile(r"ARTERIAL|VENOUS|VENOS|TARDIV|ANGIO", re.IGNORECASE)
 SCOUT_WORDS = re.compile(r"SCOUT|LOCALIZER|TOPOGRAM", re.IGNORECASE)
+UNIFORM_SPACING_TOL_MM = 0.05
+TILT_ANGLE_TOL_DEG = 1.0
+GEOMETRY_TOL_MM = 0.01
 
 
 def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
@@ -77,7 +84,7 @@ def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
         gaps = np.diff(coords)
         row["count"] = len(row["files"])
         row["spacing"] = float(np.median(gaps)) if len(gaps) else float(row["slice_thickness"])
-        row["uniform"] = bool(len(gaps) and np.max(np.abs(gaps - row["spacing"])) <= 0.05)
+        row["uniform"] = bool(len(gaps) and np.max(np.abs(gaps - row["spacing"])) <= UNIFORM_SPACING_TOL_MM)
         row["axial"] = abs(float(np.cross(row["orientation"][:3], row["orientation"][3:])[2])) >= 0.99
         ordered = sorted(zip(row["positions"], row["files"]))
         row["files"] = [name for _, name in ordered]
@@ -159,6 +166,113 @@ def series_uid_hash(uid: str) -> str:
     return hashlib.sha256(uid.encode("utf-8")).hexdigest()
 
 
+def _hu_pixels(ds: pydicom.Dataset) -> np.ndarray:
+    slope = float(getattr(ds, "RescaleSlope", 1) or 1)
+    intercept = float(getattr(ds, "RescaleIntercept", 0) or 0)
+    hu = ds.pixel_array.astype(np.float64) * slope + intercept
+    return np.clip(np.rint(hu), np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
+
+
+def build_volume(files: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    """Stack DICOM slices into an (x, y, z) int16 volume and RAS affine."""
+    volume, affine, _slices = _build_volume(files)
+    return volume, affine
+
+
+def _build_volume(files: list[str]) -> tuple[np.ndarray, np.ndarray, list[dict]]:
+    if len(files) < 2:
+        raise ValueError("need at least two slices to build a volume")
+
+    loaded = []
+    for path in files:
+        ds = pydicom.dcmread(path)
+        iop = np.asarray(ds.ImageOrientationPatient, dtype=np.float64)
+        ipp = np.asarray(ds.ImagePositionPatient, dtype=np.float64)
+        spacing = np.asarray(ds.PixelSpacing, dtype=np.float64)
+        loaded.append({
+            "iop": iop,
+            "ipp": ipp,
+            "pixel_spacing": spacing,
+            "pixels": _hu_pixels(ds),
+        })
+
+    row_cosine = loaded[0]["iop"][:3]
+    col_cosine = loaded[0]["iop"][3:]
+    normal = np.cross(row_cosine, col_cosine)
+    normal_norm = np.linalg.norm(normal)
+    if normal_norm < 1e-8:
+        raise ValueError("degenerate ImageOrientationPatient")
+    normal = normal / normal_norm
+
+    loaded.sort(key=lambda item: float(item["ipp"] @ normal))
+
+    projections = np.asarray([float(item["ipp"] @ normal) for item in loaded])
+    gaps = np.diff(projections)
+    median_gap = float(np.median(gaps))
+    if np.max(np.abs(gaps - median_gap)) > UNIFORM_SPACING_TOL_MM:
+        raise ValueError("non-uniform slice spacing")
+
+    # pixel_array is (rows, cols) = (y, x); NIfTI needs (x, y, z)
+    volume = np.stack([item["pixels"].T for item in loaded], axis=-1)
+
+    sx = float(loaded[0]["pixel_spacing"][1])  # along row cosine
+    sy = float(loaded[0]["pixel_spacing"][0])  # along col cosine
+    ipp_first = loaded[0]["ipp"]
+    ipp_last = loaded[-1]["ipp"]
+    dz_lps = (ipp_last - ipp_first) / (len(loaded) - 1)
+    dz_norm = np.linalg.norm(dz_lps)
+    if dz_norm < 1e-8:
+        raise ValueError("non-uniform/tilted stack")
+    cosang = float(np.clip(np.dot(dz_lps / dz_norm, normal), -1.0, 1.0))
+    angle_deg = float(np.degrees(np.arccos(cosang)))
+    if angle_deg > TILT_ANGLE_TOL_DEG:
+        raise ValueError("non-uniform/tilted stack")
+
+    # LPS → RAS: negate x and y
+    flip = np.diag([-1.0, -1.0, 1.0])
+    affine = np.eye(4, dtype=np.float64)
+    affine[:3, 0] = flip @ row_cosine * sx
+    affine[:3, 1] = flip @ col_cosine * sy
+    affine[:3, 2] = flip @ dz_lps
+    affine[:3, 3] = flip @ ipp_first
+
+    _assert_geometry(volume, affine, loaded)
+    return volume, affine, loaded
+
+
+def _assert_geometry(volume: np.ndarray, affine: np.ndarray, slices: list[dict]) -> None:
+    for k, item in ((0, slices[0]), (len(slices) - 1, slices[-1])):
+        world = affine @ np.array([0.0, 0.0, float(k), 1.0])
+        if abs(float(world[2]) - float(item["ipp"][2])) > GEOMETRY_TOL_MM:
+            raise AssertionError(
+                f"affine world z mismatch at k={k}: "
+                f"{world[2]:.6f} vs IPP z {item['ipp'][2]:.6f}"
+            )
+        expected = item["pixels"].T
+        if not np.array_equal(volume[:, :, k], expected):
+            raise AssertionError(f"voxel data mismatch at k={k}")
+
+
+def write_ct_nifti(files: list[str], target: Path) -> tuple[np.ndarray, np.ndarray]:
+    volume, affine, slices = _build_volume(files)
+    image = nib.Nifti1Image(volume, affine)
+    image.set_qform(affine, code=1)
+    image.set_sform(affine, code=1)
+    header = image.header
+    header["descrip"] = b""
+    header["aux_file"] = b""
+    header["intent_name"] = b""
+    nib.save(image, str(target))
+
+    loaded = nib.load(str(target))
+    data = np.asanyarray(loaded.dataobj)
+    _assert_geometry(data, np.asarray(loaded.affine, dtype=np.float64), slices)
+    if any(bytes(loaded.header[key]).rstrip(b"\0") for key in ("descrip", "aux_file", "intent_name")):
+        raise AssertionError("NIfTI header contains non-empty descriptive fields")
+    return volume, affine
+
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("src_dir", type=Path, nargs="?")
@@ -220,15 +334,10 @@ def main() -> None:
 
     output_dir = LOCAL_CASES / case_id
     output_dir.mkdir(parents=True, exist_ok=True)
-    reader = sitk.ImageSeriesReader()
-    reader.SetFileNames(chosen["files"])
-    image = reader.Execute()
-    chosen["size"] = list(image.GetSize())
     target = output_dir / f"{case_id}_CT.nii.gz"
-    sitk.WriteImage(image, str(target))
-    header = nib.load(target).header
-    if any(bytes(header[key]).rstrip(b"\0") for key in ("descrip", "aux_file", "intent_name")):
-        raise AssertionError("NIfTI header contains non-empty descriptive fields")
+    volume, affine = write_ct_nifti(chosen["files"], target)
+    spacing = [float(np.linalg.norm(affine[:3, axis])) for axis in range(3)]
+    chosen["size"] = list(volume.shape)
     document = {
         "id": case_id,
         "source": {
@@ -237,7 +346,7 @@ def main() -> None:
             "series_number": chosen["number"],
             "series_description": chosen["description"],
             "convolution_kernel": chosen["kernel"],
-            "spacing_mm": [float(v) for v in image.GetSpacing()],
+            "spacing_mm": spacing,
             "size": chosen["size"],
         },
         "skipped_series": [
