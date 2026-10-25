@@ -128,6 +128,15 @@ kbd {
   text-transform: uppercase; color: var(--mucosa);
   border: 1px dashed var(--mucosa); border-radius: 4px; padding: 6px 9px;
 }
+.review-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+  padding: 10px 16px; color: #3B2A08; background: #F5C451;
+  border-bottom: 1px solid #C99A28; font-weight: 600;
+}
+.review-banner[hidden], .reviewed-note[hidden] { display: none; }
+.review-banner strong { display: block; }
+.review-banner p { margin: 2px 0 0; font-size: 12px; font-weight: 400; }
+.reviewed-note { margin: 5px 0 0; font-size: 11px; color: var(--muted); }
 
 @media (max-width: 720px) {
   .rail { width: 100%; height: auto; bottom: auto; flex-direction: row;
@@ -145,10 +154,11 @@ kbd {
 
   <div class="group">
     <h2>Case</h2>
-    <dl class="readout"><dt>Source</dt><dd>AeroPath 1</dd></dl>
+    <dl class="readout"><dt>Source</dt><dd id="r-source">unknown</dd></dl>
     <dl class="readout"><dt>Branches</dt><dd id="r-branches">—</dd></dl>
     <dl class="readout"><dt>Generations</dt><dd id="r-gens">—</dd></dl>
     <dl class="readout"><dt>Centreline</dt><dd id="r-length">—</dd></dl>
+    <p class="reviewed-note" id="reviewed-note" hidden></p>
   </div>
 
   <div class="group" id="g-nav">
@@ -179,6 +189,10 @@ kbd {
 </aside>
 
 <div class="proto">Prototype</div>
+<div class="review-banner" id="review-banner" role="alert" hidden>
+  <strong>Clinical review pending — not for training use</strong>
+  <div id="review-banner-entries"></div>
+</div>
 
 <nav class="switcher" id="switcher" aria-label="Renderer variant"></nav>
 
@@ -193,6 +207,24 @@ kbd {
 // No libraries: raw canvas 2D with hand-rolled projection.
 
 const A = window.AIRWAY;
+document.getElementById("r-source").textContent = A.source || "unknown";
+if (A.review && A.review.length) {
+  const banner = document.getElementById("review-banner");
+  const entries = document.getElementById("review-banner-entries");
+  for (const item of A.review) {
+    const line = document.createElement("p");
+    line.textContent = `${item.kind} ${item.lobe}`;
+    entries.appendChild(line);
+  }
+  banner.hidden = false;
+}
+if (A.signoff && A.signoff.length) {
+  const note = document.getElementById("reviewed-note");
+  note.textContent = A.signoff.map(item =>
+    `Reviewed: ${item.lobe} ${item.kind} — ${item.reviewer}, ${item.date}`
+  ).join("; ");
+  note.hidden = false;
+}
 const cv = document.getElementById("c");
 const ctx = cv.getContext("2d");
 const css = getComputedStyle(document.documentElement);

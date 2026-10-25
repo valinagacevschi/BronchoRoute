@@ -22,6 +22,19 @@ from route_frame import (
 )
 
 KEEP_EVERY = 3  # centreline samples; endpoints always kept
+def review_gate(review: list[dict], signoffs: list[dict], allow_review: bool = False):
+    """Return approved matches and remaining review flags."""
+    approved = {(s["kind"], s["lobe"]): s for s in signoffs
+                if s["decision"] == "approved"}
+    resolved, unresolved = [], []
+    for entry in review:
+        signoff = approved.get((entry["kind"], entry["lobe"]))
+        if signoff:
+            resolved.append({key: signoff[key] for key in
+                             ("kind", "lobe", "finding", "reviewer", "date")})
+        else:
+            unresolved.append(entry)
+    return resolved, unresolved, bool(unresolved) and not allow_review
 
 
 def decimate(points: list, step: int) -> list:
@@ -47,13 +60,23 @@ def main() -> None:
     if "review" not in g:
         print("Note: graph has no review field; treating it as clean")
     review = g.get("review", [])
+    case_id = str(g["case"])
+    case_path = Path("data/extracted/local") / case_id / "case.json"
+    case_record = json.loads(case_path.read_text()) if case_path.is_file() else {}
+    signoffs, unresolved, refused = review_gate(
+        review, case_record.get("review_signoff", []), args.allow_review
+    )
+    for entry in signoffs:
+        print(f"reviewed: {entry['kind']} {entry['lobe']} — approved by "
+              f"{entry['reviewer']} on {entry['date']}")
     if review:
-        if not args.allow_review:
+        if refused:
             print("Refusing graph with review entries:")
-            print(json.dumps(review, indent=2))
+            print(json.dumps(unresolved, indent=2))
             raise SystemExit(1)
-        print("WARNING: exporting a graph with review entries:")
-        print(json.dumps(review, indent=2))
+        if unresolved:
+            print("WARNING: exporting a graph with review entries:")
+            print(json.dumps(unresolved, indent=2))
 
     nodes = {n["id"]: n for n in g["nodes"]}
     edges = g["edges"]
@@ -130,6 +153,7 @@ def main() -> None:
 
     payload = {
         "case": g["case"],
+        "source": f"AeroPath {case_id}" if case_id.isdigit() else case_id,
         "root": g["root_node_id"],
         "nodes": {str(k): {"p": rel(v["position_mm"]), "r": v["radius_mm"]}
                   for k, v in nodes.items()},
@@ -143,7 +167,8 @@ def main() -> None:
                 "r": [round(edges[route[int(i)]]["radius_mm"], 2) for i in fe],
                 "g": [int(edges[route[int(i)]]["generation"]) for i in fe]},
         "forks": ff,
-        "review": review,
+        "review": unresolved,
+        "signoff": signoffs,
     }
 
     js = "window.AIRWAY = " + json.dumps(payload, separators=(",", ":")) + ";"
