@@ -1,3 +1,4 @@
+<!-- Phase 2: endoluminal anterior "A" tick kept on-canvas; __p2_debug.anteriorTick for verify. -->
 <title>Bronchial Tree Renderer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -13,6 +14,10 @@
   --steel:   #2E6E88;
   --mucosa:  #B4522F;
   --grid:    #D6DFE4;
+  --axis-r:  #c44;
+  --axis-a:  #3a3;
+  --axis-s:  #36c;
+  --axis-f:  #888;
   --shadow:  0 1px 2px rgba(23,36,43,.10), 0 8px 24px rgba(23,36,43,.08);
 }
 @media (prefers-color-scheme: dark) {
@@ -25,6 +30,10 @@
     --steel:   #5E93A8;
     --mucosa:  #C9603F;
     --grid:    #1B252C;
+    --axis-r:  #e07070;
+    --axis-a:  #6c6;
+    --axis-s:  #6af;
+    --axis-f:  #999;
     --shadow:  0 1px 2px rgba(0,0,0,.5), 0 10px 30px rgba(0,0,0,.45);
   }
 }
@@ -37,6 +46,10 @@
   --steel:   #5E93A8;
   --mucosa:  #C9603F;
   --grid:    #1B252C;
+  --axis-r:  #e07070;
+  --axis-a:  #6c6;
+  --axis-s:  #6af;
+  --axis-f:  #999;
   --shadow:  0 1px 2px rgba(0,0,0,.5), 0 10px 30px rgba(0,0,0,.45);
 }
 
@@ -74,6 +87,7 @@ canvas.dragging { cursor: grabbing; }
   margin-bottom: 5px; }
 
 .group { display: flex; flex-direction: column; gap: 7px; }
+.group[hidden] { display: none; }
 .group h2 {
   margin: 0; font-size: 10px; font-weight: 500; letter-spacing: .14em;
   text-transform: uppercase; color: var(--muted);
@@ -153,11 +167,28 @@ kbd {
   color: var(--muted); font-size: 9.5px; line-height: 1.3; }
 .prov-legend[hidden] { display: none; }
 
+.presets { display: flex; flex-direction: column; gap: 4px; }
+.presets button {
+  font: 500 12px/1.2 "IBM Plex Sans Condensed", sans-serif;
+  letter-spacing: .03em; text-align: left;
+  border: 1px solid var(--edge); border-radius: 6px;
+  padding: 7px 9px; background: var(--ground); color: var(--ink); cursor: pointer;
+}
+.presets button:hover { border-color: var(--steel); }
+.presets button[aria-pressed="true"] {
+  background: var(--steel); color: #fff; border-color: var(--steel);
+}
+.presets button .key {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px;
+  opacity: .7; margin-right: 6px;
+}
+
 @media (max-width: 720px) {
   .rail { width: 100%; height: auto; bottom: auto; flex-direction: row;
     flex-wrap: wrap; gap: 14px; padding: 12px 14px; border-right: 0;
     border-bottom: 1px solid var(--edge); }
-  .rail .group:nth-of-type(n+3) { display: none; }
+  .rail .group-depth,
+  .rail .group-question { display: none; }
   .switcher { left: 50%; bottom: 14px; }
 }
 </style>
@@ -167,7 +198,7 @@ kbd {
 <aside class="rail">
   <div class="brand"><span>Lung Navigator</span>Bronchial tree renderer</div>
 
-  <div class="group">
+  <div class="group group-case">
     <h2>Case</h2>
     <dl class="readout"><dt>Source</dt><dd id="r-source">unknown</dd></dl>
     <dl class="readout"><dt>Branches</dt><dd id="r-branches">—</dd></dl>
@@ -184,18 +215,30 @@ kbd {
     <dl class="readout"><dt>Turns ahead</dt><dd id="r-turns">—</dd></dl>
   </div>
 
-  <div class="group">
+  <div class="group group-depth">
     <h2>Depth</h2>
     <div class="ramp" id="ramp"></div>
     <div class="ramp-labels"><span>trachea</span><span>distal</span></div>
   </div>
 
-  <div class="group">
+  <div class="group" id="g-cam">
+    <h2>Camera</h2>
+    <div class="presets" id="presets" role="group" aria-label="3D camera presets">
+      <button type="button" data-preset="head45" aria-pressed="true">
+        <span class="key">H</span>Head 45°</button>
+      <button type="button" data-preset="operator0" aria-pressed="false">
+        <span class="key">O</span>Operator 0°</button>
+      <button type="button" data-preset="topdown90" aria-pressed="false">
+        <span class="key">T</span>Top-down 90°</button>
+    </div>
+  </div>
+
+  <div class="group group-controls">
     <h2>Controls</h2>
     <p class="hint" id="hint"></p>
   </div>
 
-  <div class="group">
+  <div class="group group-question">
     <h2>Question</h2>
     <p class="hint">Does a navigable airway tree read as anatomy? Compare a
     truthful 3D tree against a legible 2D map, and fly the lumen to judge
@@ -234,8 +277,11 @@ kbd {
 
 <script>
 "use strict";
+// Three renderers of the same airway graph:
+//   A — Anatomical 3D: orbit camera around the tree in the bronchoscopist frame
+//   B — Endoluminal: fly the lumen along the route with anterior at 12 o'clock
+//   C — Topology map: flat generation tree, patient-right on screen-right
 // Throwaway prototype for wayfinder ticket 06 (navigation renderer).
-// Three structurally different answers to "how is the airway rendered".
 // No libraries: raw canvas 2D with hand-rolled projection.
 
 const A = window.AIRWAY;
@@ -273,14 +319,15 @@ const tok = n => css.getPropertyValue(n).trim();
 
 const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
-    hint: "<kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>R</kbd> reset" },
+    hint: "<kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Head 45°" },
   { key: "endoluminal", name: "Endoluminal",
     hint: "<kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · <kbd>Space</kbd> auto-play · <kbd>T</kbd> reset route" },
   { key: "topology", name: "Topology map",
-    hint: "<kbd>drag</kbd> pan · <kbd>scroll</kbd> zoom · spatially false, deliberately" },
+    hint: "<kbd>drag</kbd> pan · <kbd>scroll</kbd> zoom · flat map: A/P depth not shown" },
 ];
 
 const params = new URLSearchParams(location.search);
+const DEBUG = params.get("debug") === "1";
 let variant = VARIANTS.findIndex(v => v.key === params.get("variant"));
 if (variant < 0) variant = 0;
 
@@ -298,8 +345,85 @@ function depthColor(g, alpha = 1) {
 document.getElementById("ramp").style.background =
   `linear-gradient(90deg, ${depthColor(0)}, ${depthColor(maxGen)})`;
 
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                         a[0] * b[1] - a[1] * b[0]];
+function norm(v) { const l = Math.hypot(...v) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
+const scale = (v, s) => [v[0] * s, v[1] * s, v[2] * s];
+const hypot3 = v => Math.hypot(v[0], v[1], v[2]);
+
 /* ---------------------------------------------------------------- camera */
-const cam = { yaw: -0.6, pitch: 0.25, dist: 260, panX: 0, panY: 0 };
+// Patient RAS mm: +x right, +y anterior, +z superior. Data centred on the root.
+// Bronchoscopist frame: supine, viewer at the head looking caudally; anterior
+// toward screen top; patient right on screen right.
+// Check: forward=-z, up=+y → right = forward×up = +x.
+//
+// Camera state is yaw/pitch around the look-at. Pitch is elevation from the
+// equatorial plane toward +z: 0 = top-down (along -y, feet/−z at screen top),
+// 45° = Head 45°, ~89° = Operator 0° (near the +z pole; clamped so yaw never
+// becomes a discontinuous roll). preset "free" means the user has orbited away
+// from a named preset.
+const DEFAULT_DIST = 260;
+const PITCH_MAX = 89 * Math.PI / 180;
+const ORBIT_RATE = 0.006;
+
+const CHILDREN = (() => {
+  const kids = new Map();
+  for (const e of A.edges) {
+    if (!kids.has(e.f)) kids.set(e.f, []);
+    kids.get(e.f).push(e);
+  }
+  return kids;
+})();
+
+function carinaNodeId() {
+  let n = A.root;
+  while ((CHILDREN.get(n) || []).length === 1) n = CHILDREN.get(n)[0].t;
+  return n;
+}
+
+function treeLookAt() {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const node of Object.values(A.nodes)) {
+    const p = node.p;
+    minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+    minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]);
+    minZ = Math.min(minZ, p[2]); maxZ = Math.max(maxZ, p[2]);
+  }
+  const root = A.nodes[String(A.root)].p;
+  const mid = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+  return [(root[0] + mid[0]) / 2, (root[1] + mid[1]) / 2, (root[2] + mid[2]) / 2];
+}
+const LOOK_AT = treeLookAt();
+
+// Pitch 0 = top-down; pitch π/2 = operator at the +z pole. Angles only — no upHint.
+const PRESET_ANGLES = {
+  head45: { yaw: 0, pitch: Math.PI / 4 },
+  operator0: { yaw: 0, pitch: PITCH_MAX },
+  topdown90: { yaw: 0, pitch: 0 },
+};
+
+function basisFromYawPitch(yaw, pitch) {
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const forward = [-cp * sy, -cp * cy, -sp];
+  const up = [sp * sy, sp * cy, -cp];
+  const right = norm(cross(forward, up));
+  return { forward: norm(forward), up: norm(up), right };
+}
+
+const cam = {
+  // preset: "head45" | "operator0" | "topdown90" | "free"
+  preset: "head45",
+  yaw: 0,
+  pitch: Math.PI / 4,
+  forward: [0, -Math.SQRT1_2, -Math.SQRT1_2],
+  up: [0, Math.SQRT1_2, -Math.SQRT1_2],
+  right: [1, 0, 0],
+  dist: DEFAULT_DIST, panX: 0, panY: 0,
+};
 let dpr = 1, W = 0, H = 0;
 
 function resize() {
@@ -310,19 +434,58 @@ function resize() {
 }
 addEventListener("resize", resize);
 
-// Patient axes are NIfTI world RAS: +x right, +y anterior, +z superior. The tree hangs below the
-// trachea, which sits at the origin because the data was centred on it.
+function syncBasis() {
+  const b = basisFromYawPitch(cam.yaw, cam.pitch);
+  cam.forward = b.forward;
+  cam.up = b.up;
+  cam.right = b.right;
+}
+
+function applyPreset(name, { resetPan = true } = {}) {
+  const key = PRESET_ANGLES[name] ? name : "head45";
+  const angles = PRESET_ANGLES[key];
+  cam.preset = key;
+  cam.yaw = angles.yaw;
+  cam.pitch = angles.pitch;
+  cam.dist = DEFAULT_DIST;
+  if (resetPan) { cam.panX = 0; cam.panY = 0; }
+  syncBasis();
+  syncPresetButtons();
+}
+
+function syncPresetButtons() {
+  for (const btn of document.querySelectorAll("#presets [data-preset]")) {
+    btn.setAttribute("aria-pressed", String(btn.dataset.preset === cam.preset));
+  }
+}
+
+applyPreset("head45");
+
+function orbitCamera(dx, dy) {
+  // Orbit in the same yaw/pitch parameterisation as the presets so the first
+  // drag after a preset cannot jump, flip or mirror. Pitch is clamped to ±89°.
+  // At the operator pole, pure yaw barely moves the view; tip slightly off the
+  // pole with horizontal drag so orbit stays continuous without a roll snap.
+  cam.yaw -= dx * ORBIT_RATE;
+  let nextPitch = cam.pitch - dy * ORBIT_RATE;
+  if (Math.abs(dx) > 0 && dy === 0 && Math.abs(Math.abs(cam.pitch) - PITCH_MAX) < 1e-9) {
+    nextPitch = Math.sign(cam.pitch || 1) * (PITCH_MAX - Math.abs(dx) * ORBIT_RATE);
+  }
+  cam.pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, nextPitch));
+  cam.preset = "free";
+  syncBasis();
+  syncPresetButtons();
+}
+
 function project(p, c) {
-  const cy = Math.cos(c.yaw), sy = Math.sin(c.yaw);
-  const cp = Math.cos(c.pitch), sp = Math.sin(c.pitch);
-  let x = p[0] * cy - p[1] * sy;
-  let y = p[0] * sy + p[1] * cy;
-  const z = -p[2] - 60;                    // superior is up on screen
-  const yy = y * cp - z * sp;
-  const zz = y * sp + z * cp + c.dist;
-  if (zz < 1) return null;
-  const f = (Math.min(W, H) * 0.9) / zz;
-  return { x: W / 2 + x * f + c.panX, y: H / 2 + yy * f + c.panY, z: zz, f };
+  // Camera sits at lookAt - forward*dist looking toward lookAt along forward.
+  const rel = sub(p, LOOK_AT);
+  const depth = dot(rel, c.forward) + c.dist;
+  if (depth < 1) return null;
+  const x = dot(rel, c.right);
+  const y = dot(rel, c.up);
+  const f = (Math.min(W, H) * 0.9) / depth;
+  return { x: W / 2 + x * f + c.panX, y: H / 2 - y * f + c.panY, z: depth, f };
 }
 
 /* ------------------------------------------------------- variant A: tree */
@@ -375,11 +538,72 @@ function drawAnatomical() {
       ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill(); ctx.stroke();
     }
   }
+  drawOrientationGizmo();
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
 }
 
+function drawOrientationGizmo() {
+  const ox = W - 54, oy = H - 54, len = 28;
+  const axes = [
+    { v: [1, 0, 0], label: "R", color: tok("--axis-r") },
+    { v: [0, 1, 0], label: "A", color: tok("--axis-a") },
+    { v: [0, 0, 1], label: "S", sub: "H", color: tok("--axis-s") },
+    { v: [0, 0, -1], label: "F", color: tok("--axis-f"), faint: true },
+  ];
+  // Far-to-near (descending depth) so nearer axes paint on top.
+  const projectedAxes = axes.map(axis => {
+    const x = dot(axis.v, cam.right) * len;
+    const y = -dot(axis.v, cam.up) * len;
+    return { ...axis, x, y, depth: dot(axis.v, cam.forward) };
+  }).sort((a, b) => b.depth - a.depth);
+  ctx.save();
+  ctx.strokeStyle = tok("--edge");
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(ox, oy, 34, 0, 7); ctx.stroke();
+  for (const a of projectedAxes) {
+    if (a.faint && Math.hypot(a.x, a.y) < 6) continue;
+    ctx.strokeStyle = a.color;
+    ctx.fillStyle = a.color;
+    ctx.globalAlpha = a.faint ? 0.55 : 0.95;
+    ctx.lineWidth = a.faint ? 1 : 2;
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(ox + a.x, oy + a.y);
+    ctx.stroke();
+    ctx.font = `600 ${a.faint ? 9 : 11}px "IBM Plex Sans Condensed", sans-serif`;
+    const lx = ox + a.x * 1.28 - 4, ly = oy + a.y * 1.28 + 3;
+    ctx.fillText(a.label, lx, ly);
+    if (a.sub) {
+      ctx.font = '500 8px "IBM Plex Sans Condensed", sans-serif';
+      ctx.fillText(a.sub, lx + 9, ly + 1);
+    }
+  }
+  ctx.restore();
+}
+
 /* ------------------------------------------------ variant B: endoluminal */
+// route_frame.transport_frame initialises up = patient anterior (0,1,0)
+// projected into the first tangent plane (clock 12). Screen-right in this
+// view is cross(tangent, up): at the trachea (tangent ≈ −z, up ≈ +y) that
+// equals +x = patient right. Parallel transport then preserves the frame.
 const fly = { s: 0, playing: false, pausedFork: null, armed: new Set(A.forks.map(f => f.fork)) };
+const ANTERIOR_HIDE_DOT = Math.cos(10 * Math.PI / 180);
+const ANTERIOR_LOOKAHEAD_MM = 8;
+// Last drawAnteriorTick result for ?debug=1 verify (screen pos + visibility).
+let lastAnteriorTick = {
+  visible: false, s: 0, x: null, y: null, cx: null, cy: null,
+  angleFrom12Deg: null, screen: null,
+};
+
+/** Project patient anterior into the view plane; null when nearly along the view axis. */
+function anteriorInView(dir, right, up) {
+  const anterior = [0, 1, 0];
+  if (Math.abs(dot(anterior, dir)) > ANTERIOR_HIDE_DOT) return null;
+  const projected = sub(anterior, scale(dir, dot(anterior, dir)));
+  const len = hypot3(projected);
+  if (len < 1e-6) return null;
+  return { x: dot(projected, right) / len, y: dot(projected, up) / len };
+}
 
 function flyAt(s) {
   const route = A.fly;
@@ -478,6 +702,8 @@ function drawEndoluminal() {
     ctx.setLineDash([]);
   }
 
+  drawAnteriorTick(rings, right, up, dir);
+
   const remaining = Math.max(0, A.fly.s[A.fly.s.length - 1] - fly.s);
   setReadout({
     gen: here.g.toFixed(0),
@@ -486,6 +712,60 @@ function drawEndoluminal() {
     turns: A.forks.filter(fork => fork.s > fly.s).length,
   });
   drawGuidance(right, up, dir, here.roll);
+}
+
+function drawAnteriorTick(rings, right, up, dir) {
+  // Always-on "A" on the visible lumen edge; rotates with camera roll.
+  // Hidden when anterior is within 10° of the view axis. Prefer ~8 mm
+  // look-ahead, but skip rings whose edge/label would land off-canvas
+  // (wide trachea + short look-ahead projects past the viewport).
+  const screen = anteriorInView(dir, right, up);
+  const remember = (visible, extra = {}) => {
+    lastAnteriorTick = {
+      visible, s: fly.s, x: null, y: null, cx: null, cy: null,
+      angleFrom12Deg: null,
+      screen: screen ? { x: screen.x, y: screen.y } : null,
+      ...extra,
+    };
+  };
+  if (!screen) { remember(false); return; }
+  const ax = screen.x, ay = screen.y;
+  const angleFrom12Deg = Math.atan2(ax, ay) * 180 / Math.PI;
+  let ring = null, best = Infinity;
+  for (const r of rings) {
+    const pixels = r.radius * r.point.f;
+    if (pixels < 4) continue;
+    const tipX = r.point.x + ax * pixels;
+    const tipY = r.point.y - ay * pixels;
+    const labelX = tipX + ax * 10;
+    const labelY = tipY - ay * 10;
+    if (labelX < 8 || labelX > W - 8 || labelY < 8 || labelY > H - 8) continue;
+    const err = Math.abs(r.i - ANTERIOR_LOOKAHEAD_MM);
+    if (err < best) { best = err; ring = r; }
+  }
+  if (!ring) { remember(false, { angleFrom12Deg }); return; }
+  const pixels = ring.radius * ring.point.f;
+  const x = ring.point.x + ax * pixels;
+  const y = ring.point.y - ay * pixels;
+  const labelX = x + ax * 10;
+  const labelY = y - ay * 10;
+  remember(true, {
+    x: labelX, y: labelY, cx: ring.point.x, cy: ring.point.y,
+    angleFrom12Deg, pixels,
+  });
+  ctx.save();
+  ctx.fillStyle = "#48a9ff";
+  ctx.strokeStyle = "#48a9ff";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(ring.point.x + ax * pixels * 0.82, ring.point.y - ay * pixels * 0.82);
+  ctx.lineTo(x, y);
+  ctx.stroke();
+  ctx.font = '700 12px "IBM Plex Sans Condensed", sans-serif';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("A", labelX, labelY);
+  ctx.restore();
 }
 
 function drawGuidance(right, up, dir, roll) {
@@ -497,10 +777,8 @@ function drawGuidance(right, up, dir, roll) {
   const cx = left + 42;
   const cy = bottom - 42;
   const radius = 35;
-  const anterior = [0, 1, 0];
   const next = A.forks.find(fork => fork.s >= fly.s);
-  const projected = anterior.map((value, i) => value - dir[i] * dot(anterior, dir));
-  const projectedLength = Math.hypot(...projected);
+  const screenAnterior = anteriorInView(dir, right, up);
   const textX = left + 94;
   const lines = [];
   if (next) {
@@ -524,7 +802,7 @@ function drawGuidance(right, up, dir, roll) {
       && A.fly.s[A.fly.s.length - 1] - fly.s <= 10) {
     lines.push({ text: `Target ${A.target_gap_mm.toFixed(1)} mm beyond last visible airway`, color: "#f4f7f8" });
   }
-  if (projectedLength < 0.10) {
+  if (!screenAnterior) {
     lines.push({ text: "Anterior undefined: view along AP axis", color: "#f4f7f8" });
   }
   lines.push({ text: "Simulated steering · CT-derived · not live tracking", color: "#d5e0e5" });
@@ -559,14 +837,12 @@ function drawGuidance(right, up, dir, roll) {
     ctx.fillText(clock, cx + Math.cos(angle) * (radius + 12) - 4,
       cy + Math.sin(angle) * (radius + 12) + 4);
   }
-  if (projectedLength >= 0.10) {
-    const x = dot(projected, right) / projectedLength;
-    const y = -dot(projected, up) / projectedLength;
+  if (screenAnterior) {
     ctx.strokeStyle = "#48a9ff";
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + x * radius * 0.72, cy + y * radius * 0.72);
+    ctx.lineTo(cx + screenAnterior.x * radius * 0.72, cy - screenAnterior.y * radius * 0.72);
     ctx.stroke();
   }
 
@@ -593,70 +869,95 @@ function mucosa(d) {
   const t = Math.max(0, Math.min(1, d));
   return `rgba(${Math.round(201 * t)},${Math.round(96 * t)},${Math.round(63 * t)},1)`;
 }
-const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                         a[0] * b[1] - a[1] * b[0]];
-function norm(v) { const l = Math.hypot(...v) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
 
 /* --------------------------------------------------- variant C: topology */
 let topoLayout = null;
 function buildTopology() {
-  // Radial tree: angle by subtree share, radius by generation. Preserves
-  // topology exactly and discards real geometry — the Lung Navigator
-  // proposal, included so the trade-off is visible rather than argued.
-  const kids = new Map();
-  for (const e of A.edges) {
-    if (!kids.has(e.f)) kids.set(e.f, []);
-    kids.get(e.f).push(e);
+  // Top-down tree: trachea at the top, airway generation downward (e.g, not
+  // hop count). Sibling order left→right by mean patient-x of each child
+  // subtree so patient right (+x) lands on screen right.
+  const meanXCache = new Map();
+  const subtreeMeanX = n => {
+    if (meanXCache.has(n)) return meanXCache.get(n);
+    const all = [];
+    const walk = id => {
+      all.push(A.nodes[String(id)].p[0]);
+      for (const e of CHILDREN.get(id) || []) walk(e.t);
+    };
+    walk(n);
+    const mean = all.reduce((s, v) => s + v, 0) / all.length;
+    meanXCache.set(n, mean);
+    return mean;
+  };
+  for (const [, arr] of CHILDREN) {
+    arr.sort((a, b) => subtreeMeanX(a.t) - subtreeMeanX(b.t));
   }
-  const leaves = n => {
-    const k = kids.get(n);
-    if (!k || !k.length) return 1;
-    return k.reduce((s, e) => s + leaves(e.t), 0);
-  };
   const pos = new Map();
-  const place = (n, a0, a1, gen) => {
-    const a = (a0 + a1) / 2;
-    pos.set(n, { a, gen, x: Math.cos(a) * gen * 34, y: Math.sin(a) * gen * 34 });
-    const k = kids.get(n) || [];
-    const total = k.reduce((s, e) => s + leaves(e.t), 0) || 1;
-    let cur = a0;
-    for (const e of k) {
-      const span = (a1 - a0) * (leaves(e.t) / total);
-      place(e.t, cur, cur + span, gen + 1);
-      cur += span;
+  let leaf = 0;
+  const place = (n, genY) => {
+    const k = CHILDREN.get(n) || [];
+    if (!k.length) {
+      pos.set(n, { x: leaf, y: genY });
+      leaf += 1;
+      return;
     }
+    for (const e of k) place(e.t, e.g);
+    const xs = k.map(e => pos.get(e.t).x);
+    pos.set(n, {
+      x: xs.reduce((s, v) => s + v, 0) / xs.length,
+      y: genY,
+    });
   };
-  place(A.root, -Math.PI, Math.PI, 0);
+  place(A.root, 0);
+  let minX = Infinity, maxX = -Infinity, maxY = 0;
+  for (const p of pos.values()) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  const spanX = Math.max(1e-6, maxX - minX), spanY = Math.max(1e-6, maxY);
+  const midX = (minX + maxX) / 2, midY = maxY / 2;
+  const targetW = 240, targetH = 200;
+  for (const p of pos.values()) {
+    p.x = ((p.x - midX) / spanX) * targetW;
+    p.y = ((p.y - midY) / spanY) * targetH;
+  }
   topoLayout = pos;
+}
+
+function topoToScreen(p) {
+  const s = DEFAULT_DIST / cam.dist;
+  return {
+    x: W / 2 + cam.panX + p.x * s,
+    y: H / 2 + cam.panY + p.y * s,
+  };
 }
 
 function drawTopology() {
   if (!topoLayout) buildTopology();
-  const s = 260 / cam.dist;
-  const ox = W / 2 + cam.panX, oy = H / 2 + cam.panY;
   ctx.lineCap = "round";
   for (const e of A.edges) {
     const a = topoLayout.get(e.f), b = topoLayout.get(e.t);
     if (!a || !b) continue;
+    const pa = topoToScreen(a), pb = topoToScreen(b);
+    const s = DEFAULT_DIST / cam.dist;
     ctx.strokeStyle = depthColor(e.g, 0.95);
     ctx.lineWidth = Math.max(0.8, Math.min(9, e.r * 1.6) * s);
     ctx.beginPath();
-    ctx.moveTo(ox + a.x * s, oy + a.y * s);
-    ctx.lineTo(ox + b.x * s, oy + b.y * s);
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
     ctx.stroke();
   }
   const t = topoLayout.get(A.target);
   if (t) {
+    const pt = topoToScreen(t);
     ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(ox + t.x * s, oy + t.y * s, 9, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, 9, 0, 7); ctx.stroke();
   }
-  // Generation rings, so depth is readable as distance from centre.
-  ctx.strokeStyle = tok("--grid"); ctx.lineWidth = 1;
-  for (let g = 5; g <= maxGen; g += 5) {
-    ctx.beginPath(); ctx.arc(ox, oy, g * 34 * s, 0, 7); ctx.stroke();
-  }
+  const railRight = document.querySelector(".rail").getBoundingClientRect().right;
+  ctx.fillStyle = tok("--muted");
+  ctx.font = '500 11px "IBM Plex Sans", sans-serif';
+  ctx.textAlign = "left";
+  ctx.fillText("Flat map: anterior/posterior depth not shown", railRight + 16, H - 18);
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
 }
 
@@ -689,20 +990,34 @@ cv.addEventListener("pointermove", e => {
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   drag = { x: e.clientX, y: e.clientY };
   if (variant === 2) { cam.panX += dx; cam.panY += dy; }
-  else { cam.yaw += dx * 0.006; cam.pitch = Math.max(-1.4, Math.min(1.4, cam.pitch + dy * 0.006)); }
+  else if (variant === 0) { orbitCamera(dx, dy); }
 });
 cv.addEventListener("wheel", e => {
   e.preventDefault();
   cam.dist = Math.max(60, Math.min(900, cam.dist * (1 + Math.sign(e.deltaY) * 0.1)));
 }, { passive: false });
 
+document.getElementById("presets").addEventListener("click", e => {
+  const btn = e.target.closest("[data-preset]");
+  if (btn) applyPreset(btn.dataset.preset);
+});
+
 const held = new Set();
 addEventListener("keydown", e => {
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
-  if (e.key >= "1" && e.key <= String(VARIANTS.length)) { setVariant(+e.key - 1); return; }
-  if (e.key === "r" || e.key === "R") { cam.yaw = -0.6; cam.pitch = 0.25; cam.dist = 260; cam.panX = cam.panY = 0; }
-  if (e.key === "t" || e.key === "T") { fly.s = 0; fly.pausedFork = null; fly.armed = new Set(A.forks.map(f => f.fork)); }
+  if (e.key >= "1" && e.key <= "3") {
+    setVariant(+e.key - 1);
+    return;
+  }
+  if (variant === 0) {
+    if (e.key === "h" || e.key === "H") applyPreset("head45");
+    if (e.key === "o" || e.key === "O") applyPreset("operator0");
+    if (e.key === "t" || e.key === "T") applyPreset("topdown90");
+    if (e.key === "r" || e.key === "R") applyPreset("head45");
+  } else if (variant === 1 && (e.key === "t" || e.key === "T")) {
+    fly.s = 0; fly.pausedFork = null; fly.armed = new Set(A.forks.map(f => f.fork));
+  }
   if (e.key === " " && variant === 1) { fly.playing = !fly.playing; fly.pausedFork = null; e.preventDefault(); }
   if (["ArrowUp", "ArrowDown"].includes(e.key)) {
     if (fly.pausedFork && e.key === "ArrowUp" && !e.repeat) {
@@ -765,6 +1080,70 @@ function render() {
   document.getElementById("hint").innerHTML = VARIANTS[variant].hint +
     "<br><br>Switch renderer with <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>.";
   document.getElementById("g-nav").style.opacity = variant === 1 ? "1" : ".45";
+  document.getElementById("g-cam").hidden = variant !== 0;
+  syncPresetButtons();
+}
+
+if (DEBUG) {
+  function mainBronchusNodes() {
+    const carina = carinaNodeId();
+    const children = (CHILDREN.get(carina) || []).map(e => ({
+      id: e.t,
+      x: A.nodes[String(e.t)].p[0],
+    }));
+    children.sort((a, b) => a.x - b.x);
+    return {
+      trachea: A.root,
+      carina,
+      left: children[0] && children[0].id,
+      right: children[children.length - 1] && children[children.length - 1].id,
+    };
+  }
+  function topoScreen(id) {
+    if (!topoLayout) buildTopology();
+    const p = topoLayout.get(id);
+    return p ? topoToScreen(p) : null;
+  }
+  // Headless verify hook (?debug=1): main-bronchus L/R, top-down feet-up, drag,
+  // endoluminal anterior tick screen position / visibility.
+  window.__p2_debug = {
+    applyPreset,
+    orbitCamera,
+    getPreset: () => cam.preset,
+    setVariant,
+    getVariant: () => VARIANTS[variant].key,
+    project: p => project(p, cam),
+    nodeScreen: id => project(A.nodes[String(id)].p, cam),
+    mainBronchi: mainBronchusNodes,
+    topoScreen,
+    cam: () => ({
+      forward: [...cam.forward], up: [...cam.up], right: [...cam.right],
+      yaw: cam.yaw, pitch: cam.pitch,
+      dist: cam.dist, preset: cam.preset,
+    }),
+    setFlyS(s) {
+      fly.s = Math.max(0, Math.min(A.fly.s.at(-1), s));
+      fly.pausedFork = null;
+      if (variant !== 1) setVariant(1);
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = tok("--ground"); ctx.fillRect(0, 0, W, H);
+      drawEndoluminal();
+      return { s: fly.s, tick: { ...lastAnteriorTick } };
+    },
+    goToFirstForkPause() {
+      const fork = A.forks[0];
+      if (!fork) return { s: fly.s, pausedFork: null, tick: { ...lastAnteriorTick } };
+      fly.s = fork.pause_s;
+      fly.pausedFork = fork.fork;
+      fly.playing = false;
+      if (variant !== 1) setVariant(1);
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = tok("--ground"); ctx.fillRect(0, 0, W, H);
+      drawEndoluminal();
+      return { s: fly.s, pausedFork: fly.pausedFork, tick: { ...lastAnteriorTick } };
+    },
+    anteriorTick: () => ({ ...lastAnteriorTick }),
+  };
 }
 
 document.getElementById("r-branches").textContent = A.edges.length;
