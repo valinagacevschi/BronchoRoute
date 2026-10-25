@@ -17,13 +17,10 @@ import nibabel as nib
 import numpy as np
 from scipy import ndimage
 
-LOBES = {
-    "lung_upper_lobe_left": 1,
-    "lung_lower_lobe_left": 2,
-    "lung_upper_lobe_right": 3,
-    "lung_middle_lobe_right": 4,
-    "lung_lower_lobe_right": 5,
-}
+from paths import TS_OUT
+from snomed import LOBES as LOBE_TABLE
+
+LOBES = {info["key"]: value for value, info in LOBE_TABLE.items()}
 ROIS = [*LOBES, "trachea"]
 BRIDGE_MAX_GAP_MM = 4.0
 BRIDGE_MIN_VOLUME_MM3 = 20.0
@@ -37,12 +34,31 @@ def run(cmd: list[str]) -> None:
         sys.exit(f"failed: {' '.join(cmd)}")
 
 
-def run_cached(cmd: list[str], expected: list[Path]) -> None:
-    missing = [path for path in expected if not path.exists()]
-    if not missing:
-        print(f"  cached: {cmd[cmd.index('-o') + 1]}")
-        return
+def ct_identity(ct: Path) -> dict:
+    resolved = ct.resolve()
+    stat = resolved.stat()
+    return {"path": str(resolved), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def write_marker(marker: Path, options: dict) -> None:
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps(options, sort_keys=True) + "\n")
+
+
+def run_cached(cmd: list[str], expected: list[Path], marker: Path,
+               options: dict, adopt_cache: bool = False) -> None:
+    if all(path.exists() for path in expected):
+        if marker.exists():
+            if json.loads(marker.read_text()) == options:
+                print(f"  cached: {cmd[cmd.index('-o') + 1]}")
+                return
+        elif adopt_cache:
+            print(f"  ADOPTING unmarked outputs as "
+                  f"{json.dumps(options, sort_keys=True)}", flush=True)
+            write_marker(marker, options)
+            return
     run(cmd)
+    write_marker(marker, options)
 
 
 def merge_lobes(seg_dir: Path, out: Path) -> None:
@@ -210,13 +226,18 @@ def make_airway(airway_path: Path, trachea_path: Path, out: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("ct", type=Path)
-    ap.add_argument("-o", "--out", type=Path, default=Path("ts_out"))
+    ap.add_argument("-o", "--out", type=Path, default=TS_OUT)
     ap.add_argument("--fast", action="store_true")
     ap.add_argument("--device", default="mps")
     ap.add_argument("--legacy", action="store_true")
+    ap.add_argument("--higher-order", action="store_true")
+    ap.add_argument("--adopt-cache", action="store_true",
+                    help="stamp missing run.json for existing outputs as the "
+                         "current options instead of treating them as a miss")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
+    ct = ct_identity(args.ct)
     airway_dir = args.out / "airways_source"
     if args.legacy:
         task = "lung_vessels_LEGACY"
@@ -232,7 +253,15 @@ def main() -> None:
            "--task", task, "--device", args.device]
     if args.fast:
         cmd.append("--fast")
-    run_cached(cmd, [airway_dir / name for name in airway_outputs])
+    if args.higher_order:
+        cmd.append("--higher_order_resampling")
+    airway_options = {
+        "ct": ct, "device": args.device, "fast": args.fast,
+        "legacy": args.legacy, "higher_order_resampling": args.higher_order,
+    }
+    run_cached(cmd, [airway_dir / name for name in airway_outputs],
+               airway_dir / "run.json", airway_options,
+               adopt_cache=args.adopt_cache)
 
     lobe_dir = args.out / "lobes"
     print("lobes and trachea (total task, six structures only)")
@@ -240,7 +269,16 @@ def main() -> None:
            "--roi_subset", *ROIS, "--device", args.device]
     if args.fast:
         cmd.append("--fast")
-    run_cached(cmd, [lobe_dir / f"{name}.nii.gz" for name in ROIS])
+    if args.higher_order:
+        cmd.append("--higher_order_resampling")
+    # Lobe step never passes --legacy; keep it out of the cache key.
+    lobe_options = {
+        "ct": ct, "device": args.device, "fast": args.fast,
+        "higher_order_resampling": args.higher_order,
+    }
+    run_cached(cmd, [lobe_dir / f"{name}.nii.gz" for name in ROIS],
+               lobe_dir / "run.json", lobe_options,
+               adopt_cache=args.adopt_cache)
 
     merge_lobes(lobe_dir, args.out / "lobes.nii.gz")
     make_airway(airway_dir / airway_filename, lobe_dir / "trachea.nii.gz",

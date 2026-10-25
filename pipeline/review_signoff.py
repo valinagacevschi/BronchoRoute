@@ -1,10 +1,12 @@
 """Record clinician decisions for graph review flags on a local case."""
 
 import argparse
-from datetime import date
 import json
 import re
+from datetime import date
 from pathlib import Path
+
+from paths import LOCAL_CASES
 
 KNOWN_KINDS = {"small_lobe", "lobe_without_airways"}
 REVIEWER_PATTERN = re.compile(r"^[^,\r\n]+, ([A-Z]\.){1,4}$")
@@ -32,7 +34,7 @@ def main() -> None:
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
 
-    case_path = Path("data/extracted/local") / args.case_id / "case.json"
+    case_path = LOCAL_CASES / args.case_id / "case.json"
     if not case_path.is_file():
         parser.error(f"case.json not found: {case_path}")
     record = json.loads(case_path.read_text())

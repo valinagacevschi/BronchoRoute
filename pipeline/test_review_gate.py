@@ -68,6 +68,7 @@ def test_signoff_cli_replaces_matching_decision_in_temporary_case(tmp_path, monk
         signoff(decision="rejected")
     ]}))
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("review_signoff.LOCAL_CASES", tmp_path / "data/extracted/local")
     monkeypatch.setattr("sys.argv", ["review_signoff.py", "local-test",
         "--kind", "small_lobe", "--lobe", "right middle lobe",
         "--decision", "approved", "--finding", "Reviewed", "--reviewer",

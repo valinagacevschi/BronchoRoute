@@ -7,6 +7,8 @@ import nibabel as nib
 import numpy as np
 from PIL import Image, ImageDraw
 
+from paths import AEROPATH, LOCAL_CASES, OUT, TS_OUT
+
 
 def orient_ras_slice(array: np.ndarray, superior_up: bool = True) -> np.ndarray:
     """Map canonical RAS plane axes to radiological screen directions."""
@@ -78,21 +80,20 @@ def draw_overlay(ct: np.ndarray, expert: np.ndarray | None, fallback: np.ndarray
 
 def render_case(case: str) -> list[Path]:
     local = case.startswith("local-")
-    root = (Path("data/extracted/local") / case if local else
-            Path("data/extracted/AeroPath") / case)
+    root = (LOCAL_CASES if local else AEROPATH) / case
     ct_img = nib.as_closest_canonical(
         nib.load(root / (f"{case}_CT.nii.gz" if local else f"{case}_CT_HR.nii.gz")))
     expert_path = None if local else root / f"{case}_CT_HR_label_airways.nii.gz"
     expert_img = (nib.as_closest_canonical(nib.load(expert_path))
                   if expert_path else None)
     fallback_img = nib.as_closest_canonical(nib.load(
-        Path("ts_out") / (case if local else f"fallback_{case}") / "airways.nii.gz"))
+        TS_OUT / (case if local else f"fallback_{case}") / "airways.nii.gz"))
     ct = np.asanyarray(ct_img.dataobj)
     expert = np.asanyarray(expert_img.dataobj) > 0 if expert_img else None
     fallback = np.asanyarray(fallback_img.dataobj) > 0
     if ct.shape != fallback.shape or (expert is not None and ct.shape != expert.shape):
         raise ValueError(f"case {case}: CT and mask shapes differ")
-    out_dir = Path("out/overlays") / str(case)
+    out_dir = OUT / "overlays" / str(case)
     out_dir.mkdir(parents=True, exist_ok=True)
     airway = fallback if expert is None else expert
     coordinates = np.argwhere(airway)

@@ -31,6 +31,8 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
+from paths import AEROPATH, OUT
+
 W, H = 480, 360
 FOV_DEG = 75.0
 STEP_MM = 0.3
@@ -412,9 +414,9 @@ td.bad{color:var(--warn);font-weight:500}
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("case_dir", nargs="?", default="data/extracted/AeroPath/1")
+    ap.add_argument("case_dir", nargs="?", default=str(AEROPATH / "1"))
     ap.add_argument("-g", "--graph", default="cases/1_graph.json")
-    ap.add_argument("-o", "--out", default="out/spike_wall")
+    ap.add_argument("-o", "--out", default=str(OUT / "spike_wall"))
     args = ap.parse_args()
 
     out = Path(args.out)

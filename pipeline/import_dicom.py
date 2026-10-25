@@ -11,6 +11,7 @@ import nibabel as nib
 import numpy as np
 import pydicom
 import SimpleITK as sitk
+from paths import LOCAL_CASES
 
 
 VERSION = "1.0"
@@ -175,7 +176,7 @@ def main() -> None:
             raise SystemExit(f"no DICOM header found in {series_name}")
         ds = pydicom.dcmread(headers[0], stop_before_pixels=True, force=False)
         series_hash = series_uid_hash(str(ds.SeriesInstanceUID))
-        case_path = Path("data/extracted/local") / case_id / "case.json"
+        case_path = LOCAL_CASES / case_id / "case.json"
         document = json.loads(case_path.read_text())
         document.setdefault("source", {})["series_uid_sha256"] = series_hash
         case_path.write_text(json.dumps(document, indent=2) + "\n")
@@ -187,7 +188,7 @@ def main() -> None:
     chosen_uid, chosen, reasons = pick_series(series, args.series)
 
     if not args.force:
-        local_root = Path("data/extracted/local")
+        local_root = LOCAL_CASES
         for case_path in sorted(local_root.glob("*/case.json")):
             try:
                 existing = json.loads(case_path.read_text())
@@ -211,13 +212,13 @@ def main() -> None:
     for uid, reason in sorted(reasons.items(), key=lambda item: series[item[0]]["number"]):
         print(f"Skipped {series[uid]['folder']} / SeriesNumber "
               f"{series[uid]['number']}: {reason}")
-    case_id = args.id or next_case_id(Path("data/extracted/local"))
+    case_id = args.id or next_case_id(LOCAL_CASES)
     print(f"Pick: folder {chosen['folder']} / SeriesNumber {chosen['number']} "
           f"({chosen['description']}) -> {case_id}")
     if args.dry_run:
         return
 
-    output_dir = Path("data/extracted/local") / case_id
+    output_dir = LOCAL_CASES / case_id
     output_dir.mkdir(parents=True, exist_ok=True)
     reader = sitk.ImageSeriesReader()
     reader.SetFileNames(chosen["files"])

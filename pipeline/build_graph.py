@@ -20,6 +20,8 @@ import kimimaro
 import networkx as nx
 import nibabel as nib
 import numpy as np
+from paths import OUT
+from snomed import LOBES, SNOMED_SOURCE, TRACHEA
 
 # Kimimaro's TEASAR parameters. `scale`/`const` set the invalidation-ball size
 # around each accepted path: too small and the skeleton grows hairs, too large
@@ -35,6 +37,19 @@ TEASAR = {
 
 # Branches shorter than this are thinning artefacts rather than anatomy.
 MIN_BRANCH_MM = 2.0
+
+LOBE_NAMES = {value: info["name"] for value, info in LOBES.items()}
+
+
+def trachea_snomed(name: str | None) -> dict | None:
+    return TRACHEA.copy() if name == "trachea" else None
+
+
+def exported_lobes() -> list[dict]:
+    return [
+        {"value": value, "name": info["name"], "snomed": info["snomed"].copy()}
+        for value, info in sorted(LOBES.items())
+    ]
 
 
 def load_mask(path: Path) -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
@@ -228,15 +243,6 @@ def prune_blind_alleys(branches: list[dict]) -> list[dict]:
     if dropped:
         print(f"  pruned   {dropped} branches whose subtree never reaches lung")
     return keep
-
-
-LOBE_NAMES = {
-    1: "left upper lobe",
-    2: "left lower lobe",
-    3: "right upper lobe",
-    4: "right middle lobe",
-    5: "right lower lobe",
-}
 
 
 def label_lobes(branches: list[dict], lungs: np.ndarray | None, spacing) -> None:
@@ -486,6 +492,7 @@ def export(branches: list[dict], case: str, spacing, affine: np.ndarray,
             "lobe_name": LOBE_NAMES.get(b["lobe"]),
             "lobe_source": b.get("lobe_source"),
             "airway_name": b.get("airway_name"),
+            "snomed": trachea_snomed(b.get("airway_name")),
             "lobe_confidence": b["lobe_confidence"],
             "centreline_mm": [[round(float(v), 2) for v in p]
                               for p in b["centreline"]],
@@ -498,6 +505,8 @@ def export(branches: list[dict], case: str, spacing, affine: np.ndarray,
         "case": case,
         "coordinate_system": "patient_physical_mm",
         "source": source,
+        "snomed_source": SNOMED_SOURCE,
+        "lobes": exported_lobes(),
         "voxel_spacing_mm": [round(s, 4) for s in spacing],
         "root_node_id": 0,
         "provenance_source": (f"bridge mask {bridge_source}" if bridge_mask is not None
@@ -515,7 +524,7 @@ def export(branches: list[dict], case: str, spacing, affine: np.ndarray,
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("case_dir", type=Path)
-    ap.add_argument("-o", "--out", type=Path, default=Path("out"))
+    ap.add_argument("-o", "--out", type=Path, default=OUT)
     ap.add_argument("--lobes", type=Path,
                     help="5-label lobe mask from TotalSegmentator. Without it "
                          "the fallback is AeroPath's lungs file, which is "

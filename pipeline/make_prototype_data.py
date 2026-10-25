@@ -10,6 +10,7 @@ import argparse
 from collections import deque
 from pathlib import Path
 import numpy as np
+from paths import LOCAL_CASES
 from route_frame import (
     PAUSE_BEFORE_MM,
     STEP_MM,
@@ -156,7 +157,7 @@ def main() -> None:
         print("Note: graph has no review field; treating it as clean")
     review = g.get("review", [])
     case_id = str(g["case"])
-    case_path = Path("data/extracted/local") / case_id / "case.json"
+    case_path = LOCAL_CASES / case_id / "case.json"
     case_record = json.loads(case_path.read_text()) if case_path.is_file() else {}
     signoffs, unresolved, refused = review_gate(
         review, case_record.get("review_signoff", []), args.allow_review

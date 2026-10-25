@@ -57,7 +57,7 @@ code reviews check against. No 3D Slicer: every step happens in our app.
 
 | View | Orientation / behaviour |
 |---|---|
-| Anatomical 3D | Default camera at the head end, ~45° elevated, looking caudally onto the chest; presets *operator* (0°) and *top-down* (90°); free orbit. |
+| Anatomical 3D | Default camera at the head end, ~45° elevated, looking caudally onto the chest; presets *operator* (0°) and *top-down* (90°: looking down onto the chest, head at the bottom of the screen where the operator stands, patient right on screen right — a head-at-top version would have to be mirrored); free orbit. |
 | Endoluminal | Starts in the trachea with anterior at 12 o'clock; parallel-transport roll as now; an "A" tick always marks anterior (roll is simulated, not measured). |
 | Topology map | Trachea at the top, branches downward, patient's right on screen right; legend notes that anterior/posterior depth is not shown. |
 | CT panes (new) | Red axial, green coronal, yellow sagittal. Shared crosshair (click in any pane moves the others), wheel scrolls the pane under the cursor, lung and mediastinal window presets, toggleable overlays: airway mask by provenance, route, Lesion, RouteTarget. |
