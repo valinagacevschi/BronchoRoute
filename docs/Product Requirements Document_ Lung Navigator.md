@@ -85,12 +85,16 @@ Eight steps, from the build plan. The *Phase* column refers to the build plan's 
 | CT-04 | The orientation of the volume comes from the DICOM geometry, never from slice order or "start at the top slice". |
 | CT-05 | The clinician confirms or overrides the proposal in the app. The record keeps both the choice and the skipped list. |
 
-**Kernel: open decision (§15).** The importer currently prefers standard/soft kernels
-(`STANDARD|SOFT|B30`) and keeps lung/sharp series for comparison only. BBT's published guidance
-recommends the opposite: "a lung or relatively sharp reconstruction kernel, provided noise does not
-make the airway lumen difficult to follow" [7], and its series ranker scores sharp kernels above
-standard ones. The one local case has both a `STANDARD` 1.25 mm series (used) and a `LUNG`
-series, so the two can be compared directly.
+**Kernel: decided for now, on one patient (§15).** The importer prefers standard/soft kernels
+(`STANDARD|SOFT|B30`) and keeps lung/sharp series for comparison only. This was decided on
+`local-001`, which has both reconstructions at the same 0.76 × 0.76 × 1.25 mm spacing (the
+`LUNG` series covers the thorax only, 291 vs 485 slices). Run through the same pipeline, the
+`STANDARD` series found all 8 named structures. The `LUNG` series found 6 and missed the right
+main and right middle lobe bronchi. BBT's published guidance recommends the opposite: "a lung or
+relatively sharp reconstruction kernel, provided noise does not make the airway lumen difficult to
+follow" [7], and its series ranker scores sharp kernels above standard ones. One patient is not
+enough to overrule that, so the default should be re-checked as more dual-reconstruction cases
+arrive.
 
 ---
 
@@ -289,7 +293,7 @@ plan → fixes → its own commit.
 
 | Decision | Why it matters | Owner | Current position |
 |---|---|---|---|
-| **Reconstruction kernel** | Importer prefers standard; BBT recommends lung/sharp (§5) | Clinicians | Compare both on the local case that has both; then decide the default or offer both with reasons |
+| **Reconstruction kernel** | Standard chosen on one patient (8/8 vs 6/8 named structures); BBT recommends lung/sharp (§5) | Clinicians | Keep standard; repeat the comparison on every new case that has both reconstructions, and tell Toma about the result |
 | **Screen frame** | All views assume anterior up and patient right on screen right | Clinicians | Confirm against a real bronchoscope screen |
 | **Roll and pause parameters** | Ours 10 / 6 / 5 mm vs BBT 8 / 2 / 2 mm | Clinicians | Keep ours until clinicians try both |
 | **Fork clock validation** | Automatic clock positions have no clinical ground truth yet | Clinicians + developer | Compare with a clinician's hand-marked bifurcation clocks on one case |
