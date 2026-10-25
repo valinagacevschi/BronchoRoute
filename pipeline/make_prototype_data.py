@@ -10,7 +10,7 @@ import argparse
 from collections import deque
 from pathlib import Path
 import numpy as np
-from paths import LOCAL_CASES
+import repo_root
 from route_frame import (
     PAUSE_BEFORE_MM,
     STEP_MM,
@@ -23,6 +23,36 @@ from route_frame import (
 )
 
 KEEP_EVERY = 3  # centreline samples; endpoints always kept
+AIRWAY_EMBED_SENTINEL = "/*__AIRWAY_EMBED__*/"
+
+repo_root.ensure()
+
+
+def source_label(case_id: str | int) -> str:
+    text = str(case_id)
+    return f"AeroPath {text}" if text.isdigit() else text
+
+
+def load_case_record(case_id: str) -> dict:
+    """Load case.json via CaseRef (local or OUT/cases/<n>/ for AeroPath)."""
+    from app.caseref import CaseRef, UnknownCase
+
+    try:
+        ref = CaseRef.parse(str(case_id))
+    except UnknownCase:
+        return {}
+    path = ref.case_json
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text())
+
+
+class ReviewBlocked(Exception):
+    """Raised when unresolved review flags block payload export."""
+
+    def __init__(self, unresolved: list):
+        self.unresolved = unresolved
+        super().__init__("graph has unresolved review entries")
 
 
 def provenance_mapping(graph_edges: list[dict]) -> tuple[list[dict], bool]:
@@ -141,44 +171,22 @@ def review_gate(review: list[dict], signoffs: list[dict], allow_review: bool = F
     return resolved, unresolved, bool(unresolved) and not allow_review
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("src", nargs="?", default="cases/1_graph.json")
-    parser.add_argument("dst", nargs="?", default="prototype_data.js")
-    parser.add_argument("--html", type=Path)
-    parser.add_argument("--allow-review", action="store_true")
-    parser.add_argument("--target", type=parse_target, help="patient-space RAS point X,Y,Z")
-    args = parser.parse_args()
-    html_path = args.html
-    src = Path(args.src)
-    dst = Path(args.dst)
-    g = json.loads(src.read_text())
-    if "review" not in g:
-        print("Note: graph has no review field; treating it as clean")
-    review = g.get("review", [])
-    case_id = str(g["case"])
-    case_path = LOCAL_CASES / case_id / "case.json"
-    case_record = json.loads(case_path.read_text()) if case_path.is_file() else {}
+def build_payload(graph: dict, case_record: dict, allow_review: bool,
+                  target: list[float] | None = None) -> dict:
+    """Build the renderer `window.AIRWAY` payload; raise ReviewBlocked if gated."""
+    review = graph.get("review", [])
     signoffs, unresolved, refused = review_gate(
-        review, case_record.get("review_signoff", []), args.allow_review
+        review, case_record.get("review_signoff", []), allow_review
     )
-    for entry in signoffs:
-        print(f"reviewed: {entry['kind']} {entry['lobe']} — approved by "
-              f"{entry['reviewer']} on {entry['date']}")
-    if review:
-        if refused:
-            print("Refusing graph with review entries:")
-            print(json.dumps(unresolved, indent=2))
-            raise SystemExit(1)
-        if unresolved:
-            print("WARNING: exporting a graph with review entries:")
-            print(json.dumps(unresolved, indent=2))
+    if refused:
+        raise ReviewBlocked(unresolved)
 
-    nodes = {n["id"]: n for n in g["nodes"]}
-    edges = g["edges"]
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    edges = graph["edges"]
+    case_id = str(graph["case"])
 
     # Centre on the trachea so the prototype can ignore patient-space offsets.
-    root = nodes[g["root_node_id"]]["position_mm"]
+    root = nodes[graph["root_node_id"]]["position_mm"]
 
     def rel(p):
         return [round(p[i] - root[i], 1) for i in range(3)]
@@ -207,9 +215,9 @@ def main() -> None:
         children.setdefault(e["f"], []).append(i)
 
     parent_edge: dict[int, int] = {}
-    seen = {g["root_node_id"]}
+    seen = {graph["root_node_id"]}
     order = []
-    q = deque([g["root_node_id"]])
+    q = deque([graph["root_node_id"]])
     while q:
         n = q.popleft()
         order.append(n)
@@ -220,14 +228,15 @@ def main() -> None:
                 parent_edge[nxt] = ei
                 q.append(nxt)
 
-    if args.target is not None:
-        end_edge, end_sample, endpoint, target_gap = nearest_centreline_sample(edges, args.target)
-        route = edge_route(edges, g["root_node_id"], end_edge)
-        target = edges[end_edge]["to"]
+    end_edge = end_sample = endpoint = target_gap = target_inside = None
+    if target is not None:
+        end_edge, end_sample, endpoint, target_gap = nearest_centreline_sample(edges, target)
+        route = edge_route(edges, graph["root_node_id"], end_edge)
+        target_node = edges[end_edge]["to"]
         target_inside = target_gap <= edges[end_edge]["radius_mm"]
     else:
-        target = order[-1]
-        route, cur = [], target
+        target_node = order[-1]
+        route, cur = [], target_node
         while cur in parent_edge:
             ei = parent_edge[cur]
             route.append(ei)
@@ -235,7 +244,7 @@ def main() -> None:
         route.reverse()
 
     route_points, route_labels = [], []
-    if args.target is not None:
+    if target is not None:
         route_points = truncate_route_points(edges, route, end_edge, end_sample, rel)
         for route_pos, ei in enumerate(route):
             count = len(edges[ei]["centreline_mm"])
@@ -260,7 +269,7 @@ def main() -> None:
             child_edge = out_edges[child["edge"]]
             child["prov"] = child_edge["prov"]
             child["down_i"] = child_edge["down_i"]
-    if args.target is not None:
+    if target is not None:
         ff = [fork for fork in ff if fork["s"] <= fs[-1]]
     pauses = pause_points(ff, PAUSE_BEFORE_MM)
     for i, f in enumerate(ff, 1):
@@ -278,7 +287,7 @@ def main() -> None:
     route_lengths = []
     for ei in route:
         points = np.asarray(edges[ei]["centreline_mm"], dtype=float)
-        if args.target is not None and ei == end_edge:
+        if target is not None and ei == end_edge:
             points = points[:end_sample + 1]
         route_lengths.append(float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()))
     route_offsets = np.r_[0.0, np.cumsum(route_lengths[:-1])]
@@ -290,19 +299,19 @@ def main() -> None:
         for distance, route_pos in zip(fs, fe)
     ]
 
-    payload = {
-        "case": g["case"],
-        "source": f"AeroPath {case_id}" if case_id.isdigit() else case_id,
-        "root": g["root_node_id"],
+    return {
+        "case": graph["case"],
+        "source": source_label(case_id),
+        "root": graph["root_node_id"],
         "nodes": {str(k): {"p": rel(v["position_mm"]), "r": v["radius_mm"]}
                   for k, v in nodes.items()},
         "edges": out_edges,
         "route": route,
-        "target": target,
-        "poi": rel(args.target) if args.target is not None else None,
-        "endpoint": rel(endpoint) if args.target is not None else None,
-        "target_gap_mm": round(target_gap, 1) if args.target is not None else None,
-        "target_inside_airway": target_inside if args.target is not None else None,
+        "target": target_node,
+        "poi": rel(target) if target is not None else None,
+        "endpoint": rel(endpoint) if target is not None else None,
+        "target_gap_mm": round(target_gap, 1) if target is not None else None,
+        "target_inside_airway": target_inside if target is not None else None,
         "route_interpolated": any(out_edges[ei]["prov"] == "interpolated" for ei in route),
         "provenance_recorded": provenance_recorded,
         "axes": "RAS",
@@ -316,6 +325,57 @@ def main() -> None:
         "review": unresolved,
         "signoff": signoffs,
     }
+
+
+def embed_payload_in_template(template_text: str, js: str) -> str:
+    count = template_text.count(AIRWAY_EMBED_SENTINEL)
+    if count != 1:
+        raise ValueError(
+            f"template must contain airway embed sentinel exactly once, found {count}"
+        )
+    return template_text.replace(AIRWAY_EMBED_SENTINEL, js, 1)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("src", nargs="?", default="cases/1_graph.json")
+    parser.add_argument("dst", nargs="?", default="prototype_data.js")
+    parser.add_argument("--html", type=Path)
+    parser.add_argument("--allow-review", action="store_true")
+    parser.add_argument("--target", type=parse_target, help="patient-space RAS point X,Y,Z")
+    args = parser.parse_args()
+    html_path = args.html
+    src = Path(args.src)
+    dst = Path(args.dst)
+    g = json.loads(src.read_text())
+    if "review" not in g:
+        print("Note: graph has no review field; treating it as clean")
+    case_id = str(g["case"])
+    case_record = load_case_record(case_id)
+
+    try:
+        payload = build_payload(g, case_record, args.allow_review, args.target)
+    except ReviewBlocked as exc:
+        print("Refusing graph with review entries:")
+        print(json.dumps(exc.unresolved, indent=2))
+        raise SystemExit(1) from exc
+
+    for entry in payload["signoff"]:
+        print(f"reviewed: {entry['kind']} {entry['lobe']} — approved by "
+              f"{entry['reviewer']} on {entry['date']}")
+    if payload["review"]:
+        print("WARNING: exporting a graph with review entries:")
+        print(json.dumps(payload["review"], indent=2))
+
+    out_edges = payload["edges"]
+    route = payload["route"]
+    target = payload["target"]
+    ff = payload["forks"]
+    provenance_recorded = payload["provenance_recorded"]
+    target_gap = payload["target_gap_mm"]
+    target_inside = payload["target_inside_airway"]
+    fs = payload["fly"]["s"]
+    edges = g["edges"]
 
     js = "window.AIRWAY = " + json.dumps(payload, separators=(",", ":")) + ";"
     dst.write_text(js)
@@ -345,7 +405,7 @@ def main() -> None:
     print(f"target node {target}, route length {fs[-1]:.0f} mm")
     if html_path:
         template = Path(__file__).resolve().parents[1] / "prototype/renderer.template.html"
-        html_path.write_text(template.read_text().replace("/*DATA*/", js))
+        html_path.write_text(embed_payload_in_template(template.read_text(), js))
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import pydicom
+from atomic_json import atomic_write_json
 from paths import LOCAL_CASES
 
 
@@ -293,7 +294,7 @@ def main() -> None:
         case_path = LOCAL_CASES / case_id / "case.json"
         document = json.loads(case_path.read_text())
         document.setdefault("source", {})["series_uid_sha256"] = series_hash
-        case_path.write_text(json.dumps(document, indent=2) + "\n")
+        atomic_write_json(case_path, document)
         print(f"Backfilled series hash for {case_id}")
         return
     if args.src_dir is None:
@@ -358,7 +359,7 @@ def main() -> None:
         "import_tool_version": VERSION,
         "import_date": date.today().isoformat(),
     }
-    (output_dir / "case.json").write_text(json.dumps(document, indent=2) + "\n")
+    atomic_write_json(output_dir / "case.json", document)
     print(f"Wrote {target}")
 
 

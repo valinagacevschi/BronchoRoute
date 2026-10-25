@@ -61,15 +61,17 @@ def test_reviewer_rejects_full_names():
 
 
 def test_signoff_cli_replaces_matching_decision_in_temporary_case(tmp_path, monkeypatch):
-    case_dir = tmp_path / "data/extracted/local/local-test"
+    case_dir = tmp_path / "data/extracted/local/local-001"
     case_dir.mkdir(parents=True)
     case_path = case_dir / "case.json"
-    case_path.write_text(json.dumps({"id": "local-test", "review_signoff": [
+    case_path.write_text(json.dumps({"id": "local-001", "review_signoff": [
         signoff(decision="rejected")
     ]}))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("review_signoff.LOCAL_CASES", tmp_path / "data/extracted/local")
-    monkeypatch.setattr("sys.argv", ["review_signoff.py", "local-test",
+    monkeypatch.setattr("paths.LOCAL_CASES", tmp_path / "data/extracted/local")
+    monkeypatch.setattr("paths.AEROPATH", tmp_path / "data/extracted/AeroPath")
+    monkeypatch.setattr("paths.OUT", tmp_path / "out")
+    monkeypatch.setattr("sys.argv", ["review_signoff.py", "local-001",
         "--kind", "small_lobe", "--lobe", "right middle lobe",
         "--decision", "approved", "--finding", "Reviewed", "--reviewer",
         "Radiologist, A.B.", "--date", "2026-10-25"])
@@ -77,7 +79,7 @@ def test_signoff_cli_replaces_matching_decision_in_temporary_case(tmp_path, monk
     signoff_main()
 
     record = json.loads(case_path.read_text())
-    assert record["id"] == "local-test"
+    assert record["id"] == "local-001"
     assert record["review_signoff"] == [{
         "kind": "small_lobe", "lobe": "right middle lobe", "decision": "approved",
         "finding": "Reviewed", "reviewer": "Radiologist, A.B.", "date": "2026-10-25",

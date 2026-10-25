@@ -3,6 +3,7 @@ pipeline/data/
 pipeline/ts_out/
 pipeline/out/
 pipeline/.venv/
+pipeline/app_state/
 __pycache__/
 .DS_Store
 

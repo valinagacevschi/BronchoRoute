@@ -1,4 +1,4 @@
-<!-- Phase 2: endoluminal anterior "A" tick kept on-canvas; __p2_debug.anteriorTick for verify. -->
+<!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload. Phase 2: anterior tick / __p2_debug. -->
 <title>Bronchial Tree Renderer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -271,8 +271,8 @@ kbd {
 
 <nav class="switcher" id="switcher" aria-label="Renderer variant"></nav>
 
-<script>
-/*DATA*/
+<script id="airway-data">
+/*__AIRWAY_EMBED__*/
 </script>
 
 <script>
@@ -283,8 +283,33 @@ kbd {
 //   C — Topology map: flat generation tree, patient-right on screen-right
 // Throwaway prototype for wayfinder ticket 06 (navigation renderer).
 // No libraries: raw canvas 2D with hand-rolled projection.
+// Embedded airway-data script still works; otherwise fetch payload for ?case=.
 
-const A = window.AIRWAY;
+async function ensureAirway() {
+  if (window.AIRWAY) return window.AIRWAY;
+  const params = new URLSearchParams(location.search);
+  const caseId = params.get("case");
+  if (!caseId) {
+    document.body.textContent = "No airway data. Open via the app shell or embed DATA.";
+    throw new Error("no airway data");
+  }
+  const allow = params.get("allow_review") === "1";
+  const url = `/api/cases/${encodeURIComponent(caseId)}/payload`
+    + (allow ? "?allow_review=1" : "");
+  const res = await fetch(url);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = body.unresolved
+      ? body.unresolved.map(u => `${u.kind} ${u.lobe}`).join("; ")
+      : (body.detail || res.statusText);
+    document.body.textContent = `Could not load case ${caseId}: ${detail}`;
+    throw new Error(String(detail));
+  }
+  window.AIRWAY = await res.json();
+  return window.AIRWAY;
+}
+
+ensureAirway().then((A) => {
 document.getElementById("r-source").textContent = A.source || "unknown";
 if (A.review && A.review.length) {
   const banner = document.getElementById("review-banner");
@@ -1150,4 +1175,5 @@ document.getElementById("r-branches").textContent = A.edges.length;
 document.getElementById("r-gens").textContent = maxGen;
 document.getElementById("r-length").textContent = (totalLen / 10).toFixed(0) + " cm";
 resize(); render(); frame();
+}).catch((err) => console.error(err));
 </script>
