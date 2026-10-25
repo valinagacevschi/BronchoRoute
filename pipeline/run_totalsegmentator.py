@@ -8,6 +8,7 @@ the trachea is deliberately excluded from that merge.
 """
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -70,7 +71,7 @@ def merge_lobes(seg_dir: Path, out: Path) -> None:
 
 def bridge_airway_components(
     combined: np.ndarray, spacing: tuple[float, float, float]
-) -> tuple[np.ndarray, list[tuple[float, float]], int]:
+) -> tuple[np.ndarray, list[tuple[float, float, np.ndarray, np.ndarray, float]], int]:
     """Keep the largest airway component and bridge nearby, sizable pieces."""
     spacing = np.asarray(spacing, dtype=float)
     labels, component_count = ndimage.label(
@@ -78,7 +79,7 @@ def bridge_airway_components(
     )
     counts = np.bincount(labels.ravel())
     voxel_volume = float(np.prod(spacing))
-    bridged: list[tuple[float, float]] = []
+    bridged: list[tuple[float, float, np.ndarray, np.ndarray, float]] = []
     if component_count:
         largest = int(counts[1:].argmax()) + 1
         result = labels == largest
@@ -144,7 +145,8 @@ def bridge_airway_components(
             result[tuple(centerline.T)] = True
             result |= labels == label
             remaining.remove(label)
-            bridged.append((counts[label] * voxel_volume, gap))
+            bridged.append((counts[label] * voxel_volume, gap, tree.copy(), piece.copy(),
+                            BRIDGE_RADIUS_MM))
         dropped = len(remaining)
     else:
         result = combined
@@ -179,9 +181,26 @@ def make_airway(airway_path: Path, trachea_path: Path, out: Path) -> None:
     header = airway_img.header.copy()
     header.set_data_dtype(np.uint8)
     nib.save(nib.Nifti1Image(result.astype(np.uint8), airway_img.affine, header), out)
+    bridge_mask = result & ~combined
+    bridge_path = out.with_name("airway_bridges.nii.gz")
+    bridge_json_path = out.with_name("airway_bridges.json")
+    nib.save(nib.Nifti1Image(bridge_mask.astype(np.uint8), airway_img.affine, header),
+             bridge_path)
+    bridges = []
+    for volume, gap, tree, piece, radius in bridged:
+        world = nib.affines.apply_affine(airway_img.affine, np.array([tree, piece]))
+        bridges.append({
+            "gap_mm": round(gap, 1), "piece_volume_mm3": round(volume, 1),
+            "tree_point_mm": [round(float(v), 3) for v in world[0]],
+            "piece_point_mm": [round(float(v), 3) for v in world[1]],
+        })
+    bridge_json_path.write_text(json.dumps({
+        "note": "interpolated, not CT-demonstrated airway",
+        "radius_mm": BRIDGE_RADIUS_MM, "bridges": bridges,
+    }, separators=(",", ":")))
     print(f"  combined airway voxels: {int(combined.sum()):,}")
     print(f"  bridged {len(bridged)} pieces: " + ", ".join(
-        f"{volume:.1f} mm3 @ {gap:.1f} mm" for volume, gap in bridged
+        f"{volume:.1f} mm3 @ {gap:.1f} mm" for volume, gap, *_ in bridged
     ))
     print(f"  dropped {dropped} pieces")
     print(f"  retained voxels: {int(result.sum()):,}")

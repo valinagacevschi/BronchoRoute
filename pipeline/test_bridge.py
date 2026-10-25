@@ -52,4 +52,8 @@ def test_bridge_uses_a_millimeter_tube_and_drops_ineligible_pieces():
     _, result_count = ndimage.label(result, structure=np.ones((3, 3, 3)))
     assert result_count == 1
     assert len(bridged) == 1
+    volume, gap, tree, piece, radius = bridged[0]
+    assert volume > 0 and gap > 0 and radius == 1.0
+    assert tree.shape == piece.shape == (3,)
+    assert not np.any(added & combined)
     assert dropped == 2

@@ -123,7 +123,7 @@ kbd {
   font-family: "IBM Plex Mono", monospace; font-size: 10px; opacity: .65;
 }
 .proto {
-  position: fixed; top: 14px; right: 16px; z-index: 5;
+  position: fixed; top: 14px; right: 350px; z-index: 5;
   font: 500 10px/1 "IBM Plex Mono", monospace; letter-spacing: .16em;
   text-transform: uppercase; color: var(--mucosa);
   border: 1px dashed var(--mucosa); border-radius: 4px; padding: 6px 9px;
@@ -137,6 +137,21 @@ kbd {
 .review-banner strong { display: block; }
 .review-banner p { margin: 2px 0 0; font-size: 12px; font-weight: 400; }
 .reviewed-note { margin: 5px 0 0; font-size: 11px; color: var(--muted); }
+.limitations-panel {
+  position: fixed; top: 14px; right: 16px; z-index: 6;
+  width: min(320px, calc(100vw - 272px)); padding: 10px 12px;
+  color: var(--ink); font-size: 10px; line-height: 1.3;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border: 1px solid var(--edge); border-radius: 8px; box-shadow: var(--shadow);
+}
+.limitations-panel h2 { margin: 0 0 5px; color: var(--muted); font-size: 9px;
+  font-weight: 500; letter-spacing: .13em; text-transform: uppercase; }
+.limitations { margin: 0; padding: 0; list-style: none; display: grid;
+  grid-template-columns: 1fr 1fr; gap: 3px 10px; color: var(--muted); }
+.limitations li::before { content: "• "; color: var(--steel); }
+.prov-legend { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--edge);
+  color: var(--muted); font-size: 9.5px; line-height: 1.3; }
+.prov-legend[hidden] { display: none; }
 
 @media (max-width: 720px) {
   .rail { width: 100%; height: auto; bottom: auto; flex-direction: row;
@@ -186,6 +201,7 @@ kbd {
     truthful 3D tree against a legible 2D map, and fly the lumen to judge
     whether moving through it teaches anything.</p>
   </div>
+
 </aside>
 
 <div class="proto">Prototype</div>
@@ -193,6 +209,22 @@ kbd {
   <strong>Clinical review pending — not for training use</strong>
   <div id="review-banner-entries"></div>
 </div>
+
+<aside class="limitations-panel" id="limitations-panel" aria-label="View limitations">
+  <h2>Limitations</h2>
+  <ul class="limitations" id="limitations">
+    <li>CT-derived pre-procedural view, not live tracking</li>
+    <li>Simulated steering; roll is not measured scope orientation</li>
+    <li>CT-to-body divergence</li>
+    <li>Inspiratory CT vs procedural lung volume</li>
+    <li>Respiratory motion</li><li>Atelectasis</li>
+    <li>Patient positioning</li><li>Incomplete distal segmentation</li>
+  </ul>
+  <div class="prov-legend" id="prov-legend" hidden>
+    <span style="color:#d99520">━ ━</span> interpolated — not CT airway<br>
+    <span style="color:#d99520">outline</span> downstream of interpolated edge
+  </div>
+</aside>
 
 <nav class="switcher" id="switcher" aria-label="Renderer variant"></nav>
 
@@ -217,6 +249,15 @@ if (A.review && A.review.length) {
     entries.appendChild(line);
   }
   banner.hidden = false;
+  document.querySelector(".rail").style.paddingTop = `${banner.offsetHeight + 20}px`;
+  document.getElementById("limitations-panel").style.top = `${banner.offsetHeight + 10}px`;
+}
+const hasInterpolatedEdges = A.edges.some(edge => edge.prov === "interpolated");
+document.getElementById("prov-legend").hidden = !hasInterpolatedEdges && A.provenance_recorded;
+if (!A.provenance_recorded) {
+  const item = document.createElement("li");
+  item.textContent = "Provenance not recorded for this graph";
+  document.getElementById("limitations").appendChild(item);
 }
 if (A.signoff && A.signoff.length) {
   const note = document.getElementById("reviewed-note");
@@ -291,7 +332,7 @@ function drawAnatomical() {
     for (let i = 1; i < e.c.length; i++) {
       const p = project(e.c[i - 1], cam), q = project(e.c[i], cam);
       if (!p || !q) continue;
-      segs.push({ p, q, e, z: (p.z + q.z) / 2 });
+      segs.push({ p, q, e, interpolated: (e.ci || []).includes(i - 1), z: (p.z + q.z) / 2 });
     }
   }
   segs.sort((a, b) => b.z - a.z);           // painter's algorithm
@@ -299,17 +340,40 @@ function drawAnatomical() {
   for (const s of segs) {
     const w = Math.max(0.7, s.e.r * 2 * s.p.f * 0.5);
     const fog = Math.max(0.18, Math.min(1, 320 / s.z));
+    if (s.e.down_i) {
+      ctx.strokeStyle = `rgba(217,149,32,${fog})`; ctx.lineWidth = w + 1.5;
+      ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y); ctx.lineTo(s.q.x, s.q.y); ctx.stroke();
+    }
     ctx.strokeStyle = depthColor(s.e.g, fog);
+    if (s.interpolated) {
+      ctx.strokeStyle = `rgba(217,149,32,${fog})`;
+      ctx.setLineDash([5, 4]);
+    }
     ctx.lineWidth = w;
     ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y); ctx.lineTo(s.q.x, s.q.y); ctx.stroke();
+    ctx.setLineDash([]);
   }
   // Target marker
-  const t = A.nodes[String(A.target)];
+  const t = A.poi ? null : A.nodes[String(A.target)];
   const tp = t && project(t.p, cam);
   if (tp) {
     ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.arc(tp.x, tp.y, 9, 0, 7); ctx.stroke();
     ctx.beginPath(); ctx.arc(tp.x, tp.y, 2.5, 0, 7); ctx.fillStyle = tok("--mucosa"); ctx.fill();
+  }
+  if (A.poi) {
+    const p = project(A.poi, cam);
+    const end = A.endpoint && project(A.endpoint, cam);
+    if (p) {
+      if (end && A.target_gap_mm > 0 && !A.target_inside_airway) {
+        ctx.strokeStyle = "#727d84"; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(end.x, end.y); ctx.lineTo(p.x, p.y); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = "#59656c"; ctx.font = "11px system-ui";
+        ctx.fillText(`${A.target_gap_mm.toFixed(1)} mm · no airway shown`, (end.x + p.x) / 2, (end.y + p.y) / 2 - 5);
+      }
+      ctx.fillStyle = "#fff"; ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill(); ctx.stroke();
+    }
   }
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
 }
@@ -334,6 +398,7 @@ function flyAt(s) {
     roll: route.roll[before] + (route.roll[after] - route.roll[before]) * fraction,
     r: route.r[before] + (route.r[after] - route.r[before]) * fraction,
     g: route.g[before] + (route.g[after] - route.g[before]) * fraction,
+    prov: route.prov[Math.round(sample)],
   };
 }
 
@@ -382,7 +447,8 @@ function drawEndoluminal() {
       ring.point.x, ring.point.y, pixels,
     );
     gradient.addColorStop(0, "rgba(0,0,0,0)");
-    gradient.addColorStop(1, mucosa(depth));
+    gradient.addColorStop(1, ahead[ring.i].prov === "interpolated"
+      ? `rgba(217,149,32,${depth})` : mucosa(depth));
     ctx.fillStyle = gradient;
     ctx.beginPath();
     ctx.arc(ring.point.x, ring.point.y, pixels, 0, 7);
@@ -433,11 +499,55 @@ function drawGuidance(right, up, dir, roll) {
   const radius = 35;
   const anterior = [0, 1, 0];
   const next = A.forks.find(fork => fork.s >= fly.s);
+  const projected = anterior.map((value, i) => value - dir[i] * dot(anterior, dir));
+  const projectedLength = Math.hypot(...projected);
+  const textX = left + 94;
+  const lines = [];
+  if (next) {
+    const chosen = next.children.find(child => child.on_route);
+    const clockText = chosen.clock == null
+      ? "straight ahead"
+      : `branch at ${chosen.clock} o'clock${next.name ? ` (${next.name})` : ""}, rolling to 12`;
+    const mark = next.prov === "interpolated" ? " · interpolated" : "";
+    lines.push({
+      text: `Fork ${next.fork} in ${Math.max(0, next.s - fly.s).toFixed(0)} mm — ${clockText}${mark}`,
+      color: "#f4f7f8",
+    });
+  }
+  if (fly.pausedFork) {
+    lines.push({ text: `Paused before fork ${fly.pausedFork} — Space / ↑ to continue`, color: "#f4f7f8" });
+  }
+  if (flyAt(fly.s).prov === "interpolated") {
+    lines.push({ text: "Interpolated segment — not CT-demonstrated airway", color: "#ffd166" });
+  }
+  if (A.target_gap_mm > 0 && !A.target_inside_airway
+      && A.fly.s[A.fly.s.length - 1] - fly.s <= 10) {
+    lines.push({ text: `Target ${A.target_gap_mm.toFixed(1)} mm beyond last visible airway`, color: "#f4f7f8" });
+  }
+  if (projectedLength < 0.10) {
+    lines.push({ text: "Anterior undefined: view along AP axis", color: "#f4f7f8" });
+  }
+  lines.push({ text: "Simulated steering · CT-derived · not live tracking", color: "#d5e0e5" });
 
   ctx.save();
   ctx.font = "12px system-ui";
-  ctx.fillStyle = "#d8e2e8";
-  ctx.strokeStyle = "#81909a";
+  const lineHeight = 17;
+  const maxTextWidth = Math.max(80, W - textX - 20);
+  const textWidth = Math.min(maxTextWidth,
+    Math.max(...lines.map(line => ctx.measureText(line.text).width)));
+  const textBottom = bottom - 10;
+  const textTop = textBottom - (lines.length - 1) * lineHeight;
+  const panelLeft = left - 8;
+  const panelTop = Math.min(cy - radius - 18, textTop - 14);
+  const panelRight = Math.min(W - 10, Math.max(cx + radius + 20, textX + textWidth + 12));
+  const panelBottom = bottom + 4;
+  ctx.fillStyle = "rgba(17, 27, 33, 0.88)";
+  ctx.beginPath();
+  ctx.roundRect(panelLeft, panelTop, panelRight - panelLeft, panelBottom - panelTop, 10);
+  ctx.fill();
+
+  ctx.fillStyle = "#f4f7f8";
+  ctx.strokeStyle = "#a9bbc4";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, 7);
@@ -449,11 +559,6 @@ function drawGuidance(right, up, dir, roll) {
     ctx.fillText(clock, cx + Math.cos(angle) * (radius + 12) - 4,
       cy + Math.sin(angle) * (radius + 12) + 4);
   }
-
-  const projected = anterior.map((value, i) => value - dir[i] * dot(anterior, dir));
-  const projectedLength = Math.hypot(...projected);
-  const textX = left + 94;
-  const maxTextWidth = Math.max(80, W - textX - 16);
   if (projectedLength >= 0.10) {
     const x = dot(projected, right) / projectedLength;
     const y = -dot(projected, up) / projectedLength;
@@ -463,8 +568,6 @@ function drawGuidance(right, up, dir, roll) {
     ctx.moveTo(cx, cy);
     ctx.lineTo(cx + x * radius * 0.72, cy + y * radius * 0.72);
     ctx.stroke();
-  } else {
-    ctx.fillText("Anterior undefined: view along AP axis", textX, bottom - 70, maxTextWidth);
   }
 
   if (next) {
@@ -479,24 +582,10 @@ function drawGuidance(right, up, dir, roll) {
       ctx.fill();
     }
   }
-
-  if (next) {
-    const chosen = next.children.find(child => child.on_route);
-    const clockText = chosen.clock == null
-      ? "straight ahead"
-      : `branch at ${chosen.clock} o'clock${next.name ? ` (${next.name})` : ""}, rolling to 12`;
-    const line = `Fork ${next.fork} in ${Math.max(0, next.s - fly.s).toFixed(0)} mm — ${clockText}`;
-    ctx.fillStyle = "#e5edf1";
-    ctx.fillText(line, textX, bottom - 50, maxTextWidth);
-  }
-  if (fly.pausedFork) {
-    ctx.fillStyle = "#e5edf1";
-    ctx.fillText(`Paused before fork ${fly.pausedFork} — Space / ↑ to continue`,
-      textX, bottom - 30, maxTextWidth);
-  }
-  ctx.fillStyle = "#9aa8b0";
-  ctx.fillText("Simulated steering · CT-derived · not live tracking",
-    textX, bottom - 10, maxTextWidth);
+  lines.forEach((line, index) => {
+    ctx.fillStyle = line.color;
+    ctx.fillText(line.text, textX, textTop + index * lineHeight, maxTextWidth);
+  });
   ctx.restore();
 }
 

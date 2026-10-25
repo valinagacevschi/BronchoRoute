@@ -22,6 +22,109 @@ from route_frame import (
 )
 
 KEEP_EVERY = 3  # centreline samples; endpoints always kept
+
+
+def provenance_mapping(graph_edges: list[dict]) -> tuple[list[dict], bool]:
+    """Return prototype edge provenance without inventing facts for old graphs."""
+    recorded = bool(graph_edges) and all("provenance" in edge for edge in graph_edges)
+    return ([{"prov": edge.get("provenance", "unrecorded"),
+              "down_i": bool(edge.get("downstream_of_interpolated", False))}
+             for edge in graph_edges], recorded)
+
+
+def decimated_indices(point_count: int, step: int) -> list[int]:
+    indices = list(range(0, point_count, step))
+    if point_count and indices[-1] != point_count - 1:
+        indices.append(point_count - 1)
+    return indices
+
+
+def interpolated_segments(points: list, indices: list[int], spans: list[list[float]]) -> list[int]:
+    if not spans or len(indices) < 2:
+        return []
+    cumulative = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))]
+    return [segment for segment, (first, last) in enumerate(zip(indices[:-1], indices[1:]))
+            if any(cumulative[first] < end and cumulative[last] > start
+                   for start, end in spans)]
+
+
+def edge_provenance_at(edge: dict, arc_mm: float) -> str:
+    provenance = edge.get("provenance", "unrecorded")
+    if provenance != "interpolated" or "interpolated_spans_mm" not in edge:
+        return provenance
+    return ("interpolated" if any(start <= arc_mm <= end
+                                   for start, end in edge["interpolated_spans_mm"])
+            else "ct")
+
+
+def nearest_centreline_sample(edges: list[dict], poi: list[float]):
+    """Return (edge index, sample index, point, gap) for the nearest full-res sample."""
+    target = np.asarray(poi, dtype=float)
+    best = None
+    for ei, edge in enumerate(edges):
+        points = np.asarray(edge["centreline_mm"], dtype=float)
+        distances = np.linalg.norm(points - target, axis=1)
+        si = int(np.argmin(distances))
+        candidate = (float(distances[si]), ei, si, points[si].copy())
+        if best is None or candidate[0] < best[0]:
+            best = candidate
+    if best is None:
+        raise ValueError("graph has no centreline samples")
+    gap, ei, si, point = best
+    return ei, si, point, gap
+
+
+def edge_route(edges: list[dict], root: int, final_edge: int) -> list[int]:
+    """Build root-to-edge route using the graph's tree topology."""
+    children: dict[int, list[int]] = {}
+    for i, edge in enumerate(edges):
+        children.setdefault(edge["from"], []).append(i)
+    parents: dict[int, int] = {}
+    queue = deque([root])
+    seen = {root}
+    while queue:
+        node = queue.popleft()
+        for ei in children.get(node, []):
+            child = edges[ei]["to"]
+            if child not in seen:
+                seen.add(child)
+                parents[child] = ei
+                queue.append(child)
+    final_node = edges[final_edge]["to"]
+    route, cur = [], final_node
+    while cur in parents:
+        ei = parents[cur]
+        route.append(ei)
+        cur = edges[ei]["from"]
+    route.reverse()
+    if not route or route[-1] != final_edge:
+        route.append(final_edge)
+    return route
+
+
+def truncate_route_points(edges: list[dict], route: list[int], end_edge: int,
+                          end_sample: int, rel):
+    """Join full-resolution route centrelines and stop exactly at selected sample."""
+    points = []
+    for ei in route:
+        line = edges[ei]["centreline_mm"]
+        if ei == end_edge:
+            line = line[:end_sample + 1]
+        if points:
+            line = line[1:]
+        points.extend(rel(p) for p in line)
+        if ei == end_edge:
+            break
+    return points
+
+
+def parse_target(value: str) -> list[float]:
+    point = [float(part) for part in value.split(",")]
+    if len(point) != 3:
+        raise argparse.ArgumentTypeError("target must be X,Y,Z")
+    return point
+
+
 def review_gate(review: list[dict], signoffs: list[dict], allow_review: bool = False):
     """Return approved matches and remaining review flags."""
     approved = {(s["kind"], s["lobe"]): s for s in signoffs
@@ -37,21 +140,13 @@ def review_gate(review: list[dict], signoffs: list[dict], allow_review: bool = F
     return resolved, unresolved, bool(unresolved) and not allow_review
 
 
-def decimate(points: list, step: int) -> list:
-    if len(points) <= 2:
-        return points
-    kept = points[::step]
-    if kept[-1] != points[-1]:
-        kept.append(points[-1])
-    return kept
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("src", nargs="?", default="cases/1_graph.json")
     parser.add_argument("dst", nargs="?", default="prototype_data.js")
     parser.add_argument("--html", type=Path)
     parser.add_argument("--allow-review", action="store_true")
+    parser.add_argument("--target", type=parse_target, help="patient-space RAS point X,Y,Z")
     args = parser.parse_args()
     html_path = args.html
     src = Path(args.src)
@@ -87,8 +182,10 @@ def main() -> None:
     def rel(p):
         return [round(p[i] - root[i], 1) for i in range(3)]
 
+    prov_map, provenance_recorded = provenance_mapping(edges)
     out_edges = []
-    for e in edges:
+    for e, prov in zip(edges, prov_map):
+        indices = decimated_indices(len(e["centreline_mm"]), KEEP_EVERY)
         out_edges.append({
             "f": e["from"],
             "t": e["to"],
@@ -96,7 +193,11 @@ def main() -> None:
             "r": e["radius_mm"],
             "l": e["length_mm"],
             "lobe": e["lobe"],
-            "c": [rel(p) for p in decimate(e["centreline_mm"], KEEP_EVERY)],
+            **prov,
+            "ci": interpolated_segments(
+                e["centreline_mm"], indices, e.get("interpolated_spans_mm", [])
+            ),
+            "c": [rel(e["centreline_mm"][i]) for i in indices],
         })
 
     # Deepest branch reachable from the root: a plausible navigation target.
@@ -118,26 +219,48 @@ def main() -> None:
                 parent_edge[nxt] = ei
                 q.append(nxt)
 
-    target = order[-1]
-    route, cur = [], target
-    while cur in parent_edge:
-        ei = parent_edge[cur]
-        route.append(ei)
-        cur = out_edges[ei]["f"]
-    route.reverse()
+    if args.target is not None:
+        end_edge, end_sample, endpoint, target_gap = nearest_centreline_sample(edges, args.target)
+        route = edge_route(edges, g["root_node_id"], end_edge)
+        target = edges[end_edge]["to"]
+        target_inside = target_gap <= edges[end_edge]["radius_mm"]
+    else:
+        target = order[-1]
+        route, cur = [], target
+        while cur in parent_edge:
+            ei = parent_edge[cur]
+            route.append(ei)
+            cur = out_edges[ei]["f"]
+        route.reverse()
 
     route_points, route_labels = [], []
-    for route_pos, ei in enumerate(route):
-        line = [rel(p) for p in edges[ei]["centreline_mm"]]
-        if route_points:
-            line = line[1:]
-        route_points.extend(line)
-        route_labels.extend([route_pos] * len(line))
+    if args.target is not None:
+        route_points = truncate_route_points(edges, route, end_edge, end_sample, rel)
+        for route_pos, ei in enumerate(route):
+            count = len(edges[ei]["centreline_mm"])
+            if ei == end_edge:
+                count = end_sample + 1
+            route_labels.extend([route_pos] * max(0, count - int(route_pos > 0)))
+    else:
+        for route_pos, ei in enumerate(route):
+            line = [rel(p) for p in edges[ei]["centreline_mm"]]
+            if route_points:
+                line = line[1:]
+            route_points.extend(line)
+            route_labels.extend([route_pos] * len(line))
     full_edges = [{**e, "centreline_mm": [rel(p) for p in e["centreline_mm"]]} for e in edges]
     fp, fs, fe = resample(route_points, STEP_MM, route_labels)
     ft = tangents(fp, STEP_MM)
     fu = transport_frame(ft)
     ff = route_forks(full_edges, route, fp, fs, ft, fu)
+    for fork in ff:
+        fork["prov"] = out_edges[fork["chosen"]]["prov"]
+        for child in fork["children"]:
+            child_edge = out_edges[child["edge"]]
+            child["prov"] = child_edge["prov"]
+            child["down_i"] = child_edge["down_i"]
+    if args.target is not None:
+        ff = [fork for fork in ff if fork["s"] <= fs[-1]]
     pauses = pause_points(ff, PAUSE_BEFORE_MM)
     for i, f in enumerate(ff, 1):
         f["fork"] = i
@@ -151,6 +274,21 @@ def main() -> None:
             child["r"] = round(child["r"], 2) if child["r"] is not None else None
     roll = roll_profile(fs, ff)
 
+    route_lengths = []
+    for ei in route:
+        points = np.asarray(edges[ei]["centreline_mm"], dtype=float)
+        if args.target is not None and ei == end_edge:
+            points = points[:end_sample + 1]
+        route_lengths.append(float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()))
+    route_offsets = np.r_[0.0, np.cumsum(route_lengths[:-1])]
+    fly_provenance = [
+        edge_provenance_at(
+            edges[route[int(route_pos)]],
+            float(distance - route_offsets[int(route_pos)]),
+        )
+        for distance, route_pos in zip(fs, fe)
+    ]
+
     payload = {
         "case": g["case"],
         "source": f"AeroPath {case_id}" if case_id.isdigit() else case_id,
@@ -160,12 +298,19 @@ def main() -> None:
         "edges": out_edges,
         "route": route,
         "target": target,
+        "poi": rel(args.target) if args.target is not None else None,
+        "endpoint": rel(endpoint) if args.target is not None else None,
+        "target_gap_mm": round(target_gap, 1) if args.target is not None else None,
+        "target_inside_airway": target_inside if args.target is not None else None,
+        "route_interpolated": any(out_edges[ei]["prov"] == "interpolated" for ei in route),
+        "provenance_recorded": provenance_recorded,
         "axes": "RAS",
         "fly": {"step_mm": STEP_MM, "s": np.round(fs, 1).tolist(), "p": np.round(fp, 1).tolist(),
                 "t": np.round(ft, 3).tolist(), "up": np.round(fu, 3).tolist(),
                 "roll": np.round(roll, 4).tolist(), "edge": fe.tolist(),
                 "r": [round(edges[route[int(i)]]["radius_mm"], 2) for i in fe],
-                "g": [int(edges[route[int(i)]]["generation"]) for i in fe]},
+                "g": [int(edges[route[int(i)]]["generation"]) for i in fe],
+                "prov": fly_provenance},
         "forks": ff,
         "review": unresolved,
         "signoff": signoffs,
@@ -180,7 +325,22 @@ def main() -> None:
         label = f'{f["clock"]} o\'clock' if f["clock"] is not None else "straight ahead"
         siblings = [f'{c["clock"]} o\'clock' if c["clock"] is not None else "straight ahead"
                     for c in f["children"] if not c["on_route"]]
-        print(f"fork {f['fork']} @ {f['s']:.0f} mm: take {label} ({f['name'] or 'unnamed'}); siblings {', '.join(siblings)}")
+        mark = " [interpolated]" if f["prov"] == "interpolated" else ""
+        print(f"fork {f['fork']} @ {f['s']:.0f} mm: take {label} ({f['name'] or 'unnamed'}){mark}; siblings {', '.join(siblings)}")
+    for ei in route:
+        if out_edges[ei]["prov"] == "interpolated":
+            print(f"interpolated edge {ei}: {edges[ei].get('interpolated_mm', 0):.1f} mm")
+    if not provenance_recorded:
+        print("provenance not recorded in this graph")
+    if args.target is not None:
+        if target_inside:
+            print(f"target inside airway ({target_gap:.1f} mm from centreline)")
+        else:
+            print(f"route ends at last airway sample; target {target_gap:.1f} mm beyond (no airway shown)")
+    interpolated_route = [ei for ei in route if out_edges[ei]["prov"] == "interpolated"]
+    if interpolated_route:
+        amount = sum(edges[ei].get("interpolated_mm", 0) for ei in interpolated_route)
+        print(f"WARNING: route crosses {len(interpolated_route)} interpolated segment(s), {amount:.1f} mm")
     print(f"target node {target}, route length {fs[-1]:.0f} mm")
     if html_path:
         template = Path(__file__).resolve().parents[1] / "prototype/renderer.template.html"

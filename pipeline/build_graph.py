@@ -377,8 +377,86 @@ def name_proximal(branches: list[dict]) -> None:
             b["lobe_source"] = None
 
 
+def _interpolated_spans(points: np.ndarray, bridge_mask: np.ndarray,
+                        affine: np.ndarray) -> tuple[list[list[float]], float]:
+    inverse = np.linalg.inv(affine)
+    offset = 0.0
+    spans = []
+    inside_length = 0.0
+    for start, end in zip(points[:-1], points[1:]):
+        delta = end - start
+        length = float(np.linalg.norm(delta))
+        if length <= 1e-12:
+            continue
+        steps = max(1, int(np.ceil(length / 0.25)))
+        sub_length = length / steps
+        for index in range(steps):
+            midpoint = start + delta * ((index + 0.5) / steps)
+            voxel = np.rint((inverse @ np.r_[midpoint, 1.0])[:3]).astype(int)
+            if np.all(voxel >= 0) and np.all(voxel < np.asarray(bridge_mask.shape)):
+                if bridge_mask[tuple(voxel)] > 0:
+                    inside_length += sub_length
+                    a = offset + index * sub_length
+                    b = a + sub_length
+                    if spans and a <= spans[-1][1] + 1e-9:
+                        spans[-1][1] = b
+                    else:
+                        spans.append([a, b])
+        offset += length
+
+    rounded = []
+    for start, end in spans:
+        a, b = round(start, 1), round(end, 1)
+        if b <= a:
+            b = round(a + 0.1, 1)
+        if rounded and a <= rounded[-1][1]:
+            rounded[-1][1] = max(rounded[-1][1], b)
+        else:
+            rounded.append([a, b])
+    return rounded, inside_length
+
+
+def add_edge_provenance(edges: list[dict], bridge_mask: np.ndarray | None,
+                       affine: np.ndarray) -> tuple[str, int, float, int]:
+    """Tag edges by bridge-mask overlap and propagate reachability downstream."""
+    if bridge_mask is None:
+        for edge in edges:
+            edge.update(interpolated_mm=0.0, interpolated_spans_mm=[], provenance="ct",
+                        downstream_of_interpolated=False)
+        return "no bridge mask", 0, 0.0, 0
+
+    kids: dict[int, list[dict]] = {}
+    for edge in edges:
+        edge["downstream_of_interpolated"] = False
+        points = np.asarray(edge["centreline_mm"], dtype=float)
+        spans, raw_amount = _interpolated_spans(points, bridge_mask, affine)
+        amount = round(raw_amount, 1)
+        if spans and amount == 0:
+            amount = 0.1
+        edge["interpolated_spans_mm"] = spans
+        edge["interpolated_mm"] = amount
+        edge["provenance"] = "interpolated" if amount > 0 else "ct"
+        kids.setdefault(edge["from"], []).append(edge)
+
+    downstream = 0
+    queue = [(edge["to"], edge["provenance"] == "interpolated")
+             for edge in kids.get(0, [])]
+    while queue:
+        node, inherited = queue.pop(0)
+        for edge in kids.get(node, []):
+            edge["downstream_of_interpolated"] = inherited
+            downstream += int(inherited)
+            queue.append((edge["to"], inherited or edge["provenance"] == "interpolated"))
+    count = sum(edge["provenance"] == "interpolated" for edge in edges)
+    total = round(sum(edge["interpolated_mm"] for edge in edges), 1)
+    return "bridge mask", count, total, downstream
+
+
 def export(branches: list[dict], case: str, spacing, affine: np.ndarray,
-           out: Path, review: list[dict] | None = None) -> dict:
+           out: Path, review: list[dict] | None = None,
+           bridge_mask: np.ndarray | None = None,
+           bridge_source: str = "no bridge mask",
+           source: str = "AeroPath (MIT), expert airway mask") -> dict:
     node_ids: dict[int, int] = {}
 
     for b in branches:
@@ -413,17 +491,24 @@ def export(branches: list[dict], case: str, spacing, affine: np.ndarray,
                               for p in b["centreline"]],
         })
 
+    _, interp_count, interp_total, downstream_count = add_edge_provenance(
+        edges, bridge_mask, affine
+    )
     graph = {
         "case": case,
         "coordinate_system": "patient_physical_mm",
-        "source": "AeroPath (MIT), expert airway mask",
+        "source": source,
         "voxel_spacing_mm": [round(s, 4) for s in spacing],
         "root_node_id": 0,
+        "provenance_source": (f"bridge mask {bridge_source}" if bridge_mask is not None
+                              else "no bridge mask"),
         "review": review or [],
         "nodes": sorted(nodes.values(), key=lambda n: n["id"]),
         "edges": edges,
     }
     out.write_text(json.dumps(graph, separators=(",", ":")))
+    print(f"  provenance {interp_count} interpolated edges, {interp_total:.1f} mm, "
+          f"{downstream_count} downstream edges")
     return graph
 
 
@@ -437,6 +522,7 @@ def main() -> None:
                          "binary and cannot support lobar naming.")
     ap.add_argument("--airways", type=Path,
                     help="override the airway mask, e.g. a predicted one")
+    ap.add_argument("--bridges", type=Path, help="mask of interpolated bridge voxels")
     args = ap.parse_args()
 
     airway_path = args.airways or next(args.case_dir.glob("*label_airways.nii.gz"))
@@ -446,6 +532,9 @@ def main() -> None:
 
     print(f"case {case}")
     mask, affine, spacing = load_mask(airway_path)
+    bridge_path = args.bridges or airway_path.with_name("airway_bridges.nii.gz")
+    bridge_mask = (np.asanyarray(nib.load(bridge_path).dataobj).astype(np.uint8)
+                   if bridge_path.is_file() else None)
     print(f"  mask     {mask.shape} at {tuple(round(s, 3) for s in spacing)} mm, "
           f"{int((mask > 0).sum()):,} voxels")
 
@@ -500,7 +589,11 @@ def main() -> None:
 
     args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / f"{case}_graph.json"
-    graph = export(kept, case, spacing, affine, path, review)
+    graph_source = (f"airway mask {airway_path.name}" if args.airways
+                   else "AeroPath (MIT), expert airway mask")
+    graph = export(kept, case, spacing, affine, path, review, bridge_mask,
+                   bridge_path.name if bridge_mask is not None else "no bridge mask",
+                   graph_source)
 
     depth = max(e["generation"] for e in graph["edges"])
     size_kb = path.stat().st_size / 1024
