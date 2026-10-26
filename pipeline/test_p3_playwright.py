@@ -1,3 +1,5 @@
+# Changes: tmp ts_out trees symlink individual input files (never directories) so
+# review writes like airway_bridges_labels.nii.gz land in the tmp tree.
 # Phase 3 review: playwright against a tmp PIPELINE root (symlinked read-only
 # inputs; writable app_state / case.json copies). Never mutate real data.
 from __future__ import annotations
@@ -13,6 +15,8 @@ import pytest
 from playwright.sync_api import sync_playwright
 from termcolor import cprint
 
+from conftest import symlink_input_file, symlink_input_tree
+
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
 SHOTS = ROOT / "out" / "p3_shots"
@@ -21,20 +25,13 @@ BASE = f"http://127.0.0.1:{PORT}"
 VIEWPORT = {"width": 1280, "height": 800}
 
 
-def _symlink(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists() or dst.is_symlink():
-        dst.unlink()
-    os.symlink(src, dst)
-
-
 def _copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
 
 
 def build_tmp_pipeline(tmp: Path) -> Path:
-    """Tmp PIPELINE with symlinked NIfTI/masks/graphs and copied case.json."""
+    """Tmp PIPELINE with per-file symlinked inputs and copied case.json."""
     cprint(f"building tmp pipeline at {tmp}", "cyan")
     (tmp / "app_state").mkdir(parents=True)
     (tmp / "out" / "cases").mkdir(parents=True)
@@ -44,15 +41,15 @@ def build_tmp_pipeline(tmp: Path) -> Path:
     (tmp / "data" / "extracted" / "AeroPath" / "3").mkdir(parents=True)
     (tmp / "ts_out").mkdir(parents=True)
 
-    # local-001
+    # local-001 — real dirs under ts_out so new writes stay in tmp.
     local_src = ROOT / "data/extracted/local/local-001"
     local_dst = tmp / "data/extracted/local/local-001"
-    _symlink(local_src / "local-001_CT.nii.gz", local_dst / "local-001_CT.nii.gz")
+    symlink_input_file(local_src / "local-001_CT.nii.gz", local_dst / "local-001_CT.nii.gz")
     _copy_file(local_src / "case.json", local_dst / "case.json")
-    _symlink(ROOT / "ts_out/local-001", tmp / "ts_out/local-001")
+    symlink_input_tree(ROOT / "ts_out/local-001", tmp / "ts_out/local-001")
     graph_local = ROOT / "out/local-001/local-001_graph.json"
     if graph_local.is_file():
-        _symlink(graph_local, tmp / "out/local-001/local-001_graph.json")
+        symlink_input_file(graph_local, tmp / "out/local-001/local-001_graph.json")
 
     # AeroPath 3
     aero_src = ROOT / "data/extracted/AeroPath/3"
@@ -60,16 +57,16 @@ def build_tmp_pipeline(tmp: Path) -> Path:
     for name in ("3_CT_HR.nii.gz", "3_CT_HR_label_airways.nii.gz", "3_CT_HR_label_lungs.nii.gz"):
         src = aero_src / name
         if src.is_file():
-            _symlink(src, aero_dst / name)
-    _symlink(ROOT / "ts_out/fallback_3", tmp / "ts_out/fallback_3")
-    _symlink(ROOT / "ts_out/3", tmp / "ts_out/3")
+            symlink_input_file(src, aero_dst / name)
+    symlink_input_tree(ROOT / "ts_out/fallback_3", tmp / "ts_out/fallback_3")
+    symlink_input_tree(ROOT / "ts_out/3", tmp / "ts_out/3")
     for graph_name in ("3_graph.json",):
         for candidate in (
             ROOT / "out/fallback" / graph_name,
             ROOT / "out" / graph_name,
         ):
             if candidate.is_file():
-                _symlink(candidate, tmp / "out/fallback" / graph_name)
+                symlink_input_file(candidate, tmp / "out/fallback" / graph_name)
                 break
     # Writable AeroPath case.json (may not exist yet on real tree).
     case3 = tmp / "out/cases/3/case.json"

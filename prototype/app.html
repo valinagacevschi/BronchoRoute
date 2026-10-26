@@ -1,6 +1,5 @@
 <!DOCTYPE html>
-<!-- Phase 4a review fixes: series confirm, re-segment, jobPoll case-bound,
-     folder override, RouteStart move flow, reload overlays after segment. -->
+<!-- Phase 4b fixes: origin-checked postMessage; CSS.escape lobe selectors; bridge Go to. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -116,9 +115,20 @@
     <button type="button" id="segment-btn" disabled>Segment</button>
     <button type="button" class="secondary" id="confirm-route-start-btn" disabled>Confirm RouteStart</button>
     <button type="button" class="secondary" id="move-route-start-btn" disabled hidden>Move RouteStart</button>
+    <button type="button" class="secondary" id="toggle-review">Review</button>
     <span id="job-status" class="msg"></span>
   </div>
   <div class="workflow" id="workflow" aria-label="Workflow steps"></div>
+  <div class="panel" id="review-panel">
+    <h2>Review and correct</h2>
+    <div class="msg" id="review-msg"></div>
+    <div class="row"><strong>Bridges</strong></div>
+    <div id="review-bridges"></div>
+    <div class="row" style="margin-top:10px"><strong>Review flags</strong></div>
+    <div id="review-flags"></div>
+    <div class="row" style="margin-top:10px"><strong>Corrections</strong></div>
+    <div id="review-corrections"></div>
+  </div>
   <div class="panel" id="import-panel">
     <h2>Import CT</h2>
     <div class="row">
@@ -151,8 +161,10 @@
   const stageEl = document.getElementById("stage");
   const workflowEl = document.getElementById("workflow");
   const importPanel = document.getElementById("import-panel");
+  const reviewPanel = document.getElementById("review-panel");
   const jobPanel = document.getElementById("job-panel");
   const importMsg = document.getElementById("import-msg");
+  const reviewMsg = document.getElementById("review-msg");
   const importSeries = document.getElementById("import-series");
   const jobStatus = document.getElementById("job-status");
   const jobLog = document.getElementById("job-log");
@@ -168,6 +180,7 @@
   let routeStartMoving = false;
   let routeStartConfirmedNode = null;
   let routeStartSelectedNode = null;
+  let reviewBody = null;
 
   function clearEl(el) {
     while (el.firstChild) el.removeChild(el.firstChild);
@@ -361,6 +374,7 @@
     gateEl.classList.remove("visible");
     clearEl(gateEl);
     await loadWorkflow(caseId);
+    if (reviewPanel.classList.contains("visible")) await loadReview(caseId);
     const q = allowReview ? "?allow_review=1" : "";
     const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/payload${q}`);
     if (res.status === 409) {
@@ -434,6 +448,180 @@
       document.getElementById("import-src").value = "~/Downloads/dicom";
     }
   };
+
+  function postToRenderer(msg) {
+    const iframe = stageEl.querySelector("iframe");
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage(msg, location.origin);
+    }
+  }
+
+  async function loadReview(caseId) {
+    if (!caseId) return;
+    const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/review`);
+    if (!res.ok) {
+      reviewMsg.textContent = `Review load failed (${res.status})`;
+      return;
+    }
+    reviewBody = await res.json();
+    renderReview(reviewBody);
+  }
+
+  function flagKeyAttr(kind, lobe) {
+    return `${kind}|${lobe}`;
+  }
+
+  function renderReview(body) {
+    const bridgesEl = document.getElementById("review-bridges");
+    const flagsEl = document.getElementById("review-flags");
+    const corrEl = document.getElementById("review-corrections");
+    clearEl(bridgesEl);
+    clearEl(flagsEl);
+    clearEl(corrEl);
+    reviewMsg.textContent = "";
+    for (const b of body.bridges || []) {
+      const row = el("div", { className: "row" });
+      const label = `Bridge ${b.id} · gap ${b.gap_mm} mm`;
+      const state = b.decision ? b.decision.decision : "pending";
+      row.appendChild(el("span", null, `${label} (${state})`));
+      row.appendChild(el("button", {
+        type: "button", className: "secondary", "data-bridge-goto": b.id,
+      }, "Go to"));
+      const note = el("input", {
+        type: "text", placeholder: "CT evidence note", "data-bridge-note": b.id,
+        value: (b.decision && b.decision.note) || "",
+      });
+      note.style.minWidth = "12rem";
+      row.appendChild(note);
+      row.appendChild(el("button", {
+        type: "button", "data-bridge-confirm": b.id,
+      }, "Confirm"));
+      row.appendChild(el("button", {
+        type: "button", className: "secondary", "data-bridge-reject": b.id,
+      }, "Reject"));
+      bridgesEl.appendChild(row);
+    }
+    if (!(body.bridges || []).length) {
+      bridgesEl.appendChild(el("div", { className: "msg" }, "No bridges."));
+    }
+    for (const f of body.review_flags || []) {
+      const row = el("div", { className: "row" });
+      const so = f.signoff ? f.signoff.decision : "unsigned";
+      const key = flagKeyAttr(f.kind, f.lobe);
+      row.appendChild(el("span", null, `${f.kind} · ${f.lobe} (${so})`));
+      const finding = el("input", {
+        type: "text", placeholder: "Finding", "data-flag-finding": key,
+      });
+      row.appendChild(finding);
+      row.appendChild(el("button", {
+        type: "button", "data-flag-approve": key,
+      }, "Approve"));
+      row.appendChild(el("button", {
+        type: "button", className: "secondary", "data-flag-reject": key,
+      }, "Reject"));
+      flagsEl.appendChild(row);
+    }
+    if (!(body.review_flags || []).length) {
+      flagsEl.appendChild(el("div", { className: "msg" }, "No review flags."));
+    }
+    for (const c of body.corrections || []) {
+      const row = el("div", { className: "row" });
+      row.appendChild(el("span", null,
+        `${c.kind} edge ${c.edge_id} · ${c.status || "active"}${c.note ? " — " + c.note : ""}`));
+      if (!c.undone) {
+        row.appendChild(el("button", {
+          type: "button", className: "secondary", "data-undo": c.id,
+        }, "Undo"));
+      }
+      corrEl.appendChild(row);
+    }
+    if (!(body.corrections || []).length) {
+      corrEl.appendChild(el("div", { className: "msg" }, "No corrections."));
+    }
+  }
+
+  document.getElementById("toggle-review").onclick = async () => {
+    reviewPanel.classList.toggle("visible");
+    if (reviewPanel.classList.contains("visible") && currentCase) {
+      await loadReview(currentCase);
+    }
+  };
+
+  reviewPanel.addEventListener("click", async (ev) => {
+    const t = ev.target;
+    if (!(t instanceof HTMLElement) || !currentCase) return;
+    if (t.dataset.bridgeGoto) {
+      const b = (reviewBody && reviewBody.bridges || []).find(x => x.id === t.dataset.bridgeGoto);
+      if (b && b.midpoint_mm) {
+        postToRenderer({
+          type: "goto-ras",
+          ras_mm: b.midpoint_mm,
+          source: "bridge",
+          airwayOverlay: true,
+        });
+      }
+      return;
+    }
+    const decide = t.dataset.bridgeConfirm ? "confirmed"
+      : t.dataset.bridgeReject ? "rejected" : null;
+    const bid = t.dataset.bridgeConfirm || t.dataset.bridgeReject;
+    if (decide && bid) {
+      const noteEl = reviewPanel.querySelector(`[data-bridge-note="${CSS.escape(bid)}"]`);
+      const note = noteEl ? noteEl.value : "";
+      const res = await fetch(`/api/cases/${encodeURIComponent(currentCase)}/bridges/${encodeURIComponent(bid)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: decide, note }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        reviewMsg.textContent = body.detail || `Bridge ${decide} failed (${res.status})`;
+        return;
+      }
+      reviewMsg.textContent = `Bridge ${bid} ${decide}`;
+      await loadReview(currentCase);
+      await loadWorkflow(currentCase);
+      await reloadRenderer(currentCase);
+      return;
+    }
+    const flagKey = t.dataset.flagApprove || t.dataset.flagReject;
+    if (flagKey) {
+      const [kind, ...lobeParts] = flagKey.split("|");
+      const lobe = lobeParts.join("|");
+      const decision = t.dataset.flagApprove ? "approved" : "rejected";
+      const findingEl = reviewPanel.querySelector(
+        `[data-flag-finding="${CSS.escape(flagKey)}"]`
+      );
+      const finding = findingEl ? findingEl.value : "";
+      const res = await fetch(`/api/cases/${encodeURIComponent(currentCase)}/review-signoff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, lobe, decision, finding }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        reviewMsg.textContent = body.detail || `Sign-off failed (${res.status})`;
+        return;
+      }
+      await loadReview(currentCase);
+      await loadWorkflow(currentCase);
+      return;
+    }
+    if (t.dataset.undo) {
+      const res = await fetch(
+        `/api/cases/${encodeURIComponent(currentCase)}/corrections/${encodeURIComponent(t.dataset.undo)}`,
+        { method: "DELETE" },
+      );
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        reviewMsg.textContent = body.detail || `Undo failed (${res.status})`;
+        return;
+      }
+      await loadReview(currentCase);
+      await loadWorkflow(currentCase);
+      await reloadRenderer(currentCase);
+    }
+  });
 
   document.getElementById("import-scan").onclick = async () => {
     importMsg.textContent = "Scanning…";

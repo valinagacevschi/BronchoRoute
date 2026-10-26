@@ -1,9 +1,9 @@
-"""Derived 8-step workflow state from case.json records and artifacts (Phase 4a).
+# Changes: Phase 4b fixes — step-4 completion times from review_signoff.at only;
+# unmatched bridge reason on the review step.
+"""Derived 8-step workflow state from case.json records and artifacts.
 
-Ordering-aware: a step's completion only counts when its event is newer than
-every earlier step's latest completion. Re-doing an earlier step therefore
-invalidates later steps without deleting history. Artifacts must be registered
-(no on-disk fallback). AeroPath step 1 is done by definition.
+Phase 4a: ordering-aware derivation, segment artifacts, completion kinds.
+Phase 4b: step 4 also requires no stale corrections; bridge ids via app.review.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from typing import Any
 from app.caseref import CaseRef
 from app.cases import load_case_record, qualifying_route_start_terminals
 from app.versions import sha256_file
-from make_prototype_data import review_gate
 
 
 class WorkflowStep(IntEnum):
@@ -173,49 +172,26 @@ def _lesion_confirmed_raw(case: dict) -> bool:
     return True
 
 
-def _load_bridges(ref: CaseRef) -> list[dict]:
-    path = ref.ts_out / "airway_bridges.json"
-    if not path.is_file():
-        return []
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return []
-    bridges = data.get("bridges") if isinstance(data, dict) else None
-    return bridges if isinstance(bridges, list) else []
-
-
-def _bridge_decisions_complete(case: dict, ref: CaseRef) -> bool:
-    bridges = _load_bridges(ref)
-    if not bridges:
-        return True
-    decisions = case.get("bridge_decisions") or {}
-    if not isinstance(decisions, dict):
-        return False
-    if len(decisions) < len(bridges):
-        return False
-    return all(
-        isinstance(v, dict) and v.get("decision") in {"confirmed", "rejected"}
-        for v in decisions.values()
-    )
-
-
-def _review_flags_resolved(case: dict, ref: CaseRef) -> bool:
-    try:
-        graph = load_graph(ref=ref)
-    except ValueError:
-        return False
-    review = graph.get("review") or []
-    if not review:
-        return True
-    _, unresolved, _ = review_gate(review, case.get("review_signoff") or [])
-    return len(unresolved) == 0
-
-
 def _review_raw(case: dict, ref: CaseRef) -> bool:
     if not _segment_registered_for_ct(case, ref):
         return False
-    return _bridge_decisions_complete(case, ref) and _review_flags_resolved(case, ref)
+    # Lazy import: app.review imports workflow helpers.
+    from app.review import bridges_complete, has_stale_correction, review_flags_approved
+
+    if not bridges_complete(case, ref):
+        return False
+    if not review_flags_approved(case, ref):
+        return False
+    if has_stale_correction(case, ref=ref):
+        return False
+    return True
+
+
+def _review_available_reason(case: dict, ref: CaseRef) -> str | None:
+    """Surface unmatched-bridge (or similar) reason while step 4 is available."""
+    from app.review import review_block_reason
+
+    return review_block_reason(case, ref)
 
 
 def _route_start_still_qualifies(case: dict, ref: CaseRef) -> bool:
@@ -329,15 +305,19 @@ def _completion_at(step: int, case: dict, ref: CaseRef) -> datetime | None:
     if step == int(WorkflowStep.REVIEW):
         if not _review_raw(case, ref):
             return None
-        # Vacuous review (no bridges / flags): inherit segment completion time.
+        # Vacuous review (no bridges / flags / corrections): inherit segment time.
+        # Completion times: bridge/correction records + review_signoff[*].at only
+        # (no client date, no note side-channel).
         times: list[datetime] = []
         for entry in records:
-            if entry.get("kind") == "bridge_decision":
+            if entry.get("kind") in {"bridge_decision", "correction"}:
                 t = _parse_at(entry.get("at"))
                 if t:
                     times.append(t)
-        for entry in case.get("review_signoff") or []:
-            t = _parse_at(entry.get("at") if isinstance(entry, dict) else None)
+        from review_signoff import iter_valid_signoffs
+
+        for entry in iter_valid_signoffs(case.get("review_signoff") or []):
+            t = _parse_at(entry.get("at"))
             if t:
                 times.append(t)
         if times:
@@ -449,6 +429,8 @@ def derive_workflow(case_id: str) -> dict[str, Any]:
         elif prior_ok:
             status = "available"
             reason = None
+            if step == int(WorkflowStep.REVIEW):
+                reason = _review_available_reason(case, ref)
         else:
             status = "blocked"
             reason = _block_reason(step, done)

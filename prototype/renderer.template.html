@@ -1,6 +1,5 @@
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
-     Phase 2: anterior tick / __p2_debug. Phase 3 review: CT panes race-safe mount,
-     Limitations collapses in CT view so it never covers toolbar/readouts. -->
+     Phase 4b fixes: ghost Undo, topology incoming-edge pick, origin-checked goto-ras. -->
 <title>Bronchial Tree Renderer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -640,7 +639,14 @@ function drawAnatomical() {
     for (let i = 1; i < e.c.length; i++) {
       const p = project(e.c[i - 1], cam), q = project(e.c[i], cam);
       if (!p || !q) continue;
-      segs.push({ p, q, e, interpolated: (e.ci || []).includes(i - 1), z: (p.z + q.z) / 2 });
+      segs.push({ p, q, e, interpolated: (e.ci || []).includes(i - 1), z: (p.z + q.z) / 2, ghost: false });
+    }
+  }
+  for (const e of (A.removed || [])) {
+    for (let i = 1; i < (e.c || []).length; i++) {
+      const p = project(e.c[i - 1], cam), q = project(e.c[i], cam);
+      if (!p || !q) continue;
+      segs.push({ p, q, e, interpolated: false, z: (p.z + q.z) / 2, ghost: true });
     }
   }
   segs.sort((a, b) => b.z - a.z);           // painter's algorithm
@@ -648,6 +654,14 @@ function drawAnatomical() {
   for (const s of segs) {
     const w = Math.max(0.7, s.e.r * 2 * s.p.f * 0.5);
     const fog = Math.max(0.18, Math.min(1, 320 / s.z));
+    if (s.ghost) {
+      ctx.strokeStyle = `rgba(140,140,140,${fog * 0.55})`;
+      ctx.lineWidth = w;
+      ctx.setLineDash([3, 5]);
+      ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y); ctx.lineTo(s.q.x, s.q.y); ctx.stroke();
+      ctx.setLineDash([]);
+      continue;
+    }
     if (s.e.down_i) {
       ctx.strokeStyle = `rgba(217,149,32,${fog})`; ctx.lineWidth = w + 1.5;
       ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y); ctx.lineTo(s.q.x, s.q.y); ctx.stroke();
@@ -657,9 +671,13 @@ function drawAnatomical() {
       ctx.strokeStyle = `rgba(217,149,32,${fog})`;
       ctx.setLineDash([5, 4]);
     }
+    if (s.e.selectable === false) {
+      ctx.globalAlpha = 0.55;
+    }
     ctx.lineWidth = w;
     ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y); ctx.lineTo(s.q.x, s.q.y); ctx.stroke();
     ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
   }
   // Target marker
   const t = A.poi ? null : A.nodes[String(A.target)];
@@ -1130,6 +1148,26 @@ function drawTopology() {
     ctx.lineTo(pb.x, pb.y);
     ctx.stroke();
   }
+  // Ghosted removed branches (dashed grey) with click→Undo.
+  for (const e of (A.removed || [])) {
+    const a = topoLayout.get(e.f);
+    if (!a) continue;
+    let b = topoLayout.get(e.t);
+    if (!b) {
+      b = { x: a.x + 18, y: a.y + 28 };
+      e._topoGhostB = b;
+    }
+    const pa = topoToScreen(a), pb = topoToScreen(b);
+    const s = DEFAULT_DIST / cam.dist;
+    ctx.strokeStyle = "rgba(140,140,140,0.7)";
+    ctx.lineWidth = Math.max(0.8, Math.min(9, (e.r || 1) * 1.6) * s);
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
   const t = topoLayout.get(A.target);
   if (t) {
     const pt = topoToScreen(t);
@@ -1211,28 +1249,172 @@ cv.addEventListener("wheel", e => {
   cam.dist = Math.max(60, Math.min(900, cam.dist * (1 + Math.sign(e.deltaY) * 0.1)));
 }, { passive: false });
 
+let selectedEdgeOi = null;
+
+function hideReviewPanels() {
+  const rp = document.getElementById("remove-branch-panel");
+  if (rp) rp.hidden = true;
+  const up = document.getElementById("undo-ghost-panel");
+  if (up) up.hidden = true;
+  selectedEdgeOi = null;
+}
+
+function showRemovePanel(edge) {
+  hideReviewPanels();
+  let panel = document.getElementById("remove-branch-panel");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "remove-branch-panel";
+    panel.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:40;background:var(--surface);border:1px solid var(--edge);border-radius:6px;padding:10px 12px;max-width:22rem;box-shadow:var(--shadow)";
+    document.body.appendChild(panel);
+  }
+  panel.hidden = false;
+  panel.innerHTML = "";
+  const title = document.createElement("div");
+  title.textContent = "Remove branch (CT does not support)";
+  title.style.fontWeight = "600";
+  title.style.marginBottom = "6px";
+  panel.appendChild(title);
+  const note = document.createElement("input");
+  note.type = "text";
+  note.placeholder = "CT evidence note (required)";
+  note.id = "remove-branch-note";
+  note.style.width = "100%";
+  note.style.marginBottom = "6px";
+  panel.appendChild(note);
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.gap = "6px";
+  const go = document.createElement("button");
+  go.id = "remove-branch-go";
+  go.textContent = "Remove";
+  go.onclick = async () => {
+    if (!CASE_ID) return;
+    const res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/corrections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "remove_branch",
+        edge_id: Number(edge.oi),
+        note: note.value,
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(body.detail || `Remove failed (${res.status})`);
+      return;
+    }
+    location.reload();
+  };
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => hideReviewPanels();
+  row.appendChild(go);
+  row.appendChild(cancel);
+  panel.appendChild(row);
+}
+
+window.showRemovePanel = showRemovePanel;
+
+function showUndoGhostPanel(edge) {
+  hideReviewPanels();
+  if (!edge || !edge.correction_id) return;
+  let panel = document.getElementById("undo-ghost-panel");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "undo-ghost-panel";
+    panel.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:40;background:var(--surface);border:1px solid var(--edge);border-radius:6px;padding:10px 12px;max-width:22rem;box-shadow:var(--shadow)";
+    document.body.appendChild(panel);
+  }
+  panel.hidden = false;
+  panel.innerHTML = "";
+  const title = document.createElement("div");
+  title.textContent = "Removed branch (ghosted)";
+  title.style.fontWeight = "600";
+  title.style.marginBottom = "6px";
+  panel.appendChild(title);
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.gap = "6px";
+  const undo = document.createElement("button");
+  undo.id = "undo-ghost-go";
+  undo.textContent = "Undo";
+  undo.onclick = async () => {
+    if (!CASE_ID) return;
+    const res = await fetch(
+      `/api/cases/${encodeURIComponent(CASE_ID)}/corrections/${encodeURIComponent(edge.correction_id)}`,
+      { method: "DELETE" },
+    );
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(body.detail || `Undo failed (${res.status})`);
+      return;
+    }
+    location.reload();
+  };
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => hideReviewPanels();
+  row.appendChild(undo);
+  row.appendChild(cancel);
+  panel.appendChild(row);
+}
+window.showUndoGhostPanel = showUndoGhostPanel;
+
+function nearestProjectedEdge(sx, sy, edges, hitPx) {
+  let best = null, bestD = hitPx, bestPt = null;
+  for (const e of edges) {
+    for (const c of (e.c || [])) {
+      const pr = project(c, cam);
+      if (!pr) continue;
+      const d = Math.hypot(pr.x - sx, pr.y - sy);
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+        bestPt = toWorld(c);
+      }
+    }
+  }
+  return { edge: best, point: bestPt, dist: bestD };
+}
+
 function handleViewClick(clientX, clientY) {
   const rect = cv.getBoundingClientRect();
   const sx = clientX - rect.left, sy = clientY - rect.top;
   if (variant === 0) {
-    // Nearest projected centreline sample within 8 px.
-    let best = null, bestD = 8;
-    for (const e of A.edges) {
-      for (const c of e.c) {
-        const pr = project(c, cam);
-        if (!pr) continue;
-        const d = Math.hypot(pr.x - sx, pr.y - sy);
-        if (d < bestD) {
-          bestD = d;
-          best = toWorld(c);
-        }
+    const live = nearestProjectedEdge(sx, sy, A.edges || [], 8);
+    const ghost = nearestProjectedEdge(sx, sy, A.removed || [], 8);
+    if (ghost.edge && (!live.edge || ghost.dist <= live.dist)) {
+      if (ghost.point) SharedPos.set(ghost.point, "anatomical");
+      showUndoGhostPanel(ghost.edge);
+      return;
+    }
+    if (live.point) {
+      SharedPos.set(live.point, "anatomical");
+      if (live.edge && live.edge.oi != null && live.edge.selectable !== false) {
+        selectedEdgeOi = live.edge.oi;
+        showRemovePanel(live.edge);
       }
     }
-    if (best) SharedPos.set(best, "anatomical");
     return;
   }
   if (variant === 2) {
     if (!topoLayout) buildTopology();
+    // Prefer a ghosted removed segment near the click.
+    let bestGhost = null, bestGhostD = 10;
+    for (const e of (A.removed || [])) {
+      const a = topoLayout.get(e.f);
+      if (!a) continue;
+      const b = topoLayout.get(e.t) || e._topoGhostB || { x: a.x + 18, y: a.y + 28 };
+      const pa = topoToScreen(a), pb = topoToScreen(b);
+      const mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
+      const d = Math.hypot(mx - sx, my - sy);
+      if (d < bestGhostD) { bestGhostD = d; bestGhost = e; }
+    }
+    if (bestGhost) {
+      showUndoGhostPanel(bestGhost);
+      return;
+    }
     let bestId = null, bestD = 12;
     for (const [id, p] of topoLayout) {
       const pt = topoToScreen(p);
@@ -1241,9 +1423,43 @@ function handleViewClick(clientX, clientY) {
     }
     if (bestId != null) {
       SharedPos.set(toWorld(A.nodes[String(bestId)].p), "topology");
+      const nid = Number(bestId);
+      // Topology click picks the incoming edge (e.t === id).
+      const edge = A.edges.find(e => e.t === nid);
+      if (edge && edge.oi != null && edge.selectable !== false) {
+        selectedEdgeOi = edge.oi;
+        showRemovePanel(edge);
+      }
     }
   }
 }
+
+window.addEventListener("message", (ev) => {
+  if (ev.origin !== location.origin) return;
+  if (ev.source !== window.parent && ev.source !== window) return;
+  const data = ev.data;
+  if (!data || data.type !== "goto-ras" || !Array.isArray(data.ras_mm)) return;
+  SharedPos.set(data.ras_mm, data.source || "bridge");
+  if (variant !== 3) setVariant(3);
+  ensureCtPanes().then(() => {
+    if (data.airwayOverlay && ctPanesApi && typeof ctPanesApi.setAirwayOverlay === "function") {
+      ctPanesApi.setAirwayOverlay(true);
+    }
+  });
+});
+
+// CT panes may ask the parent renderer to offer remove-branch for a picked edge.
+window.addEventListener("message", (ev) => {
+  if (ev.origin !== location.origin) return;
+  const data = ev.data;
+  if (!data || data.type !== "ct-select-edge") return;
+  const oi = data.oi;
+  const edge = (A.edges || []).find(e => e.oi === oi);
+  if (edge && edge.selectable !== false) {
+    selectedEdgeOi = oi;
+    showRemovePanel(edge);
+  }
+});
 
 SharedPos.subscribe((pos, source) => {
   if (!pos) return;
@@ -1410,6 +1626,9 @@ function setVariant(i) {
   history.replaceState(null, "", u);
   render();
 }
+window.setVariant = setVariant;
+window.ensureCtPanes = ensureCtPanes;
+window.SharedPos = SharedPos;
 function render() {
   sw.innerHTML = "";
   VARIANTS.forEach((v, i) => {

@@ -4,6 +4,10 @@ One job per case at a time. Launcher uses a new session, clean env, and arg
 lists only. Job state persists to ts_out/<id>/job.json so restart detects a
 live pid (409) or marks a dead one failed. Default 45 min timeout kills the
 process group; shutdown terminates remaining groups.
+
+Changes: pin job.json path on JobState at first persist; reset_jobs_for_tests
+joins worker threads so late writes cannot hit real paths.TS_OUT after
+monkeypatch teardown.
 """
 
 from __future__ import annotations
@@ -109,6 +113,9 @@ class JobState:
     log_lines: list[str] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _pgid: int | None = field(default=None, repr=False)
+    # Pinned at first persist so background threads keep writing the tmp-tree
+    # path even after tests restore real paths.TS_OUT.
+    _json_path: Path | None = field(default=None, repr=False)
 
     def append_log(self, line: str) -> None:
         cleaned = redact_log_line(line.rstrip("\n"))
@@ -143,6 +150,8 @@ _latest: dict[str, JobState] = {}
 _running: dict[str, JobState] = {}
 _restore_lock = threading.Lock()
 _restored: set[str] = set()
+_worker_threads: list[threading.Thread] = []
+_worker_threads_lock = threading.Lock()
 
 
 class JobConflict(Exception):
@@ -158,7 +167,9 @@ def _job_json_path(case_id: str) -> Path:
 
 
 def _persist_job(job: JobState) -> None:
-    path = _job_json_path(job.case_id)
+    if job._json_path is None:
+        job._json_path = _job_json_path(job.case_id)
+    path = job._json_path
     path.parent.mkdir(parents=True, exist_ok=True)
     wall_start = None
     if path.is_file():
@@ -423,6 +434,8 @@ def start_segment_job(case_id: str, clinician: str) -> dict:
         _running[case_id] = job
         _latest[case_id] = job
 
+    # Pin path while caller still has paths.* patched (tests / request).
+    job._json_path = _job_json_path(case_id)
     cmds = _segment_commands(ref)
     thread = threading.Thread(
         target=_run_job,
@@ -430,6 +443,8 @@ def start_segment_job(case_id: str, clinician: str) -> dict:
         name=f"segment-{case_id}",
         daemon=True,
     )
+    with _worker_threads_lock:
+        _worker_threads.append(thread)
     thread.start()
     return job.snapshot()
 
@@ -453,13 +468,20 @@ def terminate_all_jobs() -> None:
 
 
 def reset_jobs_for_tests() -> None:
-    """Clear in-memory job tables (unit tests only)."""
+    """Clear in-memory job tables and join workers (unit tests only)."""
+    terminate_all_jobs()
+    with _worker_threads_lock:
+        threads = list(_worker_threads)
+        _worker_threads.clear()
+    for thread in threads:
+        thread.join(timeout=5.0)
     with _jobs_lock:
         _latest.clear()
         _running.clear()
     with _restore_lock:
         _restored.clear()
     set_job_timeout_s(None)
+    set_job_launcher(None)
 
 
 __all__ = [

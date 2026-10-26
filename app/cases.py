@@ -1,7 +1,8 @@
+# Changes: Phase 4b fixes — stamp selectable_until_mm and correction_id on payload.
 """Case inventory and locked record writes for the local app server.
 
-Phase 4a review fixes: WorkflowStep only (no STEP_* duplicates); guarded
-load_graph; missing radius_mm → ValueError (422); series/confirm helper.
+Phase 4a: WorkflowStep, guarded load_graph, series/confirm.
+Phase 4b: case_payload uses effective graph + removed + selectable.
 """
 
 from __future__ import annotations
@@ -96,14 +97,69 @@ def _case_summary(ref: CaseRef, record: dict) -> dict:
 
 
 def case_payload(case_id: str, allow_review: bool = False) -> dict:
+    from app.review import effective_for_case
     from app.workflow import load_graph
 
     ref = CaseRef.parse(case_id)
     record = load_case_record(ref)
-    graph = load_graph(record, ref=ref)
-    payload = build_payload(graph, record, allow_review)
-    payload["route_start"] = route_start_info(graph, record)
+    # Gate on the original graph's review flags (sign-off still required).
+    raw_graph = load_graph(record, ref=ref)
+    eff = effective_for_case(case_id, record)
+    payload = build_payload(eff["graph"], record, allow_review)
+    # RouteStart still uses the raw root (trachea) even if branches were pruned.
+    payload["route_start"] = route_start_info(raw_graph, record)
+    payload["removed"] = _payload_removed_edges(
+        eff["removed"], raw_graph, payload.get("origin_mm") or [0, 0, 0]
+    )
+    # Stamp selectable onto payload edges (aligned by original index order in effective).
+    for edge, src in zip(payload["edges"], eff["graph"]["edges"]):
+        edge["selectable"] = bool(src.get("selectable", True))
+        edge["selectable_until_mm"] = src.get("selectable_until_mm")
+        edge["oi"] = src.get("_original_index")
+    for rem in payload["removed"]:
+        rem["selectable"] = False
+        rem["selectable_until_mm"] = None
     return payload
+
+
+def _payload_removed_edges(
+    removed: list[dict], raw_graph: dict, origin_mm: list[float]
+) -> list[dict]:
+    """Ghosted removed edges in the same relative coords as payload edges."""
+    from make_prototype_data import KEEP_EVERY, decimated_indices, provenance_mapping
+
+    if not removed:
+        return []
+    # provenance_mapping expects full edge list shape; map one-by-one.
+    out = []
+    root = origin_mm
+
+    def rel(p):
+        return [round(float(p[i]) - float(root[i]), 1) for i in range(3)]
+
+    for edge in removed:
+        prov_map, _ = provenance_mapping([edge])
+        prov = prov_map[0]
+        indices = decimated_indices(len(edge.get("centreline_mm") or []), KEEP_EVERY)
+        line = edge.get("centreline_mm") or []
+        row = {
+            "f": edge["from"],
+            "t": edge["to"],
+            "g": edge.get("generation", 0),
+            "r": edge.get("radius_mm", 1.0),
+            "l": edge.get("length_mm", 0.0),
+            "lobe": edge.get("lobe"),
+            **prov,
+            "c": [rel(line[i]) for i in indices if i < len(line)],
+            "oi": edge.get("_original_index"),
+            "ghost": True,
+            "selectable": False,
+            "selectable_until_mm": None,
+        }
+        if edge.get("correction_id"):
+            row["correction_id"] = edge["correction_id"]
+        out.append(row)
+    return out
 
 
 def _node_degree(graph: dict) -> dict[int, int]:

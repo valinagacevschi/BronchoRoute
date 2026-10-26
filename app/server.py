@@ -1,7 +1,9 @@
+# Changes: Phase 4b fixes — unified exception→HTTP helper for review mutators;
+# review-signoff accepts no client date.
 """Local Lung Navigator app server (127.0.0.1 only).
 
-Phase 4a review fixes: series/confirm, register-existing, /records 403 for
-completion kinds, lesion requires step 1, job shutdown teardown.
+Phase 4a: series/confirm, register-existing, /records 403, jobs.
+Phase 4b: review/bridges/corrections/sign-off endpoints.
 """
 
 from __future__ import annotations
@@ -53,6 +55,13 @@ from app.settings import (
     put_clinician,
     put_ct_view,
     validate_ct_view,
+)
+from app.review import (
+    add_correction,
+    apply_review_signoff,
+    review_state,
+    set_bridge_decision,
+    undo_correction,
 )
 from app.workflow import (
     WORKFLOW_COMPLETION_KINDS,
@@ -176,6 +185,24 @@ class SeriesConfirmBody(BaseModel):
     overridden: bool = False
 
 
+class BridgeDecisionBody(BaseModel):
+    decision: Literal["confirmed", "rejected"]
+    note: str
+
+
+class CorrectionBody(BaseModel):
+    kind: Literal["remove_branch"]
+    edge_id: int
+    note: str
+
+
+class ReviewSignoffBody(BaseModel):
+    kind: str
+    lobe: str
+    decision: Literal["approved", "rejected"]
+    finding: str
+
+
 def _http_for_case(exc: Exception) -> HTTPException:
     if isinstance(exc, UnknownCase):
         return HTTPException(status_code=404, detail="case not found")
@@ -186,6 +213,13 @@ def _http_for_case(exc: Exception) -> HTTPException:
     if isinstance(exc, ValueError):
         return HTTPException(status_code=422, detail=str(exc))
     raise exc
+
+
+def _http_for_review(exc: Exception) -> HTTPException:
+    """Shared exception→HTTP mapping for review mutators."""
+    if isinstance(exc, WorkflowBlocked):
+        return HTTPException(status_code=409, detail=exc.reason)
+    return _http_for_case(exc)
 
 
 def _require_clinician() -> dict:
@@ -335,6 +369,63 @@ def api_route_start_candidates(case_id: str):
         return {"candidates": qualifying_route_start_terminals(graph)}
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
+
+
+@app.get("/api/cases/{case_id}/review")
+def api_review(case_id: str):
+    try:
+        return review_state(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_review(exc) from exc
+
+
+@app.put("/api/cases/{case_id}/bridges/{bridge_id}")
+def api_bridge_decision(case_id: str, bridge_id: str, body: BridgeDecisionBody):
+    clinician = _require_clinician()
+    try:
+        return set_bridge_decision(
+            case_id, bridge_id, body.decision, body.note, clinician["clinician"]
+        )
+    except (WorkflowBlocked, UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_review(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/corrections")
+def api_add_correction(case_id: str, body: CorrectionBody):
+    clinician = _require_clinician()
+    try:
+        if body.kind != "remove_branch":
+            raise ValueError("kind must be remove_branch")
+        return add_correction(
+            case_id, body.edge_id, body.note, clinician["clinician"]
+        )
+    except (WorkflowBlocked, UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_review(exc) from exc
+
+
+@app.delete("/api/cases/{case_id}/corrections/{correction_id}")
+def api_undo_correction(case_id: str, correction_id: str):
+    clinician = _require_clinician()
+    try:
+        return undo_correction(case_id, correction_id, clinician["clinician"])
+    except (WorkflowBlocked, UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_review(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/review-signoff")
+def api_review_signoff(case_id: str, body: ReviewSignoffBody):
+    clinician = _require_clinician()
+    try:
+        return apply_review_signoff(
+            case_id,
+            kind=body.kind,
+            lobe=body.lobe,
+            decision=body.decision,
+            finding=body.finding,
+            clinician=clinician["clinician"],
+        )
+    except (WorkflowBlocked, UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_review(exc) from exc
 
 
 @app.get("/api/cases/{case_id}/payload")

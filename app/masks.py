@@ -1,11 +1,12 @@
-"""Airway provenance label volume on the CT crop grid (Phase 3).
+# Changes: Phase 4b — compose label 3 from airway_manual.nii.gz.
+"""Airway provenance label volume on the CT crop grid.
 
 Labels (uint8, x-fastest / Fortran order, same shape+affine as ct_crop):
   1 = CT airway (airways.nii.gz minus bridge voxels)
   2 = interpolated (airway_bridges.nii.gz; wins over 1 where both present)
-  3 = manual (reserved; none yet)
+  3 = manual (airway_manual.nii.gz; wins over 1/2 — removed branches, hatched)
 
-Phase 3 review: assert_affine_match via public helper; shared cache_pair.
+Phase 4b: include manual layer in fingerprint and compose.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from app.ct_crop import (
 
 LABEL_CT = 1
 LABEL_INTERPOLATED = 2
-LABEL_MANUAL = 3  # reserved
+LABEL_MANUAL = 3
 
 
 class MasksUnavailable(FileNotFoundError):
@@ -52,6 +53,10 @@ def _inputs_fingerprint(ref: CaseRef, ct_meta: dict) -> dict:
         inputs["bridges"] = _fingerprint(ref.bridges)
     else:
         inputs["bridges"] = None
+    if ref.manual.is_file():
+        inputs["manual"] = _fingerprint(ref.manual)
+    else:
+        inputs["manual"] = None
     return inputs
 
 
@@ -78,12 +83,16 @@ def _cache_hit(bin_path: Path, meta_path: Path, inputs: dict) -> dict | None:
 
 
 def _compose_labels(
-    airways: np.ndarray, bridges: np.ndarray | None
+    airways: np.ndarray,
+    bridges: np.ndarray | None,
+    manual: np.ndarray | None = None,
 ) -> np.ndarray:
     labels = np.zeros(airways.shape, dtype=np.uint8)
     labels[airways] = LABEL_CT
     if bridges is not None:
         labels[bridges] = LABEL_INTERPOLATED
+    if manual is not None:
+        labels[manual] = LABEL_MANUAL
     return labels
 
 
@@ -139,7 +148,19 @@ def build_masks_crop(case_id: str, *, force: bool = False) -> dict:
             bridges_full = np.asanyarray(bridges_img.dataobj) > 0
             bridges_crop = bridges_full[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
 
-        labels = _compose_labels(airways_crop, bridges_crop)
+        manual_crop = None
+        if ref.manual.is_file():
+            manual_img = _load_canonical(ref.manual)
+            if manual_img.shape != airways_img.shape:
+                raise ValueError(
+                    f"case {case_id}: manual shape {manual_img.shape} != "
+                    f"airways {airways_img.shape}"
+                )
+            assert_affine_match(source_affine, manual_img.affine, "manual")
+            manual_full = np.asanyarray(manual_img.dataobj) > 0
+            manual_crop = manual_full[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
+
+        labels = _compose_labels(airways_crop, bridges_crop, manual_crop)
         wire = np.asarray(np.asfortranarray(labels), dtype=np.uint8, order="F")
         raw = wire.tobytes(order="F")
         meta = {

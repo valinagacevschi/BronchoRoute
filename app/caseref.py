@@ -1,6 +1,7 @@
+# Changes: Phase 4b — CaseRef.manual for airway_manual.nii.gz.
 """Typed case id reference: local-NNN or AeroPath n, with resolved artifact paths.
 
-Phase 3 review: bridges path for airway_bridges.nii.gz (mask provenance labels).
+Phase 3: bridges path for airway_bridges.nii.gz. Phase 4b: airway_manual.nii.gz.
 """
 
 from __future__ import annotations
@@ -80,6 +81,10 @@ class CaseRef:
     @property
     def bridges(self) -> Path:
         return self.ts_out / "airway_bridges.nii.gz"
+
+    @property
+    def manual(self) -> Path:
+        return self.ts_out / "airway_manual.nii.gz"
 
     @property
     def crop_cache_dir(self) -> Path:

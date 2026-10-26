@@ -1,3 +1,4 @@
+# Changes: uses build_tmp_pipeline (per-file ts_out symlinks, never dir links).
 # Phase 4a playwright: local-001 step-1 confirmable; synthetic DICOM scan under
 # fake HOME (never ~/Downloads/dicom). Screenshots → out/p4a_shots/.
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Changes: Phase 4b — review_gate skips malformed sign-offs; date from at.
 """Slim graph.json down to something embeddable in a single-file prototype.
 
 Throwaway: exists only to feed the renderer prototype for ticket 06.
@@ -158,15 +159,34 @@ def parse_target(value: str) -> list[float]:
 
 
 def review_gate(review: list[dict], signoffs: list[dict], allow_review: bool = False):
-    """Return approved matches and remaining review flags."""
-    approved = {(s["kind"], s["lobe"]): s for s in signoffs
-                if s["decision"] == "approved"}
+    """Return approved matches and remaining review flags.
+
+    Malformed sign-off rows are skipped (never raise).
+    """
+    approved = {}
+    for s in signoffs:
+        if not isinstance(s, dict):
+            continue
+        if s.get("decision") != "approved":
+            continue
+        kind, lobe = s.get("kind"), s.get("lobe")
+        if not kind or not lobe:
+            continue
+        approved[(kind, lobe)] = s
     resolved, unresolved = [], []
     for entry in review:
         signoff = approved.get((entry["kind"], entry["lobe"]))
         if signoff:
-            resolved.append({key: signoff[key] for key in
-                             ("kind", "lobe", "finding", "reviewer", "date")})
+            day = signoff.get("date")
+            if not day and isinstance(signoff.get("at"), str):
+                day = signoff["at"][:10]
+            resolved.append({
+                "kind": signoff["kind"],
+                "lobe": signoff["lobe"],
+                "finding": signoff.get("finding", ""),
+                "reviewer": signoff.get("reviewer", ""),
+                "date": day or "",
+            })
         else:
             unresolved.append(entry)
     return resolved, unresolved, bool(unresolved) and not allow_review

@@ -1,5 +1,5 @@
-/* Phase 4a review: RouteStart disabled once confirmed unless selection changed;
- * explicit Move RouteStart; candidates fetch checks res.ok.
+/* Phase 4b fixes: hatched label 3; setAirwayOverlay; CT airway-voxel → remove branch.
+ * RouteStart move flow from 4a retained.
  */
 "use strict";
 
@@ -840,10 +840,15 @@ window.CtPanes = (function () {
             const lab = sampleMask(i, j, k);
             const col = PROV_COLORS[lab];
             if (col) {
-              const a = col.a;
-              px[idx] = Math.round(px[idx] * (1 - a) + col.r * a);
-              px[idx + 1] = Math.round(px[idx + 1] * (1 - a) + col.g * a);
-              px[idx + 2] = Math.round(px[idx + 2] * (1 - a) + col.b * a);
+              // Hatched pattern for manual (removed) label 3.
+              const hatch = lab === LABEL_MANUAL && ((px_ + py) % 6 < 3);
+              const a = hatch ? Math.min(0.85, col.a + 0.25) : col.a;
+              const r = hatch ? Math.min(255, col.r + 40) : col.r;
+              const g = hatch ? Math.max(0, col.g - 20) : col.g;
+              const b = hatch ? Math.max(0, col.b - 20) : col.b;
+              px[idx] = Math.round(px[idx] * (1 - a) + r * a);
+              px[idx + 1] = Math.round(px[idx + 1] * (1 - a) + g * a);
+              px[idx + 2] = Math.round(px[idx + 2] * (1 - a) + b * a);
             }
           }
         }
@@ -1077,6 +1082,21 @@ window.CtPanes = (function () {
         return;
       }
       setCrosshairWorld(world, "ct");
+      // Clicking an airway voxel selects the nearest graph edge for removal.
+      if (maskData && lesionConfirmed()) {
+        const ijk = worldToVoxelCont(world);
+        const ii = Math.round(ijk[0]), jj = Math.round(ijk[1]), kk = Math.round(ijk[2]);
+        const lab = sampleMask(ii, jj, kk);
+        if (lab === LABEL_CT || lab === LABEL_INTERP || lab === LABEL_MANUAL) {
+          const hit = nearestCentrelineWorld(airway, originMm, world);
+          if (hit && hit.edge && hit.edge.oi != null && hit.edge.selectable !== false) {
+            window.postMessage(
+              { type: "ct-select-edge", oi: hit.edge.oi },
+              location.origin,
+            );
+          }
+        }
+      }
     }
 
     function onPointerMove(e) {
@@ -1361,6 +1381,12 @@ window.CtPanes = (function () {
       },
       originMm: () => [...originMm],
       nearestRoute: world => nearestCentrelineWorld(airway, originMm, world),
+      setAirwayOverlay(on) {
+        overlays.airway = !!on;
+        const cb = rootEl.querySelector('input[data-overlay="airway"]');
+        if (cb) cb.checked = overlays.airway;
+        drawAll();
+      },
       paneCanvasRect(paneKey) {
         return panes[paneKey].canvas.getBoundingClientRect();
       },
