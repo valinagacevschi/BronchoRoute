@@ -1,8 +1,10 @@
-# Changes: Phase 4b fixes — stamp selectable_until_mm and correction_id on payload.
+# Changes: Phase 4c review — case_payload uses RouteStart-rooted plan, stored
+# gap, exact sample fly end; stale route_target explicit (no marker drawn).
 """Case inventory and locked record writes for the local app server.
 
 Phase 4a: WorkflowStep, guarded load_graph, series/confirm.
 Phase 4b: case_payload uses effective graph + removed + selectable.
+Phase 4c: RouteTarget truncation, stored gap, stale marker.
 """
 
 from __future__ import annotations
@@ -98,6 +100,10 @@ def _case_summary(ref: CaseRef, record: dict) -> dict:
 
 def case_payload(case_id: str, allow_review: bool = False) -> dict:
     from app.review import effective_for_case
+    from app.route_target import (
+        last_original_index_at_or_before_arc,
+        plan_route_target_for_payload,
+    )
     from app.workflow import load_graph
 
     ref = CaseRef.parse(case_id)
@@ -105,9 +111,54 @@ def case_payload(case_id: str, allow_review: bool = False) -> dict:
     # Gate on the original graph's review flags (sign-off still required).
     raw_graph = load_graph(record, ref=ref)
     eff = effective_for_case(case_id, record)
-    payload = build_payload(eff["graph"], record, allow_review)
+    plan = plan_route_target_for_payload(
+        eff["graph"], record, record.get("route_target")
+    )
+    if plan.get("active"):
+        end_edge = int(plan["end_edge"])
+        end_sample = last_original_index_at_or_before_arc(
+            eff["graph"]["edges"][end_edge], float(plan["end_arc_mm"])
+        )
+        payload = build_payload(
+            eff["graph"], record, allow_review,
+            end_edge=end_edge,
+            end_sample=end_sample,
+            start_node=int(plan["start_node"]),
+            end_ras_mm=list(plan["end_ras_mm"]),
+            stored_gap_mm=plan.get("target_gap_mm"),
+            stored_inside_airway=plan.get("target_inside_airway"),
+        )
+        # Stored gap is the single source of truth.
+        if plan.get("target_gap_mm") is not None:
+            payload["target_gap_mm"] = plan["target_gap_mm"]
+        if plan.get("target_inside_airway") is not None:
+            payload["target_inside_airway"] = plan["target_inside_airway"]
+    else:
+        # Fall back to RouteStart-rooted deepest route when no active target.
+        start_info = route_start_info(eff["graph"], record)
+        start = (
+            int(start_info["node"])
+            if start_info.get("confirmed")
+            else int(eff["graph"]["root_node_id"])
+        )
+        payload = build_payload(
+            eff["graph"], record, allow_review, start_node=start
+        )
+        # Stale or absent target: never draw a disagreeing RouteTarget marker.
+        payload["endpoint"] = None
+        payload["target_gap_mm"] = None
+        payload["target_inside_airway"] = None
     # RouteStart still uses the raw root (trachea) even if branches were pruned.
     payload["route_start"] = route_start_info(raw_graph, record)
+    if plan.get("stale"):
+        payload["route_target"] = {
+            "stale": True,
+            "reason": plan.get("reason") or "route target no longer valid",
+        }
+    elif plan.get("active"):
+        payload["route_target"] = plan["route_target"]
+    else:
+        payload["route_target"] = None
     payload["removed"] = _payload_removed_edges(
         eff["removed"], raw_graph, payload.get("origin_mm") or [0, 0, 0]
     )

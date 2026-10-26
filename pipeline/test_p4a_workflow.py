@@ -152,9 +152,19 @@ def _seed_through_step(client, harness, step: int, *, at_base: str = "2026-01-01
     if step > 6:
         records.append({
             "step": 6, "kind": "route_target_chosen",
-            "data": {"node": 1, "ras_mm": [0.0, 0.0, -20.0]},
+            "data": {
+                "node": 1, "edge_id": 0, "sample_index": 0,
+                "ras_mm": [0.0, 0.0, -20.0], "rank": 1,
+                "target_gap_mm": 0.0, "target_inside_airway": True,
+            },
             "clinician": "Radiologist, A.B.", "at": f"{at_base}4Z",
         })
+        case["route_target"] = {
+            "node": 1, "edge_id": 0, "sample_index": 0,
+            "ras_mm": [0.0, 0.0, -20.0], "rank": 1,
+            "target_gap_mm": 0.0, "target_inside_airway": True,
+            "confirmed_by": "Radiologist, A.B.", "at": f"{at_base}4Z",
+        }
     if step > 7:
         # Graph has root→1 with no bifurcation (degree-1 terminals only on route).
         pass

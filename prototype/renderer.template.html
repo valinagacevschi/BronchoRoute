@@ -1,5 +1,5 @@
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
-     Phase 4b fixes: ghost Undo, topology incoming-edge pick, origin-checked goto-ras. -->
+     Phase 4c review: highlight-route also paints CT panes; raw pick ras_mm. -->
 <title>Bronchial Tree Renderer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -674,13 +674,16 @@ function drawAnatomical() {
     if (s.e.selectable === false) {
       ctx.globalAlpha = 0.55;
     }
-    ctx.lineWidth = w;
+    const oi = s.e.oi;
+    const hi = oi != null && highlightRouteOis.has(oi);
+    ctx.lineWidth = hi ? w + 2.5 : w;
+    if (hi) ctx.strokeStyle = `rgba(46,110,136,${Math.min(1, fog + 0.2)})`;
     ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y); ctx.lineTo(s.q.x, s.q.y); ctx.stroke();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
   }
-  // Target marker
-  const t = A.poi ? null : A.nodes[String(A.target)];
+  // Target marker (deepest node only when no RouteTarget/lesion poi)
+  const t = (A.poi || A.endpoint) ? null : A.nodes[String(A.target)];
   const tp = t && project(t.p, cam);
   if (tp) {
     ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
@@ -699,6 +702,16 @@ function drawAnatomical() {
       ctx.fillText("RouteStart", rsp.x + 12, rsp.y - 4);
     }
   }
+  // RouteTarget endpoint (separate from Lesion)
+  if (A.endpoint) {
+    const end = project(A.endpoint, cam);
+    if (end) {
+      ctx.strokeStyle = "#2E6E88"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(end.x, end.y, 8, 0, 7); ctx.stroke();
+      ctx.fillStyle = "#2E6E88"; ctx.font = "10px IBM Plex Mono, monospace";
+      ctx.fillText("RouteTarget", end.x + 12, end.y - 4);
+    }
+  }
   if (A.poi) {
     const p = project(A.poi, cam);
     const end = A.endpoint && project(A.endpoint, cam);
@@ -711,6 +724,8 @@ function drawAnatomical() {
       }
       ctx.fillStyle = "#fff"; ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = tok("--mucosa"); ctx.font = "10px IBM Plex Mono, monospace";
+      ctx.fillText("Lesion", p.x + 10, p.y + 12);
     }
   }
   drawOrientationGizmo();
@@ -1250,6 +1265,8 @@ cv.addEventListener("wheel", e => {
 }, { passive: false });
 
 let selectedEdgeOi = null;
+let highlightRouteOis = new Set();
+let routeTargetPickArmed = false;
 
 function hideReviewPanels() {
   const rp = document.getElementById("remove-branch-panel");
@@ -1391,6 +1408,13 @@ function handleViewClick(clientX, clientY) {
     }
     if (live.point) {
       SharedPos.set(live.point, "anatomical");
+      if (routeTargetPickArmed) {
+        window.parent.postMessage(
+          { type: "route-target-pick", ras_mm: live.point },
+          location.origin,
+        );
+        return;
+      }
       if (live.edge && live.edge.oi != null && live.edge.selectable !== false) {
         selectedEdgeOi = live.edge.oi;
         showRemovePanel(live.edge);
@@ -1438,7 +1462,28 @@ window.addEventListener("message", (ev) => {
   if (ev.origin !== location.origin) return;
   if (ev.source !== window.parent && ev.source !== window) return;
   const data = ev.data;
-  if (!data || data.type !== "goto-ras" || !Array.isArray(data.ras_mm)) return;
+  if (!data) return;
+  if (data.type === "highlight-route") {
+    highlightRouteOis = new Set(
+      Array.isArray(data.edge_ids) ? data.edge_ids.map(Number).filter(n => Number.isFinite(n)) : []
+    );
+    if (Array.isArray(data.ras_mm) && data.ras_mm.length === 3) {
+      SharedPos.set(data.ras_mm, "route-target-hover");
+    }
+    if (ctPanesApi && typeof ctPanesApi.setHighlightRoute === "function") {
+      ctPanesApi.setHighlightRoute([...highlightRouteOis]);
+    }
+    draw();
+    return;
+  }
+  if (data.type === "arm-route-target-pick") {
+    routeTargetPickArmed = !!data.armed;
+    if (ctPanesApi && typeof ctPanesApi.setRouteTargetPickArmed === "function") {
+      ctPanesApi.setRouteTargetPickArmed(routeTargetPickArmed);
+    }
+    return;
+  }
+  if (data.type !== "goto-ras" || !Array.isArray(data.ras_mm)) return;
   SharedPos.set(data.ras_mm, data.source || "bridge");
   if (variant !== 3) setVariant(3);
   ensureCtPanes().then(() => {
@@ -1611,6 +1656,9 @@ async function ensureCtPanes() {
       isViewActive: () => ctStage.classList.contains("active"),
       debug: DEBUG,
     });
+    if (routeTargetPickArmed && typeof ctPanesApi.setRouteTargetPickArmed === "function") {
+      ctPanesApi.setRouteTargetPickArmed(true);
+    }
     return ctPanesApi;
   })();
   try {

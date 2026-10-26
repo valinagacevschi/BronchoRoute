@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Phase 4b fixes: origin-checked postMessage; CSS.escape lobe selectors; bridge Go to. -->
+<!-- Phase 4c review: lobe/airway fields, 422 detail join, CT+3D hover highlight. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -100,6 +100,20 @@
     .stage iframe { width: 100%; height: 100%; border: 0; background: var(--ground); }
     .empty { padding: 40px 18px; color: var(--muted); }
     .msg { color: var(--mucosa); font-size: 13px; margin: 6px 0; }
+    .rt-cards { display: flex; gap: 10px; flex-wrap: wrap; }
+    .rt-card {
+      flex: 1 1 12rem; max-width: 18rem; text-align: left;
+      background: color-mix(in srgb, var(--steel) 8%, white);
+      border: 1px solid var(--edge); border-radius: 4px; padding: 10px 12px;
+      color: var(--ink); cursor: pointer;
+    }
+    .rt-card:hover, .rt-card.hover {
+      border-color: var(--steel);
+      background: color-mix(in srgb, var(--steel) 16%, white);
+    }
+    .rt-card.selected { border-color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
+    .rt-card .rt-rank { font: 600 11px/1.2 var(--mono); color: var(--steel); margin-bottom: 4px; }
+    .rt-card .rt-meta { font-size: 12px; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -116,6 +130,7 @@
     <button type="button" class="secondary" id="confirm-route-start-btn" disabled>Confirm RouteStart</button>
     <button type="button" class="secondary" id="move-route-start-btn" disabled hidden>Move RouteStart</button>
     <button type="button" class="secondary" id="toggle-review">Review</button>
+    <button type="button" class="secondary" id="toggle-route-target" disabled>RouteTarget</button>
     <span id="job-status" class="msg"></span>
   </div>
   <div class="workflow" id="workflow" aria-label="Workflow steps"></div>
@@ -128,6 +143,15 @@
     <div id="review-flags"></div>
     <div class="row" style="margin-top:10px"><strong>Corrections</strong></div>
     <div id="review-corrections"></div>
+  </div>
+  <div class="panel" id="route-target-panel">
+    <h2>Choose RouteTarget</h2>
+    <div class="msg" id="route-target-msg"></div>
+    <div class="rt-cards" id="route-target-cards"></div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="secondary" id="pick-route-target-btn" disabled>Pick another point</button>
+      <span class="msg" id="route-target-pick-status"></span>
+    </div>
   </div>
   <div class="panel" id="import-panel">
     <h2>Import CT</h2>
@@ -171,6 +195,8 @@
   const jobElapsed = document.getElementById("job-elapsed");
   const segmentBtn = document.getElementById("segment-btn");
   const routeStartBtn = document.getElementById("confirm-route-start-btn");
+  const routeTargetPanel = document.getElementById("route-target-panel");
+  const routeTargetBtn = document.getElementById("toggle-route-target");
   let cases = [];
   let currentCase = null;
   let scanResult = null;
@@ -181,9 +207,30 @@
   let routeStartConfirmedNode = null;
   let routeStartSelectedNode = null;
   let reviewBody = null;
+  let routeTargetCandidates = [];
+  let routeTargetPicking = false;
+  let chosenRouteTargetKey = null;
 
   function clearEl(el) {
     while (el.firstChild) el.removeChild(el.firstChild);
+  }
+
+  function formatDetail(detail, fallback) {
+    if (detail == null || detail === "") return fallback || "";
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail.map((d) => {
+        if (typeof d === "string") return d;
+        if (d && typeof d === "object" && d.msg) {
+          let msg = String(d.msg);
+          if (msg.startsWith("Value error, ")) msg = msg.slice("Value error, ".length);
+          return msg;
+        }
+        return String(d);
+      }).filter(Boolean).join("; ") || fallback || "";
+    }
+    if (typeof detail === "object" && detail.msg) return String(detail.msg);
+    return String(detail);
   }
 
   function el(tag, attrs, text) {
@@ -292,6 +339,7 @@
     const s1 = body.steps.find(s => s.step === 1);
     const s3 = body.steps.find(s => s.step === 3);
     const s5 = body.steps.find(s => s.step === 5);
+    const s6 = body.steps.find(s => s.step === 6);
     const canSegment = s3 && (s3.status === "available" || s3.status === "done");
     segmentBtn.disabled = !canSegment;
     segmentBtn.textContent = (s3 && s3.status === "done") ? "Re-run segmentation" : "Segment";
@@ -303,6 +351,11 @@
     confirmExisting.disabled = !showConfirmSeries;
 
     syncRouteStartButtons(s5);
+    const canRt = !!(s6 && (s6.status === "available" || s6.status === "done"));
+    routeTargetBtn.disabled = !canRt;
+    if (canRt && routeTargetPanel.classList.contains("visible")) {
+      loadRouteTargetCandidates(currentCase);
+    }
   }
 
   function syncRouteStartButtons(s5) {
@@ -375,7 +428,11 @@
     clearEl(gateEl);
     await loadWorkflow(caseId);
     if (reviewPanel.classList.contains("visible")) await loadReview(caseId);
-    const q = allowReview ? "?allow_review=1" : "";
+    const debug = new URLSearchParams(location.search).get("debug") === "1";
+    const qParts = [];
+    if (allowReview) qParts.push("allow_review=1");
+    if (debug) qParts.push("debug=1");
+    const q = qParts.length ? `?${qParts.join("&")}` : "";
     const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/payload${q}`);
     if (res.status === 409) {
       const body = await res.json();
@@ -395,11 +452,17 @@
       const s5 = workflowBody && workflowBody.steps.find(s => s.step === 5);
       syncRouteStartButtons(s5);
     }
-    history.replaceState(null, "", `?case=${encodeURIComponent(caseId)}${allowReview ? "&allow_review=1" : ""}`);
+    const histParts = [`case=${encodeURIComponent(caseId)}`];
+    if (allowReview) histParts.push("allow_review=1");
+    if (debug) histParts.push("debug=1");
+    history.replaceState(null, "", `?${histParts.join("&")}`);
     clearEl(stageEl);
+    const iframeParts = [`case=${encodeURIComponent(caseId)}`];
+    if (allowReview) iframeParts.push("allow_review=1");
+    if (debug) iframeParts.push("debug=1");
     const iframe = el("iframe", {
       title: "Renderer",
-      src: `/renderer.template.html?case=${encodeURIComponent(caseId)}${allowReview ? "&allow_review=1" : ""}`,
+      src: `/renderer.template.html?${iframeParts.join("&")}`,
     });
     stageEl.appendChild(iframe);
     pollJobOnce(caseId);
@@ -781,6 +844,141 @@
     syncRouteStartButtons(s5);
     alert("Pick another qualifying terminal in the CT panes, then confirm.");
   };
+
+  function rtKey(c) {
+    return `${c.edge_id}:${c.sample_index}`;
+  }
+
+  function renderRouteTargetCards(cands) {
+    const wrap = document.getElementById("route-target-cards");
+    const msg = document.getElementById("route-target-msg");
+    clearEl(wrap);
+    routeTargetCandidates = cands || [];
+    if (!routeTargetCandidates.length) {
+      msg.textContent = "No selectable CT-seen candidates.";
+      document.getElementById("pick-route-target-btn").disabled = true;
+      return;
+    }
+    msg.textContent = "Ranked by gap, then generation, then route length (not “best”).";
+    document.getElementById("pick-route-target-btn").disabled = false;
+    routeTargetCandidates.forEach((c, i) => {
+      const card = el("button", {
+        type: "button",
+        className: "rt-card" + (chosenRouteTargetKey === rtKey(c) ? " selected" : ""),
+        "data-rt-rank": String(i + 1),
+      });
+      const lobe = (c.lobe != null && c.lobe !== "") ? String(c.lobe) : "—";
+      const airway = (c.airway_name != null && c.airway_name !== "")
+        ? String(c.airway_name) : "—";
+      const bridges = (c.interpolated_mm_on_route || 0) > 0
+        ? ` · bridges ${Number(c.interpolated_mm_on_route).toFixed(1)} mm`
+        : "";
+      card.appendChild(el("div", { className: "rt-rank" }, `Candidate ${i + 1}`));
+      card.appendChild(el("div", null,
+        `gap ${Number(c.target_gap_mm).toFixed(1)} mm` +
+        (c.target_inside_airway ? " (inside airway)" : "")));
+      card.appendChild(el("div", { className: "rt-meta" },
+        `gen ${c.generation} · route ${Number(c.route_length_mm).toFixed(1)} mm${bridges}`));
+      card.appendChild(el("div", { className: "rt-meta" }, `lobe ${lobe}`));
+      card.appendChild(el("div", { className: "rt-meta" }, `airway ${airway}`));
+      card.onmouseenter = () => {
+        card.classList.add("hover");
+        postToRenderer({
+          type: "highlight-route",
+          edge_ids: c.route_edge_ids || [c.edge_id],
+          ras_mm: c.ras_mm,
+        });
+      };
+      card.onmouseleave = () => {
+        card.classList.remove("hover");
+        postToRenderer({ type: "highlight-route", edge_ids: [] });
+      };
+      card.onclick = () => selectRouteTargetCandidate(c);
+      wrap.appendChild(card);
+    });
+  }
+
+  async function loadRouteTargetCandidates(caseId) {
+    if (!caseId) return;
+    const msg = document.getElementById("route-target-msg");
+    msg.textContent = "Loading candidates…";
+    const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/route-candidates`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      msg.textContent = formatDetail(body.detail, `Candidates failed (${res.status})`);
+      clearEl(document.getElementById("route-target-cards"));
+      document.getElementById("pick-route-target-btn").disabled = true;
+      return;
+    }
+    renderRouteTargetCards(body.candidates || []);
+  }
+
+  async function selectRouteTargetCandidate(c) {
+    if (!currentCase || !c) return;
+    const res = await fetch(`/api/cases/${encodeURIComponent(currentCase)}/route-target`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ edge_id: c.edge_id, sample_index: c.sample_index }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      document.getElementById("route-target-msg").textContent =
+        formatDetail(body.detail, `RouteTarget failed (${res.status})`);
+      return;
+    }
+    chosenRouteTargetKey = rtKey(c);
+    routeTargetPicking = false;
+    document.getElementById("route-target-pick-status").textContent = "";
+    postToRenderer({ type: "arm-route-target-pick", armed: false });
+    await loadWorkflow(currentCase);
+    openCase(currentCase, new URLSearchParams(location.search).get("allow_review") === "1");
+  }
+
+  async function selectRouteTargetRas(ras) {
+    if (!currentCase || !ras) return;
+    const res = await fetch(`/api/cases/${encodeURIComponent(currentCase)}/route-target`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ras_mm: ras }),
+    });
+    const body = await res.json().catch(() => ({}));
+    const status = document.getElementById("route-target-pick-status");
+    if (!res.ok) {
+      status.textContent = formatDetail(body.detail, `Pick failed (${res.status})`);
+      return;
+    }
+    chosenRouteTargetKey = body.route_target
+      ? `${body.route_target.edge_id}:${body.route_target.sample_index}`
+      : null;
+    routeTargetPicking = false;
+    status.textContent = "Custom RouteTarget set.";
+    postToRenderer({ type: "arm-route-target-pick", armed: false });
+    await loadWorkflow(currentCase);
+    openCase(currentCase, new URLSearchParams(location.search).get("allow_review") === "1");
+  }
+
+  routeTargetBtn.onclick = () => {
+    routeTargetPanel.classList.toggle("visible");
+    if (routeTargetPanel.classList.contains("visible") && currentCase) {
+      loadRouteTargetCandidates(currentCase);
+    }
+  };
+
+  document.getElementById("pick-route-target-btn").onclick = () => {
+    routeTargetPicking = true;
+    document.getElementById("route-target-pick-status").textContent =
+      "Click a CT-seen centreline in CT panes or 3D.";
+    postToRenderer({ type: "arm-route-target-pick", armed: true });
+  };
+
+  window.addEventListener("message", (ev) => {
+    if (ev.origin !== location.origin) return;
+    const data = ev.data;
+    if (!data || data.type !== "route-target-pick") return;
+    if (!routeTargetPicking) return;
+    if (!Array.isArray(data.ras_mm) || data.ras_mm.length !== 3) return;
+    selectRouteTargetRas(data.ras_mm.map(Number));
+  });
 
   document.getElementById("open-case").onclick = () =>
     openCase(selectEl.value, false);

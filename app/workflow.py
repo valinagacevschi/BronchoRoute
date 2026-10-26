@@ -1,9 +1,9 @@
-# Changes: Phase 4b fixes — step-4 completion times from review_signoff.at only;
-# unmatched bridge reason on the review step.
+# Changes: Phase 4c review — stale RouteTarget re-opens step 6 with reason.
 """Derived 8-step workflow state from case.json records and artifacts.
 
 Phase 4a: ordering-aware derivation, segment artifacts, completion kinds.
 Phase 4b: step 4 also requires no stale corrections; bridge ids via app.review.
+Phase 4c: RouteTarget edge_id → node for walk; stale target → step 6 available.
 """
 
 from __future__ import annotations
@@ -209,8 +209,29 @@ def _route_start_still_qualifies(case: dict, ref: CaseRef) -> bool:
     return any(int(row["node"]) == int(node) for row in terminals)
 
 
-def _route_target_chosen_raw(case: dict) -> bool:
-    return _latest_kind(case.get("records") or [], "route_target_chosen") is not None
+def _route_target_stale_reason(case: dict, ref: CaseRef) -> str | None:
+    """If a stored RouteTarget is no longer valid on the effective graph, say why."""
+    rt = case.get("route_target")
+    if not isinstance(rt, dict) or rt.get("edge_id") is None:
+        return None
+    if _latest_kind(case.get("records") or [], "route_target_chosen") is None:
+        return None
+    try:
+        from app.review import effective_for_case
+        from app.route_target import stale_reason_for_route_target
+
+        eff = effective_for_case(ref.case_id, case)
+        return stale_reason_for_route_target(eff["graph"], case, rt)
+    except (ValueError, FileNotFoundError, KeyError):
+        return "route target no longer valid"
+
+
+def _route_target_chosen_raw(case: dict, ref: CaseRef | None = None) -> bool:
+    if _latest_kind(case.get("records") or [], "route_target_chosen") is None:
+        return False
+    if ref is not None and _route_target_stale_reason(case, ref) is not None:
+        return False
+    return True
 
 
 def _bifurcation_nodes_on_route(ref: CaseRef, case: dict) -> set[int]:
@@ -219,15 +240,27 @@ def _bifurcation_nodes_on_route(ref: CaseRef, case: dict) -> set[int]:
     start_rec = _latest_kind(case.get("records") or [], "route_start_confirmed")
     if target_rec is None or start_rec is None:
         return set()
-    target_node = target_rec.get("data", {}).get("node")
+    data = target_rec.get("data") or {}
+    target_node = data.get("node")
     start_node = start_rec.get("data", {}).get("node")
-    if target_node is None or start_node is None:
+    if start_node is None:
         return set()
     try:
         graph = load_graph(case, ref=ref)
     except ValueError:
         return set()
     edges = graph.get("edges") or []
+    # edge_id is the original (raw) edge index; resolve to its `to` node when needed.
+    if target_node is None and data.get("edge_id") is not None:
+        edge_id = int(data["edge_id"])
+        if 0 <= edge_id < len(edges):
+            target_node = edges[edge_id]["to"]
+        else:
+            rt = case.get("route_target") or {}
+            if isinstance(rt, dict) and rt.get("node") is not None:
+                target_node = rt["node"]
+    if target_node is None:
+        return set()
     children: dict[int, list[int]] = {}
     for i, e in enumerate(edges):
         children.setdefault(int(e["from"]), []).append(i)
@@ -256,7 +289,7 @@ def _bifurcation_nodes_on_route(ref: CaseRef, case: dict) -> set[int]:
 
 
 def _walk_raw(case: dict, ref: CaseRef) -> bool:
-    if not _route_target_chosen_raw(case):
+    if not _route_target_chosen_raw(case, ref):
         return False
     needed = _bifurcation_nodes_on_route(ref, case)
     if not needed:
@@ -330,6 +363,8 @@ def _completion_at(step: int, case: dict, ref: CaseRef) -> datetime | None:
         rec = _latest_kind(records, "route_start_confirmed")
         return _parse_at(rec.get("at")) if rec else None
     if step == int(WorkflowStep.ROUTE_TARGET):
+        if not _route_target_chosen_raw(case, ref):
+            return None
         rec = _latest_kind(records, "route_target_chosen")
         return _parse_at(rec.get("at")) if rec else None
     if step == int(WorkflowStep.WALK):
@@ -367,7 +402,7 @@ def _raw_criteria(case: dict, ref: CaseRef) -> list[bool]:
         _segment_registered_for_ct(case, ref),
         _review_raw(case, ref),
         _route_start_still_qualifies(case, ref),
-        _route_target_chosen_raw(case),
+        _route_target_chosen_raw(case, ref),
         _walk_raw(case, ref),
         _signoff_raw(case),
     ]
@@ -431,6 +466,8 @@ def derive_workflow(case_id: str) -> dict[str, Any]:
             reason = None
             if step == int(WorkflowStep.REVIEW):
                 reason = _review_available_reason(case, ref)
+            elif step == int(WorkflowStep.ROUTE_TARGET):
+                reason = _route_target_stale_reason(case, ref)
         else:
             status = "blocked"
             reason = _block_reason(step, done)

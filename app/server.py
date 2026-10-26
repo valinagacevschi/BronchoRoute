@@ -1,9 +1,9 @@
-# Changes: Phase 4b fixes — unified exception→HTTP helper for review mutators;
-# review-signoff accepts no client date.
+# Changes: Phase 4c review — RouteTargetBody XOR forms; NaN→422; PUT gate in lock.
 """Local Lung Navigator app server (127.0.0.1 only).
 
 Phase 4a: series/confirm, register-existing, /records 403, jobs.
 Phase 4b: review/bridges/corrections/sign-off endpoints.
+Phase 4c: RouteTarget candidates and confirmation.
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ from app.review import (
     set_bridge_decision,
     undo_correction,
 )
+from app.route_target import route_target_candidates, set_route_target
 from app.workflow import (
     WORKFLOW_COMPLETION_KINDS,
     WorkflowBlocked,
@@ -179,6 +180,41 @@ class ImportConfirmBody(BaseModel):
 
 class RouteStartBody(BaseModel):
     node: int
+
+
+class RouteTargetBody(BaseModel):
+    edge_id: int | None = None
+    sample_index: int | None = None
+    ras_mm: list[float] | None = None
+
+    @model_validator(mode="after")
+    def _one_form(self) -> "RouteTargetBody":
+        has_edge = self.edge_id is not None
+        has_index = self.sample_index is not None
+        has_ras = self.ras_mm is not None
+        if has_edge != has_index:
+            raise ValueError("edge_id and sample_index are both required")
+        has_sample = has_edge and has_index
+        if has_sample and has_ras:
+            raise ValueError("provide either {edge_id, sample_index} or {ras_mm}, not both")
+        if not has_sample and not has_ras:
+            raise ValueError("provide {edge_id, sample_index} or {ras_mm}")
+        if has_ras:
+            if not isinstance(self.ras_mm, list) or len(self.ras_mm) != 3:
+                raise ValueError("ras_mm must be a length-3 list")
+            if not all(isinstance(v, (int, float)) and math.isfinite(float(v)) for v in self.ras_mm):
+                raise ValueError("ras_mm values must be finite numbers")
+        return self
+
+
+def _validation_detail(exc: ValidationError) -> str | list[str]:
+    msgs = []
+    for err in exc.errors():
+        msg = err.get("msg", "validation error")
+        if msg.startswith("Value error, "):
+            msg = msg[len("Value error, "):]
+        msgs.append(msg)
+    return msgs[0] if len(msgs) == 1 else msgs
 
 
 class SeriesConfirmBody(BaseModel):
@@ -367,6 +403,43 @@ def api_route_start_candidates(case_id: str):
         ref = CaseRef.parse(case_id)
         graph = load_graph(ref=ref)
         return {"candidates": qualifying_route_start_terminals(graph)}
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.get("/api/cases/{case_id}/route-candidates")
+def api_route_candidates(case_id: str):
+    try:
+        require_prior_steps(case_id, int(WorkflowStep.ROUTE_TARGET))
+        return {"candidates": route_target_candidates(case_id)}
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.put("/api/cases/{case_id}/route-target")
+async def api_route_target(case_id: str, request: Request):
+    """Parse body manually so NaN/inf yield a plain 422; gate runs under lock."""
+    clinician = _require_clinician()
+    try:
+        body_raw = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+    try:
+        body = RouteTargetBody.model_validate(body_raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
+    try:
+        return set_route_target(
+            case_id,
+            clinician["clinician"],
+            edge_id=body.edge_id,
+            sample_index=body.sample_index,
+            ras_mm=body.ras_mm,
+        )
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
 

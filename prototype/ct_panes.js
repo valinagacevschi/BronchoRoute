@@ -1,5 +1,5 @@
-/* Phase 4b fixes: hatched label 3; setAirwayOverlay; CT airway-voxel → remove branch.
- * RouteStart move flow from 4a retained.
+/* Phase 4c review: raw click ras_mm (server snaps); hover route highlight in panes.
+ * Phase 4b: hatched label 3; setAirwayOverlay; CT airway-voxel → remove branch.
  */
 "use strict";
 
@@ -23,22 +23,25 @@ window.CtPanes = (function () {
     manual: "rgb(180,80,80)",
   };
 
-  function strokeRouteSeg(ctx, pts, prov) {
+  function strokeRouteSeg(ctx, pts, prov, opts) {
     if (!pts || pts.length < 2) return;
-    const color = PROV_STROKE[prov] || PROV_STROKE.ct;
+    const highlight = opts && opts.highlight;
+    const color = highlight
+      ? "rgb(46,110,136)"
+      : (PROV_STROKE[prov] || PROV_STROKE.ct);
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(pts[0][0], pts[0][1]);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     ctx.strokeStyle = "rgba(0,0,0,0.85)";
-    ctx.lineWidth = 5.5;
+    ctx.lineWidth = highlight ? 7 : 5.5;
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(pts[0][0], pts[0][1]);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     ctx.strokeStyle = color;
-    ctx.lineWidth = 3.25;
+    ctx.lineWidth = highlight ? 4.5 : 3.25;
     ctx.stroke();
   }
 
@@ -177,6 +180,8 @@ window.CtPanes = (function () {
       target: true,
     };
     let marking = false;
+    let routeTargetPickArmed = false;
+    let highlightRouteOis = new Set();
     let provisional = null;
     let lesion = airway.lesion ? { ...airway.lesion, ras_mm: [...airway.lesion.ras_mm] } : null;
     let focusedPane = "axial";
@@ -858,24 +863,34 @@ window.CtPanes = (function () {
       offCtx.putImageData(image, 0, 0);
       ctx.drawImage(offscreen, fit.ox, fit.oy, fit.drawW, fit.drawH);
 
-      if (overlays.route && lesionConfirmed() && airway.route) {
-        const routeEdges = airway.route || [];
-        for (const ei of routeEdges) {
-          const e = airway.edges[ei];
-          if (!e) continue;
-          const pts = [];
-          for (const c of e.c) {
-            const world = [c[0] + originMm[0], c[1] + originMm[1], c[2] + originMm[2]];
-            const ijk = worldToVoxelCont(world);
-            if (!inCropIjk(ijk, ctMeta.shape) || Math.abs(ijk[map.fixedAxis] - fixed) > 1.0) {
-              if (pts.length > 1) strokeRouteSeg(ctx, pts, e.prov || "ct");
-              pts.length = 0;
-              continue;
-            }
-            const uv = map.uvFromIjk(ijk[0], ijk[1], ijk[2]);
-            pts.push([fit.ox + uv.u * fit.drawW, fit.oy + uv.v * fit.drawH]);
+      function strokeEdgePolyline(e, highlight) {
+        if (!e || !e.c) return;
+        const pts = [];
+        for (const c of e.c) {
+          const world = [c[0] + originMm[0], c[1] + originMm[1], c[2] + originMm[2]];
+          const ijk = worldToVoxelCont(world);
+          if (!inCropIjk(ijk, ctMeta.shape) || Math.abs(ijk[map.fixedAxis] - fixed) > 1.0) {
+            if (pts.length > 1) strokeRouteSeg(ctx, pts, e.prov || "ct", { highlight });
+            pts.length = 0;
+            continue;
           }
-          if (pts.length > 1) strokeRouteSeg(ctx, pts, e.prov || "ct");
+          const uv = map.uvFromIjk(ijk[0], ijk[1], ijk[2]);
+          pts.push([fit.ox + uv.u * fit.drawW, fit.oy + uv.v * fit.drawH]);
+        }
+        if (pts.length > 1) strokeRouteSeg(ctx, pts, e.prov || "ct", { highlight });
+      }
+
+      if (overlays.route && lesionConfirmed() && airway.route) {
+        for (const ei of airway.route || []) {
+          strokeEdgePolyline(airway.edges[ei], false);
+        }
+      }
+      // Candidate hover: draw that route in highlight colour in all three panes.
+      if (highlightRouteOis.size && airway.edges) {
+        for (const e of airway.edges) {
+          if (e && e.oi != null && highlightRouteOis.has(Number(e.oi))) {
+            strokeEdgePolyline(e, true);
+          }
         }
       }
 
@@ -950,7 +965,7 @@ window.CtPanes = (function () {
             airway.endpoint[1] + originMm[1],
             airway.endpoint[2] + originMm[2],
           ];
-          drawMarker(ep, "#2E6E88", "Target");
+          drawMarker(ep, "#2E6E88", "RouteTarget");
           const L = lesion && lesion.ras_mm;
           if (L && overlays.lesion) {
             const ijkL = worldToVoxelCont(L);
@@ -1082,6 +1097,14 @@ window.CtPanes = (function () {
         return;
       }
       setCrosshairWorld(world, "ct");
+      if (routeTargetPickArmed) {
+        // Server is the only snap — post the raw click RAS.
+        window.parent.postMessage(
+          { type: "route-target-pick", ras_mm: world },
+          location.origin,
+        );
+        return;
+      }
       // Clicking an airway voxel selects the nearest graph edge for removal.
       if (maskData && lesionConfirmed()) {
         const ijk = worldToVoxelCont(world);
@@ -1313,6 +1336,17 @@ window.CtPanes = (function () {
       getLesion: () => (lesion ? { ...lesion, ras_mm: [...lesion.ras_mm] } : null),
       getProvisional: () => (provisional ? [...provisional] : null),
       isMarking: () => marking,
+      setRouteTargetPickArmed(on) {
+        routeTargetPickArmed = !!on;
+      },
+      setHighlightRoute(edgeIds) {
+        highlightRouteOis = new Set(
+          Array.isArray(edgeIds)
+            ? edgeIds.map(Number).filter((n) => Number.isFinite(n))
+            : [],
+        );
+        drawAll();
+      },
       overlaysEnabled() {
         const airwayEl = toolbar.querySelector('[data-overlay="airway"]');
         const routeEl = toolbar.querySelector('[data-overlay="route"]');
