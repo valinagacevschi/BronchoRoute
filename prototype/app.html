@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <!-- Phase 4d review fixes: Start walk-through fly+pauses; No derived (no ack-return);
-     sign-off + freeze + report from snapshot. -->
+     sign-off + freeze + report from snapshot.
+     Lesion-changed from renderer iframe → reload workflow (Segment enable).
+     Body flex column so #stage/iframe fill leftover height (CT panes clickable). -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -27,9 +29,10 @@
       background: var(--ground);
       color: var(--ink);
       font: 400 14px/1.45 var(--sans);
-      display: grid;
-      grid-template-rows: auto auto auto auto 1fr;
+      display: flex;
+      flex-direction: column;
       height: 100dvh;
+      min-height: 0;
     }
     header {
       display: flex; align-items: center; justify-content: space-between; gap: 16px;
@@ -97,8 +100,20 @@
     }
     .gate.visible { display: block; }
     .gate a { color: var(--mucosa); }
-    .stage { min-height: 0; }
-    .stage iframe { width: 100%; height: 100%; border: 0; background: var(--ground); }
+    .stage {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .stage iframe {
+      flex: 1 1 auto;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: var(--ground);
+      min-height: 0;
+    }
     .empty { padding: 40px 18px; color: var(--muted); }
     .msg { color: var(--mucosa); font-size: 13px; margin: 6px 0; }
     .rt-cards { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -1201,7 +1216,12 @@
   window.addEventListener("message", (ev) => {
     if (ev.origin !== location.origin) return;
     const data = ev.data;
-    if (!data || data.type !== "route-target-pick") return;
+    if (!data || typeof data !== "object") return;
+    if (data.type === "lesion-changed") {
+      if (currentCase) loadWorkflow(currentCase);
+      return;
+    }
+    if (data.type !== "route-target-pick") return;
     if (!routeTargetPicking) return;
     if (!Array.isArray(data.ras_mm) || data.ras_mm.length !== 3) return;
     selectRouteTargetRas(data.ras_mm.map(Number));

@@ -1,7 +1,9 @@
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
      Phase 4d review: start-walkthrough message plays fly with fork pauses;
      Walk-through layout (endoluminal left + CT panes right, shared pos).
-     Phase 4c review: highlight-route also paints CT panes; raw pick ras_mm. -->
+     Phase 4c review: highlight-route also paints CT panes; raw pick ras_mm.
+     Lesion confirm/clear posts lesion-changed to parent shell (workflow refresh).
+     Drop stale draw() calls in postMessage handlers (rAF frame() redraws). -->
 <title>Bronchial Tree Renderer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1497,7 +1499,6 @@ window.addEventListener("message", (ev) => {
     if (ctPanesApi && typeof ctPanesApi.setHighlightRoute === "function") {
       ctPanesApi.setHighlightRoute([...highlightRouteOis]);
     }
-    draw();
     return;
   }
   if (data.type === "arm-route-target-pick") {
@@ -1519,7 +1520,6 @@ window.addEventListener("message", (ev) => {
     fly.pausedFork = null;
     fly.armed = new Set(A.forks.map(f => f.fork));
     fly.playing = true;
-    draw();
     return;
   }
   if (data.type !== "goto-ras" || !Array.isArray(data.ras_mm)) return;
@@ -1692,7 +1692,17 @@ async function ensureCtPanes() {
           return false;
         }
       },
-      onLesionChange: (lesion) => { A.lesion = lesion; },
+      onLesionChange: (lesion) => {
+        A.lesion = lesion;
+        if (window.parent && window.parent !== window) {
+          try {
+            window.parent.postMessage(
+              { type: "lesion-changed", lesion },
+              location.origin,
+            );
+          } catch (_) { /* cross-origin / detached */ }
+        }
+      },
       isViewActive: () => ctStage.classList.contains("active"),
       debug: DEBUG,
     });
