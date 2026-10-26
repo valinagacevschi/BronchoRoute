@@ -242,7 +242,7 @@ def test_p4b_review_flows_through_ui(server, tmp_path):
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport=VIEWPORT)
         _attach_console(page)
-        page.goto(f"{BASE}/?case=local-001&allow_review=1", wait_until="networkidle")
+        page.goto(f"{BASE}/workflow?case=local-001&allow_review=1", wait_until="networkidle")
         page.wait_for_timeout(1000)
 
         # Open review; confirm bridge via UI.
@@ -357,7 +357,7 @@ def test_p4b_review_flows_through_ui(server, tmp_path):
         }""")
         assert ghosts_after == 0
 
-        page.goto(f"{BASE}/?case=local-001&allow_review=1", wait_until="networkidle")
+        page.goto(f"{BASE}/workflow?case=local-001&allow_review=1", wait_until="networkidle")
         page.wait_for_timeout(500)
         page.screenshot(path=str(shots_tmp / "after_undo.png"), full_page=True)
 

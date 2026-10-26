@@ -304,7 +304,7 @@ def test_p4d_happy_path_local001(server):
 
         cprint("open shell + CT panes; Mark Lesion via axial click", "cyan")
         page.goto(
-            f"{BASE}/?case=local-001&allow_review=1&debug=1",
+            f"{BASE}/workflow?case=local-001&allow_review=1&debug=1",
             wait_until="domcontentloaded",
             timeout=120_000,
         )
@@ -501,7 +501,7 @@ def test_p4d_happy_path_local001(server):
         cprint("Sign & freeze + open report", "cyan")
         # Fresh shell load — avoids a busy walkthrough iframe stalling fetch.
         page.goto(
-            f"{BASE}/?case=local-001&allow_review=1",
+            f"{BASE}/workflow?case=local-001&allow_review=1",
             wait_until="domcontentloaded",
             timeout=120_000,
         )
@@ -562,7 +562,7 @@ def test_p4d_happy_path_local001(server):
         assert report_v1.text() == v1_body
 
         page.goto(
-            f"{BASE}/?case=local-001&allow_review=1",
+            f"{BASE}/workflow?case=local-001&allow_review=1",
             wait_until="domcontentloaded",
             timeout=60_000,
         )

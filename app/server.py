@@ -755,7 +755,14 @@ def api_version_report(case_id: str, version_n: int):
 
 
 @app.get("/")
+def viewer_page():
+    """Main page: left-rail renderer in read-only viewer mode."""
+    return FileResponse(PROTOTYPE / "renderer.template.html")
+
+
+@app.get("/workflow")
 def app_shell():
+    """Clinician workflow shell (iframe embeds /renderer.template.html)."""
     return FileResponse(PROTOTYPE / "app.html")
 
 

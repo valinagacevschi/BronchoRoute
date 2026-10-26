@@ -105,6 +105,22 @@ canvas.dragging { cursor: grabbing; }
 .readout dd { margin: 0; text-align: right; }
 .readout dd.warm { color: var(--mucosa); }
 
+.case-picker-label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; color: var(--muted);
+}
+.case-picker-label[hidden] { display: none; }
+.case-picker-caption {
+  font-size: 10px; font-weight: 500; letter-spacing: .14em;
+  text-transform: uppercase;
+  font-family: "IBM Plex Sans Condensed", sans-serif;
+}
+#case-picker {
+  font: inherit; color: var(--ink);
+  border: 1px solid var(--edge); border-radius: 4px;
+  padding: 5px 6px; background: var(--ground); width: 100%;
+}
+
 .hint { font-size: 12px; color: var(--muted); line-height: 1.55; margin: 0; }
 kbd {
   font-family: "IBM Plex Mono", monospace; font-size: 11px;
@@ -266,11 +282,11 @@ body.walkthrough-active .walk-sim-label { display: block; }
 .ct-lesion-status { color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
 .ct-grid {
   flex: 1; min-height: 0; display: grid;
-  grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 6px; padding: 6px;
+  grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr; gap: 6px; padding: 6px;
 }
 .ct-pane-axial { grid-column: 1; grid-row: 1; }
 .ct-pane-coronal { grid-column: 2; grid-row: 1; }
-.ct-pane-sagittal { grid-column: 1 / span 2; grid-row: 2; }
+.ct-pane-sagittal { grid-column: 3; grid-row: 1; }
 .ct-pane {
   position: relative; min-height: 0; border: 2px solid var(--pane-color, var(--edge));
   border-radius: 4px; background: #0a0a0a; overflow: hidden;
@@ -306,6 +322,10 @@ body.walkthrough-active .walk-sim-label { display: block; }
 
   <div class="group group-case">
     <h2>Case</h2>
+    <label class="case-picker-label" id="case-picker-label" hidden>
+      <span class="case-picker-caption">Open</span>
+      <select id="case-picker" aria-label="Case picker"></select>
+    </label>
     <dl class="readout"><dt>Source</dt><dd id="r-source">unknown</dd></dl>
     <dl class="readout"><dt>Branches</dt><dd id="r-branches">—</dd></dl>
     <dl class="readout"><dt>Generations</dt><dd id="r-gens">—</dd></dl>
@@ -330,7 +350,9 @@ body.walkthrough-active .walk-sim-label { display: block; }
   <div class="group" id="g-cam">
     <h2>Camera</h2>
     <div class="presets" id="presets" role="group" aria-label="3D camera presets">
-      <button type="button" data-preset="head45" aria-pressed="true">
+      <button type="button" data-preset="radiologist" aria-pressed="true">
+        <span class="key">F</span>Radiologist (front)</button>
+      <button type="button" data-preset="head45" aria-pressed="false">
         <span class="key">H</span>Head 45°</button>
       <button type="button" data-preset="operator0" aria-pressed="false">
         <span class="key">O</span>Operator 0°</button>
@@ -386,21 +408,55 @@ body.walkthrough-active .walk-sim-label { display: block; }
 // Four renderers of the same airway graph:
 //   A — Anatomical 3D: orbit camera around the tree in the bronchoscopist frame
 //   B — Endoluminal: fly the lumen along the route with anterior at 12 o'clock
-//   C — Topology map: flat generation tree, patient-right on screen-right
+//   C — Topology map: radial tree (angle by leaf share, radius by generation)
 //   D — CT panes: linked axial/coronal/sagittal (server mode only)
 // Throwaway prototype for wayfinder ticket 06 (navigation renderer).
 // No libraries: raw canvas 2D with hand-rolled projection.
 // Embedded airway-data script still works; otherwise fetch payload for ?case=.
+// GET / (top-level) = read-only viewer mode; /workflow iframe = full edit.
+
+const VIEWER_MODE = window.self === window.top
+  && (location.pathname === "/" || location.pathname === "");
+window.__VIEWER_MODE__ = VIEWER_MODE;
+
+if (VIEWER_MODE) {
+  const _fetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const method = String((init && init.method) || "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+      console.warn("viewer mode: blocked write", method, String(input));
+      return Promise.resolve(new Response(
+        JSON.stringify({ detail: "viewer mode is read-only" }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      ));
+    }
+    return _fetch(input, init);
+  };
+}
+
+async function resolveCaseId() {
+  const params = new URLSearchParams(location.search);
+  let caseId = params.get("case");
+  if (caseId) return caseId;
+  if (!VIEWER_MODE) return null;
+  const cases = await fetch("/api/cases").then(r => r.json());
+  if (!Array.isArray(cases) || !cases.length) return null;
+  caseId = cases[0].id;
+  const u = new URL(location.href);
+  u.searchParams.set("case", caseId);
+  history.replaceState(null, "", u);
+  return caseId;
+}
 
 async function ensureAirway() {
   if (window.AIRWAY) return window.AIRWAY;
   const params = new URLSearchParams(location.search);
-  const caseId = params.get("case");
+  const caseId = await resolveCaseId();
   if (!caseId) {
     document.body.textContent = "No airway data. Open via the app shell or embed DATA.";
     throw new Error("no airway data");
   }
-  const allow = params.get("allow_review") === "1";
+  const allow = VIEWER_MODE || params.get("allow_review") === "1";
   const url = `/api/cases/${encodeURIComponent(caseId)}/payload`
     + (allow ? "?allow_review=1" : "");
   const res = await fetch(url);
@@ -464,23 +520,37 @@ const tok = n => css.getPropertyValue(n).trim();
 
 const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
-    hint: "<kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Head 45°" },
+    hint: "<kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front)" },
   { key: "endoluminal", name: "Endoluminal",
-    hint: "<kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · <kbd>Space</kbd> auto-play · <kbd>T</kbd> reset route" },
+    hint: "<kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · <kbd>Space</kbd> auto-play (slows near forks, pauses 1&nbsp;s) · <kbd>T</kbd> reset route" },
   { key: "topology", name: "Topology map",
-    hint: "<kbd>drag</kbd> pan · <kbd>scroll</kbd> zoom · flat map: A/P depth not shown" },
+    hint: "<kbd>drag</kbd> pan · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
   { key: "ct-panes", name: "CT panes",
-    hint: "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L · Mark Lesion in axial" },
+    hint: VIEWER_MODE
+      ? "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L"
+      : "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L · Mark Lesion in axial" },
   { key: "walkthrough", name: "Walk-through",
     hint: "Endoluminal + CT panes linked · <kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · pauses at forks · simulated roll" },
 ];
+
+// Switcher number order (1–4); URL variant= keys and VARIANTS indices unchanged.
+const SWITCHER_ORDER = VIEWER_MODE
+  ? ["ct-panes", "anatomical", "topology", "endoluminal"]
+  : ["ct-panes", "anatomical", "topology", "endoluminal", "walkthrough"];
+const SWITCHER_VARIANTS = SWITCHER_ORDER
+  .map(k => VARIANTS.find(v => v.key === k))
+  .filter(Boolean);
 
 const params = new URLSearchParams(location.search);
 const DEBUG = params.get("debug") === "1";
 const CASE_ID = params.get("case");
 const SERVER_MODE = !!CASE_ID;
+const CT_PANES_IDX = VARIANTS.findIndex(v => v.key === "ct-panes");
 let variant = VARIANTS.findIndex(v => v.key === params.get("variant"));
-if (variant < 0) variant = 0;
+if (variant < 0) variant = VIEWER_MODE ? CT_PANES_IDX : 0;
+if (VIEWER_MODE && VARIANTS[variant] && VARIANTS[variant].key === "walkthrough") {
+  variant = CT_PANES_IDX;
+}
 
 const originMm = A.origin_mm || [0, 0, 0];
 const toWorld = p => [p[0] + originMm[0], p[1] + originMm[1], p[2] + originMm[2]];
@@ -568,30 +638,45 @@ function treeLookAt() {
 }
 const LOOK_AT = treeLookAt();
 
-// Pitch 0 = top-down; pitch π/2 = operator at the +z pole. Angles only — no upHint.
+// Pitch 0 = top-down (feet/−z at screen top with roll 0); pitch π/2 = operator
+// at the +z pole. Radiologist (front) = top-down yaw/pitch with roll π so head
+// is at the top and patient right is screen-left (radiological convention).
 const PRESET_ANGLES = {
-  head45: { yaw: 0, pitch: Math.PI / 4 },
-  operator0: { yaw: 0, pitch: PITCH_MAX },
-  topdown90: { yaw: 0, pitch: 0 },
+  radiologist: { yaw: 0, pitch: 0, roll: Math.PI },
+  head45: { yaw: 0, pitch: Math.PI / 4, roll: 0 },
+  operator0: { yaw: 0, pitch: PITCH_MAX, roll: 0 },
+  topdown90: { yaw: 0, pitch: 0, roll: 0 },
 };
 
-function basisFromYawPitch(yaw, pitch) {
+function basisFromYawPitch(yaw, pitch, roll = 0) {
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   const cy = Math.cos(yaw), sy = Math.sin(yaw);
-  const forward = [-cp * sy, -cp * cy, -sp];
-  const up = [sp * sy, sp * cy, -cp];
-  const right = norm(cross(forward, up));
-  return { forward: norm(forward), up: norm(up), right };
+  const forward = norm([-cp * sy, -cp * cy, -sp]);
+  let up = [sp * sy, sp * cy, -cp];
+  let right = norm(cross(forward, up));
+  up = norm(up);
+  if (roll) {
+    const cr = Math.cos(roll), sr = Math.sin(roll);
+    const rolledUp = [
+      up[0] * cr + right[0] * sr,
+      up[1] * cr + right[1] * sr,
+      up[2] * cr + right[2] * sr,
+    ];
+    up = norm(rolledUp);
+    right = norm(cross(forward, up));
+  }
+  return { forward, up, right };
 }
 
 const cam = {
-  // preset: "head45" | "operator0" | "topdown90" | "free"
-  preset: "head45",
+  // preset: "radiologist" | "head45" | "operator0" | "topdown90" | "free"
+  preset: "radiologist",
   yaw: 0,
-  pitch: Math.PI / 4,
-  forward: [0, -Math.SQRT1_2, -Math.SQRT1_2],
-  up: [0, Math.SQRT1_2, -Math.SQRT1_2],
-  right: [1, 0, 0],
+  pitch: 0,
+  roll: Math.PI,
+  forward: [0, -1, 0],
+  up: [0, 0, 1],
+  right: [-1, 0, 0],
   dist: DEFAULT_DIST, panX: 0, panY: 0,
 };
 let dpr = 1, W = 0, H = 0;
@@ -605,18 +690,19 @@ function resize() {
 addEventListener("resize", resize);
 
 function syncBasis() {
-  const b = basisFromYawPitch(cam.yaw, cam.pitch);
+  const b = basisFromYawPitch(cam.yaw, cam.pitch, cam.roll);
   cam.forward = b.forward;
   cam.up = b.up;
   cam.right = b.right;
 }
 
 function applyPreset(name, { resetPan = true } = {}) {
-  const key = PRESET_ANGLES[name] ? name : "head45";
+  const key = PRESET_ANGLES[name] ? name : "radiologist";
   const angles = PRESET_ANGLES[key];
   cam.preset = key;
   cam.yaw = angles.yaw;
   cam.pitch = angles.pitch;
+  cam.roll = angles.roll || 0;
   cam.dist = DEFAULT_DIST;
   if (resetPan) { cam.panX = 0; cam.panY = 0; }
   syncBasis();
@@ -629,14 +715,16 @@ function syncPresetButtons() {
   }
 }
 
-applyPreset("head45");
+applyPreset("radiologist");
 
 function orbitCamera(dx, dy) {
   // Orbit in the same yaw/pitch parameterisation as the presets so the first
   // drag after a preset cannot jump, flip or mirror. Pitch is clamped to ±89°.
   // At the operator pole, pure yaw barely moves the view; tip slightly off the
   // pole with horizontal drag so orbit stays continuous without a roll snap.
-  cam.yaw -= dx * ORBIT_RATE;
+  // Roll is kept (radiologist laterality survives free orbit until a preset).
+  const yawSign = Math.abs(cam.roll) > Math.PI / 2 ? -1 : 1;
+  cam.yaw -= yawSign * dx * ORBIT_RATE;
   let nextPitch = cam.pitch - dy * ORBIT_RATE;
   if (Math.abs(dx) > 0 && dy === 0 && Math.abs(Math.abs(cam.pitch) - PITCH_MAX) < 1e-9) {
     nextPitch = Math.sign(cam.pitch || 1) * (PITCH_MAX - Math.abs(dx) * ORBIT_RATE);
@@ -755,8 +843,40 @@ function drawAnatomical() {
     }
   }
   drawOrientationGizmo();
+  drawPatientEdgeLabels();
   drawSharedPositionMarker3d();
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
+}
+
+/** Screen-edge R/L/S/I from the live camera basis (must match the gizmo). */
+function drawPatientEdgeLabels() {
+  const pairs = [
+    { axis: [1, 0, 0], pos: "R", neg: "L" },
+    { axis: [0, 0, 1], pos: "S", neg: "I" },
+  ];
+  const sx = { left: null, right: null }, sy = { top: null, bottom: null };
+  for (const p of pairs) {
+    const rx = dot(p.axis, cam.right);
+    const uy = dot(p.axis, cam.up);
+    if (Math.abs(rx) >= Math.abs(uy)) {
+      if (rx >= 0) { sx.right = p.pos; sx.left = p.neg; }
+      else { sx.left = p.pos; sx.right = p.neg; }
+    } else if (uy >= 0) {
+      sy.top = p.pos; sy.bottom = p.neg;
+    } else {
+      sy.bottom = p.pos; sy.top = p.neg;
+    }
+  }
+  ctx.save();
+  ctx.font = '700 13px "IBM Plex Sans Condensed", sans-serif';
+  ctx.fillStyle = "rgba(23,36,43,0.72)";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  if (sx.left) ctx.fillText(sx.left, 18, H / 2);
+  if (sx.right) ctx.fillText(sx.right, W - 18, H / 2);
+  if (sy.top) ctx.fillText(sy.top, W / 2, 18);
+  if (sy.bottom) ctx.fillText(sy.bottom, W / 2, H - 18);
+  ctx.restore();
 }
 
 function drawSharedPositionMarker3d() {
@@ -826,14 +946,22 @@ function drawOrientationGizmo() {
 // projected into the first tangent plane (clock 12). Screen-right in this
 // view is cross(tangent, up): at the trachea (tangent ≈ −z, up ≈ +y) that
 // equals +x = patient right. Parallel transport then preserves the frame.
-const fly = { s: 0, playing: false, pausedFork: null, armed: new Set(A.forks.map(f => f.fork)) };
+const fly = {
+  s: 0, playing: false, pausedFork: null, pauseUntil: null,
+  armed: new Set(A.forks.map(f => f.fork)),
+};
 const ANTERIOR_HIDE_DOT = Math.cos(10 * Math.PI / 180);
 const ANTERIOR_LOOKAHEAD_MM = 8;
+const FORK_ORIFICE_AHEAD_MM = 40;
+const FORK_PAUSE_MS = 1000;
+const FLY_SPEED = 0.6;
+const FLY_SPEED_NEAR_FORK = 0.18;
 // Last drawAnteriorTick result for ?debug=1 verify (screen pos + visibility).
 let lastAnteriorTick = {
   visible: false, s: 0, x: null, y: null, cx: null, cy: null,
   angleFrom12Deg: null, screen: null,
 };
+let lastForkOrifices = [];
 
 /** Project patient anterior into the view plane; null when nearly along the view axis. */
 function anteriorInView(dir, right, up) {
@@ -897,8 +1025,17 @@ function drawEndoluminal() {
 
   ctx.fillStyle = tok("--ground");
   ctx.fillRect(0, 0, W, H);
+  // When a fork is in view, stop the parent lumen tube at the junction so
+  // child orifices read as separate openings inside the parent wall.
+  const orificeFork = A.forks.find(
+    f => f.s >= fly.s && f.s - fly.s <= FORK_ORIFICE_AHEAD_MM
+      && f.children && f.children.length >= 2,
+  );
+  const ringCutoff = orificeFork
+    ? Math.max(1, Math.round(orificeFork.s - fly.s) + 1)
+    : ahead.length;
   const rings = [];
-  for (let i = ahead.length - 1; i >= 1; i--) {
+  for (let i = Math.min(ahead.length - 1, ringCutoff); i >= 1; i--) {
     const point = project(toView(ahead[i].p));
     if (point) rings.push({ point, radius: ahead[i].r, generation: ahead[i].g, i });
   }
@@ -931,17 +1068,21 @@ function drawEndoluminal() {
   if (nextFork && nextFork.s + 5 <= aheadEnd) {
     guideSample = Math.round(nextFork.s + 5 - fly.s);
   }
-  const guide = project(toView(ahead[guideSample].p));
-  if (guide) {
-    ctx.strokeStyle = tok("--steel");
-    ctx.lineWidth = 1.25;
-    ctx.setLineDash([4, 5]);
-    ctx.beginPath();
-    ctx.arc(guide.x, guide.y, 16, 0, 7);
-    ctx.stroke();
-    ctx.setLineDash([]);
+  // Hide the route guide ring when orifices own the fork plane.
+  if (!orificeFork) {
+    const guide = project(toView(ahead[guideSample].p));
+    if (guide) {
+      ctx.strokeStyle = tok("--steel");
+      ctx.lineWidth = 1.25;
+      ctx.setLineDash([4, 5]);
+      ctx.beginPath();
+      ctx.arc(guide.x, guide.y, 16, 0, 7);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
   }
 
+  drawForkOrifices(toView, project);
   drawAnteriorTick(rings, right, up, dir);
 
   const remaining = Math.max(0, A.fly.s[A.fly.s.length - 1] - fly.s);
@@ -954,6 +1095,309 @@ function drawEndoluminal() {
   drawGuidance(right, up, dir, here.roll);
   // Endoluminal fly camera drives the shared world position continuously.
   SharedPos.set(toWorld(here.p), "endoluminal");
+}
+
+/** Sample a point ~mm along an edge centreline (arc length). */
+function pointAlongCentreline(c, mm) {
+  if (!c || !c.length) return null;
+  if (c.length === 1 || mm <= 0) return [...c[0]];
+  let left = mm;
+  for (let i = 1; i < c.length; i++) {
+    const dx = c[i][0] - c[i - 1][0];
+    const dy = c[i][1] - c[i - 1][1];
+    const dz = c[i][2] - c[i - 1][2];
+    const seg = Math.hypot(dx, dy, dz) || 1e-6;
+    if (left <= seg) {
+      const t = left / seg;
+      return [
+        c[i - 1][0] + dx * t,
+        c[i - 1][1] + dy * t,
+        c[i - 1][2] + dz * t,
+      ];
+    }
+    left -= seg;
+  }
+  return [...c[c.length - 1]];
+}
+
+/** Dark lumen openings for each child when a fork is within ~40 mm ahead. */
+function drawForkOrifices(toView, projectFn) {
+  const fork = A.forks.find(f => f.s >= fly.s && f.s - fly.s <= FORK_ORIFICE_AHEAD_MM);
+  if (!fork || !fork.children || fork.children.length < 2) {
+    lastForkOrifices = [];
+    return;
+  }
+  const FORK_ORIFICE_DEPTH_MM = 8;
+  const RIDGE_GAP_PX = 28;
+  const openings = [];
+  for (const child of fork.children) {
+    const edge = A.edges[child.edge];
+    if (!edge || !edge.c || !edge.c.length) continue;
+    // Project a few mm past the fork along the child centreline into the camera.
+    const mid = pointAlongCentreline(edge.c, FORK_ORIFICE_DEPTH_MM);
+    if (!mid) continue;
+    const view = toView(mid);
+    const scr = projectFn(view);
+    if (!scr) continue;
+    const radiusMm = child.r != null ? child.r : edge.r;
+    const pixels = Math.max(6, radiusMm * scr.f);
+    openings.push({
+      child,
+      name: child.name || "branch",
+      clock: child.clock,
+      on_route: !!child.on_route,
+      x: scr.x, y: scr.y, pixels, z: scr.z,
+      radiusMm,
+    });
+  }
+  if (openings.length < 2) {
+    lastForkOrifices = [];
+    return;
+  }
+
+  // Parent lumen face at the fork — openings stay inside it.
+  const forkHere = flyAt(fork.s);
+  const parentScr = projectFn(toView(forkHere.p));
+  if (!parentScr) {
+    lastForkOrifices = [];
+    return;
+  }
+  const parentCx = parentScr.x, parentCy = parentScr.y;
+  const parentR = Math.max(12, forkHere.r * parentScr.f);
+
+  // Size orifices from child radius, but fit them inside the parent face
+  // with a visible mucosal spur between siblings.
+  const n = openings.length;
+  const fitR = Math.max(8, (parentR * 0.88 - RIDGE_GAP_PX * 0.5 * (n - 1)) / n);
+  for (const o of openings) {
+    // Prefer true child scale, but never larger than the face budget.
+    const preferred = Math.min(o.pixels, fitR);
+    o.pixels = Math.max(8, preferred);
+  }
+
+  // Place centres around the parent, spaced by radius + ridge gap.
+  // Prefer projected direction; fall back to even angular layout.
+  {
+    const dirs = openings.map(o => {
+      const dx = o.x - parentCx, dy = o.y - parentCy;
+      const d = Math.hypot(dx, dy);
+      if (d > 1e-3) return { ux: dx / d, uy: dy / d };
+      return null;
+    });
+    if (dirs.some(d => !d)) {
+      for (let i = 0; i < n; i++) {
+        const ang = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+        dirs[i] = { ux: Math.cos(ang), uy: Math.sin(ang) };
+      }
+    }
+    // Radial offset so circles sit side-by-side with a spur, inside parent.
+    const meanR = openings.reduce((s, o) => s + o.pixels, 0) / n;
+    let radial = meanR + RIDGE_GAP_PX * 0.5;
+    const maxRadial = Math.max(0, parentR - meanR - 3);
+    if (radial > maxRadial) radial = maxRadial;
+    for (let i = 0; i < n; i++) {
+      openings[i].x = parentCx + dirs[i].ux * radial;
+      openings[i].y = parentCy + dirs[i].uy * radial;
+    }
+  }
+
+  // Push apart along joining line if still overlapping; keep on-canvas + in parent.
+  const margin = 24;
+  for (let pass = 0; pass < 12; pass++) {
+    let moved = false;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = openings[i], b = openings[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        const need = a.pixels + b.pixels + RIDGE_GAP_PX;
+        if (dist >= need) continue;
+        if (dist < 1e-3) {
+          const ang = (i + 0.5) * (Math.PI / Math.max(1, n - 1));
+          a.x = parentCx - Math.cos(ang) * need * 0.5;
+          a.y = parentCy - Math.sin(ang) * need * 0.5;
+          b.x = parentCx + Math.cos(ang) * need * 0.5;
+          b.y = parentCy + Math.sin(ang) * need * 0.5;
+        } else {
+          const push = (need - dist) / 2;
+          const ux = dx / dist, uy = dy / dist;
+          a.x -= ux * push; a.y -= uy * push;
+          b.x += ux * push; b.y += uy * push;
+        }
+        moved = true;
+      }
+    }
+    for (const o of openings) {
+      const dx = o.x - parentCx, dy = o.y - parentCy;
+      const d = Math.hypot(dx, dy);
+      const maxDist = Math.max(0, parentR - o.pixels - 2);
+      if (d > maxDist && d > 1e-3) {
+        o.x = parentCx + dx / d * maxDist;
+        o.y = parentCy + dy / d * maxDist;
+        moved = true;
+      }
+      const minX = margin + o.pixels, maxX = W - margin - o.pixels;
+      const minY = margin + o.pixels, maxY = H - margin - o.pixels;
+      const nx = Math.max(minX, Math.min(maxX, o.x));
+      const ny = Math.max(minY, Math.min(maxY, o.y));
+      if (nx !== o.x || ny !== o.y) {
+        o.x = nx; o.y = ny;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  // If still overlapping after clamps, shrink until the spur fits.
+  for (let shrink = 0; shrink < 8; shrink++) {
+    let ok = true;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = openings[i], b = openings[j];
+        const dist = Math.hypot(b.x - a.x, b.y - a.y);
+        if (dist < a.pixels + b.pixels + RIDGE_GAP_PX * 0.85) ok = false;
+      }
+    }
+    if (ok) break;
+    for (const o of openings) o.pixels = Math.max(8, o.pixels * 0.9);
+  }
+
+  openings.sort((a, b) => b.z - a.z);
+  const accent = tok("--steel") || "#2E6E88";
+
+  // Opaque mucosal face of the bifurcation (parent wall around the openings).
+  const face = ctx.createRadialGradient(
+    parentCx, parentCy, parentR * 0.15,
+    parentCx, parentCy, parentR,
+  );
+  face.addColorStop(0, "rgba(150,95,70,0.95)");
+  face.addColorStop(0.55, "rgba(120,72,52,0.98)");
+  face.addColorStop(0.85, "rgba(95,55,40,0.95)");
+  face.addColorStop(1, "rgba(70,40,28,0.55)");
+  ctx.fillStyle = face;
+  ctx.beginPath();
+  ctx.arc(parentCx, parentCy, parentR, 0, 7);
+  ctx.fill();
+
+  // Lighter carina ridge (spur) on the face — before punching holes so openings stay dark.
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const a = openings[i], b = openings[j];
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len, uy = dy / len;
+      const nx = -uy, ny = ux;
+      const edgeGap = Math.max(2, len - a.pixels - b.pixels);
+      // Half-length along the join: stay inside the gap (tiny tuck into each rim).
+      const ridgeL = edgeGap * 0.5 + 2;
+      // Spur height across the face between the two openings.
+      const ridgeW = Math.max(14, Math.min(a.pixels, b.pixels) * 0.85);
+      const grad = ctx.createLinearGradient(
+        mx - nx * ridgeW, my - ny * ridgeW,
+        mx + nx * ridgeW, my + ny * ridgeW,
+      );
+      grad.addColorStop(0, "rgba(150,95,70,0)");
+      grad.addColorStop(0.2, "rgba(190,140,105,0.55)");
+      grad.addColorStop(0.45, "rgba(255,230,200,1)");
+      grad.addColorStop(0.55, "rgba(255,230,200,1)");
+      grad.addColorStop(0.8, "rgba(190,140,105,0.55)");
+      grad.addColorStop(1, "rgba(150,95,70,0)");
+      ctx.save();
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(mx - ux * ridgeL + nx * ridgeW, my - uy * ridgeL + ny * ridgeW);
+      ctx.lineTo(mx + ux * ridgeL + nx * ridgeW, my + uy * ridgeL + ny * ridgeW);
+      ctx.lineTo(mx + ux * ridgeL - nx * ridgeW, my + uy * ridgeL - ny * ridgeW);
+      ctx.lineTo(mx - ux * ridgeL - nx * ridgeW, my - uy * ridgeL - ny * ridgeW);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Punch each child as a separate filled dark lumen (radial gradient, dark centre).
+  for (const o of openings) {
+    const hole = ctx.createRadialGradient(
+      o.x, o.y, o.pixels * 0.05,
+      o.x, o.y, o.pixels,
+    );
+    hole.addColorStop(0, "#000000");
+    hole.addColorStop(0.45, "#050303");
+    hole.addColorStop(0.8, "#120a08");
+    hole.addColorStop(1, "#1a100c");
+    ctx.fillStyle = hole;
+    ctx.beginPath();
+    ctx.arc(o.x, o.y, o.pixels, 0, 7);
+    ctx.fill();
+  }
+
+  // Outlines: route child accent, others neutral thin.
+  for (const o of openings) {
+    ctx.strokeStyle = o.on_route ? accent : "rgba(200,210,220,0.95)";
+    ctx.lineWidth = o.on_route ? 2.75 : 1.2;
+    ctx.beginPath();
+    ctx.arc(o.x, o.y, o.pixels * 0.98, 0, 7);
+    ctx.stroke();
+  }
+
+  // Labels just outside each orifice (and outside the parent face); deconflict.
+  const labels = openings.map(o => {
+    const clockTxt = o.clock == null ? "" : ` · ${o.clock} o'clock`;
+    const text = `${o.name}${clockTxt}`;
+    const dx = o.x - parentCx, dy = o.y - parentCy;
+    const d = Math.hypot(dx, dy) || 1;
+    const ux = dx / d, uy = dy / d;
+    return {
+      text,
+      x: o.x + ux * (o.pixels + 22),
+      y: o.y + uy * (o.pixels + 22),
+      on_route: o.on_route,
+    };
+  });
+  for (let pass = 0; pass < 8; pass++) {
+    let moved = false;
+    for (let i = 0; i < labels.length; i++) {
+      for (let j = i + 1; j < labels.length; j++) {
+        const a = labels[i], b = labels[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        const need = 20;
+        if (dist >= need) continue;
+        const push = (need - (dist || 0.1)) / 2;
+        const ux = dist < 1e-3 ? 1 : dx / dist;
+        const uy = dist < 1e-3 ? 0 : dy / dist;
+        a.x -= ux * push; a.y -= uy * push;
+        b.x += ux * push; b.y += uy * push;
+        moved = true;
+      }
+    }
+    for (const lab of labels) {
+      const nx = Math.max(80, Math.min(W - 80, lab.x));
+      const ny = Math.max(20, Math.min(H - 60, lab.y));
+      if (nx !== lab.x || ny !== lab.y) {
+        lab.x = nx; lab.y = ny;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  for (const lab of labels) {
+    ctx.font = `600 ${lab.on_route ? 12 : 11}px "IBM Plex Sans Condensed", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.8)";
+    ctx.strokeText(lab.text, lab.x, lab.y);
+    ctx.fillStyle = lab.on_route ? accent : "#e8eef2";
+    ctx.fillText(lab.text, lab.x, lab.y);
+  }
+  lastForkOrifices = openings.map(o => ({
+    name: o.name,
+    clock: o.clock,
+    on_route: o.on_route,
+    edge: o.child.edge,
+    x: o.x, y: o.y, pixels: o.pixels,
+  }));
 }
 
 function drawAnteriorTick(rings, right, up, dir) {
@@ -1035,7 +1479,10 @@ function drawGuidance(right, up, dir, roll) {
     });
   }
   if (fly.pausedFork) {
-    lines.push({ text: `Paused before fork ${fly.pausedFork} — Space / ↑ to continue`, color: "#f4f7f8" });
+    lines.push({
+      text: `Paused at fork ${fly.pausedFork} (1 s) — Space / ↑ to continue`,
+      color: "#f4f7f8",
+    });
   }
   if (flyAt(fly.s).prov === "interpolated") {
     lines.push({ text: "Interpolated segment — not CT-demonstrated airway", color: "#ffd166" });
@@ -1115,9 +1562,9 @@ function mucosa(d) {
 /* --------------------------------------------------- variant C: topology */
 let topoLayout = null;
 function buildTopology() {
-  // Top-down tree: trachea at the top, airway generation downward (e.g, not
-  // hop count). Sibling order left→right by mean patient-x of each child
-  // subtree so patient right (+x) lands on screen right.
+  // Radial tree: angle by subtree leaf share, radius by generation. Trachea
+  // at centre; trachea edge points straight down (head→feet). Sibling order
+  // by mean patient-x so patient-right (+x) lands on screen-right.
   const meanXCache = new Map();
   const subtreeMeanX = n => {
     if (meanXCache.has(n)) return meanXCache.get(n);
@@ -1134,35 +1581,30 @@ function buildTopology() {
   for (const [, arr] of CHILDREN) {
     arr.sort((a, b) => subtreeMeanX(a.t) - subtreeMeanX(b.t));
   }
-  const pos = new Map();
-  let leaf = 0;
-  const place = (n, genY) => {
-    const k = CHILDREN.get(n) || [];
-    if (!k.length) {
-      pos.set(n, { x: leaf, y: genY });
-      leaf += 1;
-      return;
-    }
-    for (const e of k) place(e.t, e.g);
-    const xs = k.map(e => pos.get(e.t).x);
-    pos.set(n, {
-      x: xs.reduce((s, v) => s + v, 0) / xs.length,
-      y: genY,
-    });
+  const leaves = n => {
+    const k = CHILDREN.get(n);
+    if (!k || !k.length) return 1;
+    return k.reduce((s, e) => s + leaves(e.t), 0);
   };
-  place(A.root, 0);
-  let minX = Infinity, maxX = -Infinity, maxY = 0;
-  for (const p of pos.values()) {
-    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
-    maxY = Math.max(maxY, p.y);
-  }
-  const spanX = Math.max(1e-6, maxX - minX), spanY = Math.max(1e-6, maxY);
-  const midX = (minX + maxX) / 2, midY = maxY / 2;
-  const targetW = 240, targetH = 200;
-  for (const p of pos.values()) {
-    p.x = ((p.x - midX) / spanX) * targetW;
-    p.y = ((p.y - midY) / spanY) * targetH;
-  }
+  const pos = new Map();
+  const place = (n, a0, a1, gen) => {
+    const a = (a0 + a1) / 2;
+    // a=0 → +y on screen (down): head at centre, carina below.
+    pos.set(n, {
+      a, gen,
+      x: Math.sin(a) * gen * 34,
+      y: Math.cos(a) * gen * 34,
+    });
+    const k = CHILDREN.get(n) || [];
+    const total = k.reduce((s, e) => s + leaves(e.t), 0) || 1;
+    let cur = a0;
+    for (const e of k) {
+      const span = (a1 - a0) * (leaves(e.t) / total);
+      place(e.t, cur, cur + span, gen + 1);
+      cur += span;
+    }
+  };
+  place(A.root, -Math.PI, Math.PI, 0);
   topoLayout = pos;
 }
 
@@ -1176,14 +1618,21 @@ function topoToScreen(p) {
 
 function drawTopology() {
   if (!topoLayout) buildTopology();
+  const ox = W / 2 + cam.panX, oy = H / 2 + cam.panY;
+  const s = DEFAULT_DIST / cam.dist;
   ctx.lineCap = "round";
+  // Generation rings, so depth is readable as distance from centre.
+  ctx.strokeStyle = tok("--grid"); ctx.lineWidth = 1;
+  for (let g = 5; g <= maxGen; g += 5) {
+    ctx.beginPath(); ctx.arc(ox, oy, g * 34 * s, 0, 7); ctx.stroke();
+  }
   for (const e of A.edges) {
     const a = topoLayout.get(e.f), b = topoLayout.get(e.t);
     if (!a || !b) continue;
     const pa = topoToScreen(a), pb = topoToScreen(b);
-    const s = DEFAULT_DIST / cam.dist;
-    ctx.strokeStyle = depthColor(e.g, 0.95);
-    ctx.lineWidth = Math.max(0.8, Math.min(9, e.r * 1.6) * s);
+    const hi = e.oi != null && highlightRouteOis.has(e.oi);
+    ctx.strokeStyle = hi ? "rgba(46,110,136,0.95)" : depthColor(e.g, 0.95);
+    ctx.lineWidth = Math.max(0.8, Math.min(9, e.r * 1.6) * s) + (hi ? 2 : 0);
     ctx.beginPath();
     ctx.moveTo(pa.x, pa.y);
     ctx.lineTo(pb.x, pb.y);
@@ -1199,7 +1648,6 @@ function drawTopology() {
       e._topoGhostB = b;
     }
     const pa = topoToScreen(a), pb = topoToScreen(b);
-    const s = DEFAULT_DIST / cam.dist;
     ctx.strokeStyle = "rgba(140,140,140,0.7)";
     ctx.lineWidth = Math.max(0.8, Math.min(9, (e.r || 1) * 1.6) * s);
     ctx.setLineDash([3, 5]);
@@ -1219,7 +1667,7 @@ function drawTopology() {
   ctx.fillStyle = tok("--muted");
   ctx.font = '500 11px "IBM Plex Sans", sans-serif';
   ctx.textAlign = "left";
-  ctx.fillText("Flat map: anterior/posterior depth not shown", railRight + 16, H - 18);
+  ctx.fillText("Radial map: angle and distance are not anatomy", railRight + 16, H - 18);
   if (nearestHighlight && nearestHighlight.dist <= 5) {
     // Highlight nearest centreline-associated node when linked from CT.
     let bestId = null, bestD = Infinity;
@@ -1303,6 +1751,7 @@ function hideReviewPanels() {
 }
 
 function showRemovePanel(edge) {
+  if (VIEWER_MODE) return;
   hideReviewPanels();
   let panel = document.getElementById("remove-branch-panel");
   if (!panel) {
@@ -1360,6 +1809,7 @@ function showRemovePanel(edge) {
 window.showRemovePanel = showRemovePanel;
 
 function showUndoGhostPanel(edge) {
+  if (VIEWER_MODE) return;
   hideReviewPanels();
   if (!edge || !edge.correction_id) return;
   let panel = document.getElementById("undo-ghost-panel");
@@ -1434,14 +1884,14 @@ function handleViewClick(clientX, clientY) {
     }
     if (live.point) {
       SharedPos.set(live.point, "anatomical");
-      if (routeTargetPickArmed) {
+      if (routeTargetPickArmed && !VIEWER_MODE) {
         window.parent.postMessage(
           { type: "route-target-pick", ras_mm: live.point },
           location.origin,
         );
         return;
       }
-      if (live.edge && live.edge.oi != null && live.edge.selectable !== false) {
+      if (!VIEWER_MODE && live.edge && live.edge.oi != null && live.edge.selectable !== false) {
         selectedEdgeOi = live.edge.oi;
         showRemovePanel(live.edge);
       }
@@ -1462,7 +1912,7 @@ function handleViewClick(clientX, clientY) {
       if (d < bestGhostD) { bestGhostD = d; bestGhost = e; }
     }
     if (bestGhost) {
-      showUndoGhostPanel(bestGhost);
+      if (!VIEWER_MODE) showUndoGhostPanel(bestGhost);
       return;
     }
     let bestId = null, bestD = 12;
@@ -1476,7 +1926,7 @@ function handleViewClick(clientX, clientY) {
       const nid = Number(bestId);
       // Topology click picks the incoming edge (e.t === id).
       const edge = A.edges.find(e => e.t === nid);
-      if (edge && edge.oi != null && edge.selectable !== false) {
+      if (!VIEWER_MODE && edge && edge.oi != null && edge.selectable !== false) {
         selectedEdgeOi = edge.oi;
         showRemovePanel(edge);
       }
@@ -1502,7 +1952,7 @@ window.addEventListener("message", (ev) => {
     return;
   }
   if (data.type === "arm-route-target-pick") {
-    routeTargetPickArmed = !!data.armed;
+    routeTargetPickArmed = VIEWER_MODE ? false : !!data.armed;
     if (ctPanesApi && typeof ctPanesApi.setRouteTargetPickArmed === "function") {
       ctPanesApi.setRouteTargetPickArmed(routeTargetPickArmed);
     }
@@ -1518,6 +1968,7 @@ window.addEventListener("message", (ev) => {
     if (idx >= 0) setVariant(idx);
     fly.s = 0;
     fly.pausedFork = null;
+    fly.pauseUntil = null;
     fly.armed = new Set(A.forks.map(f => f.fork));
     fly.playing = true;
     return;
@@ -1537,6 +1988,7 @@ window.addEventListener("message", (ev) => {
   if (ev.origin !== location.origin) return;
   const data = ev.data;
   if (!data || data.type !== "ct-select-edge") return;
+  if (VIEWER_MODE) return;
   const oi = data.oi;
   const edge = (A.edges || []).find(e => e.oi === oi);
   if (edge && edge.selectable !== false) {
@@ -1568,24 +2020,34 @@ const held = new Set();
 addEventListener("keydown", e => {
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
-  if (e.key >= "1" && e.key <= "5") {
-    setVariant(+e.key - 1);
+  if (e.key >= "1" && e.key <= String(SWITCHER_VARIANTS.length)) {
+    const key = SWITCHER_VARIANTS[+e.key - 1].key;
+    const idx = VARIANTS.findIndex(v => v.key === key);
+    if (idx >= 0) setVariant(idx);
     return;
   }
   const endoKeys = variant === 1 || variant === 4;
   if (variant === 0) {
+    if (e.key === "f" || e.key === "F") applyPreset("radiologist");
     if (e.key === "h" || e.key === "H") applyPreset("head45");
     if (e.key === "o" || e.key === "O") applyPreset("operator0");
     if (e.key === "t" || e.key === "T") applyPreset("topdown90");
-    if (e.key === "r" || e.key === "R") applyPreset("head45");
+    if (e.key === "r" || e.key === "R") applyPreset("radiologist");
   } else if (endoKeys && (e.key === "t" || e.key === "T")) {
-    fly.s = 0; fly.pausedFork = null; fly.armed = new Set(A.forks.map(f => f.fork));
+    fly.s = 0; fly.pausedFork = null; fly.pauseUntil = null;
+    fly.armed = new Set(A.forks.map(f => f.fork));
   }
-  if (e.key === " " && endoKeys) { fly.playing = !fly.playing; fly.pausedFork = null; e.preventDefault(); }
+  if (e.key === " " && endoKeys) {
+    fly.playing = !fly.playing;
+    fly.pausedFork = null;
+    fly.pauseUntil = null;
+    e.preventDefault();
+  }
   if (variant === 3) return;
   if (["ArrowUp", "ArrowDown"].includes(e.key)) {
     if (fly.pausedFork && e.key === "ArrowUp" && !e.repeat) {
       fly.pausedFork = null;
+      fly.pauseUntil = null;
     }
     held.add(e.key);
     e.preventDefault();
@@ -1595,22 +2057,36 @@ addEventListener("keyup", e => held.delete(e.key));
 
 setInterval(() => {
   if (variant !== 1 && variant !== 4) return;
-  const delta = fly.playing || held.has("ArrowUp")
-    ? 0.6
-    : held.has("ArrowDown") ? -0.6 : 0;
-  if (fly.pausedFork && delta > 0) return;
+  if (fly.pausedFork != null && fly.pauseUntil != null) {
+    if (performance.now() >= fly.pauseUntil) {
+      fly.pausedFork = null;
+      fly.pauseUntil = null;
+      fly.playing = true;
+    } else if (!held.has("ArrowUp") && !held.has("ArrowDown")) {
+      return;
+    }
+  }
+  const nearFork = A.forks.find(f => f.s >= fly.s && f.s - fly.s <= FORK_ORIFICE_AHEAD_MM);
+  const forwardStep = (fly.playing && nearFork) ? FLY_SPEED_NEAR_FORK : FLY_SPEED;
+  // Manual ↑/↓ unchanged (full speed, no auto-pause). Auto-play slows near forks.
+  const delta = held.has("ArrowUp")
+    ? FLY_SPEED
+    : held.has("ArrowDown")
+      ? -FLY_SPEED
+      : fly.playing ? forwardStep : 0;
+  if (fly.pausedFork && delta > 0 && !held.has("ArrowUp")) return;
 
   const previous = fly.s;
   const next = Math.max(0, Math.min(A.fly.s.at(-1), previous + delta));
-  if (delta > 0) {
+  if (delta > 0 && fly.playing && !held.has("ArrowUp")) {
     const fork = A.forks.find(item => fly.armed.has(item.fork)
       && item.pause_s > previous && item.pause_s <= next);
     if (fork) {
       fly.s = fork.pause_s;
       fly.armed.delete(fork.fork);
       fly.pausedFork = fork.fork;
+      fly.pauseUntil = performance.now() + FORK_PAUSE_MS;
       fly.playing = false;
-      held.delete("ArrowUp");
       return;
     }
   }
@@ -1660,9 +2136,11 @@ async function ensureCtPanes() {
       caseId: CASE_ID,
       airway: A,
       sharedPos: SharedPos,
+      readOnly: VIEWER_MODE,
       getCtView: () => ctViewPref,
       setCtView: async (view) => {
         ctViewPref = view;
+        if (VIEWER_MODE) return;
         try {
           const res = await fetch("/api/clinician", {
             method: "PUT",
@@ -1682,6 +2160,7 @@ async function ensureCtPanes() {
         }
       },
       ensureClinician: async () => {
+        if (VIEWER_MODE) return false;
         try {
           const clin = await fetch("/api/clinician").then(r => r.json());
           if (clin && clin.role && clin.initials) return true;
@@ -1729,15 +2208,17 @@ window.ensureCtPanes = ensureCtPanes;
 window.SharedPos = SharedPos;
 function render() {
   sw.innerHTML = "";
-  VARIANTS.forEach((v, i) => {
+  SWITCHER_VARIANTS.forEach((v, i) => {
+    const idx = VARIANTS.findIndex(x => x.key === v.key);
     const b = document.createElement("button");
-    b.setAttribute("aria-pressed", String(i === variant));
+    b.setAttribute("aria-pressed", String(idx === variant));
     b.innerHTML = `<span class="num">${i + 1}</span>${v.name}`;
-    b.onclick = () => setVariant(i);
+    b.onclick = () => setVariant(idx);
     sw.appendChild(b);
   });
+  const keyHints = SWITCHER_VARIANTS.map((_, i) => `<kbd>${i + 1}</kbd>`).join("");
   document.getElementById("hint").innerHTML = VARIANTS[variant].hint +
-    "<br><br>Switch renderer with <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd><kbd>5</kbd>.";
+    `<br><br>Switch renderer with ${keyHints}.`;
   const walkActive = variant === 4;
   const endoActive = variant === 1 || walkActive;
   document.getElementById("g-nav").style.opacity = endoActive ? "1" : ".45";
@@ -1777,45 +2258,111 @@ if (DEBUG) {
     const p = topoLayout.get(id);
     return p ? topoToScreen(p) : null;
   }
-  // Headless verify hook (?debug=1): main-bronchus L/R, top-down feet-up, drag,
-  // endoluminal anterior tick screen position / visibility.
+  // Headless verify hook (?debug=1): main-bronchus L/R, radiologist front,
+  // endoluminal anterior tick + fork orifice labels.
   window.__p2_debug = {
     applyPreset,
     orbitCamera,
     getPreset: () => cam.preset,
     setVariant,
     getVariant: () => VARIANTS[variant].key,
+    switcherKeys: () => SWITCHER_VARIANTS.map(v => v.key),
     project: p => project(p, cam),
     nodeScreen: id => project(A.nodes[String(id)].p, cam),
     mainBronchi: mainBronchusNodes,
     topoScreen,
     cam: () => ({
       forward: [...cam.forward], up: [...cam.up], right: [...cam.right],
-      yaw: cam.yaw, pitch: cam.pitch,
+      yaw: cam.yaw, pitch: cam.pitch, roll: cam.roll,
       dist: cam.dist, preset: cam.preset,
     }),
+    radiologistCheck() {
+      applyPreset("radiologist");
+      if (variant !== 0) setVariant(0);
+      const mains = mainBronchusNodes();
+      const trach = project(A.nodes[String(mains.trachea)].p, cam);
+      const carina = project(A.nodes[String(mains.carina)].p, cam);
+      const kids = new Map();
+      for (const e of A.edges) {
+        if (!kids.has(e.f)) kids.set(e.f, []);
+        kids.get(e.f).push(e.t);
+      }
+      const subtreeIds = (n) => {
+        const out = [n];
+        for (const t of kids.get(n) || []) out.push(...subtreeIds(t));
+        return out;
+      };
+      const centroid = (ids) => {
+        let x = 0, y = 0, z = 0, n = 0;
+        for (const id of ids) {
+          const p = A.nodes[String(id)] && A.nodes[String(id)].p;
+          if (!p) continue;
+          x += p[0]; y += p[1]; z += p[2]; n += 1;
+        }
+        return n ? [x / n, y / n, z / n] : null;
+      };
+      const leftC = centroid(subtreeIds(mains.left));
+      const rightC = centroid(subtreeIds(mains.right));
+      const leftS = leftC && project(leftC, cam);
+      const rightS = rightC && project(rightC, cam);
+      return {
+        trach, carina, leftS, rightS,
+        headOnTop: !!(trach && carina && trach.y < carina.y),
+        rightOnScreenLeft: !!(leftS && rightS && rightS.x < leftS.x),
+      };
+    },
     setFlyS(s) {
       fly.s = Math.max(0, Math.min(A.fly.s.at(-1), s));
       fly.pausedFork = null;
+      fly.pauseUntil = null;
       if (variant !== 1) setVariant(1);
       ctx.clearRect(0, 0, W, H);
       ctx.fillStyle = tok("--ground"); ctx.fillRect(0, 0, W, H);
       drawEndoluminal();
-      return { s: fly.s, tick: { ...lastAnteriorTick } };
+      return { s: fly.s, tick: { ...lastAnteriorTick }, orifices: lastForkOrifices.map(o => ({ ...o })) };
+    },
+    goToFork(i = 0) {
+      const fork = A.forks[i];
+      if (!fork) return { s: fly.s, fork: null, orifices: [] };
+      // Sit ~12 mm before the junction so openings are in view and growing.
+      fly.s = Math.max(0, fork.s - 12);
+      fly.pausedFork = null;
+      fly.pauseUntil = null;
+      fly.playing = false;
+      if (variant !== 1) setVariant(1);
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = tok("--ground"); ctx.fillRect(0, 0, W, H);
+      drawEndoluminal();
+      return {
+        s: fly.s,
+        fork: {
+          index: i, id: fork.fork, s: fork.s, name: fork.name,
+          children: (fork.children || []).map(c => ({
+            name: c.name || "branch", clock: c.clock, on_route: !!c.on_route, edge: c.edge,
+          })),
+        },
+        orifices: lastForkOrifices.map(o => ({ ...o })),
+      };
     },
     goToFirstForkPause() {
       const fork = A.forks[0];
       if (!fork) return { s: fly.s, pausedFork: null, tick: { ...lastAnteriorTick } };
       fly.s = fork.pause_s;
       fly.pausedFork = fork.fork;
+      fly.pauseUntil = performance.now() + FORK_PAUSE_MS;
       fly.playing = false;
       if (variant !== 1) setVariant(1);
       ctx.clearRect(0, 0, W, H);
       ctx.fillStyle = tok("--ground"); ctx.fillRect(0, 0, W, H);
       drawEndoluminal();
-      return { s: fly.s, pausedFork: fly.pausedFork, tick: { ...lastAnteriorTick } };
+      return {
+        s: fly.s, pausedFork: fly.pausedFork, tick: { ...lastAnteriorTick },
+        orifices: lastForkOrifices.map(o => ({ ...o })),
+      };
     },
     anteriorTick: () => ({ ...lastAnteriorTick }),
+    forkOrifices: () => lastForkOrifices.map(o => ({ ...o })),
+    forks: () => A.forks,
   };
   window.__p3_debug = {
     setVariant,
@@ -1833,6 +2380,40 @@ if (DEBUG) {
 document.getElementById("r-branches").textContent = A.edges.length;
 document.getElementById("r-gens").textContent = maxGen;
 document.getElementById("r-length").textContent = (totalLen / 10).toFixed(0) + " cm";
+
+async function setupCasePicker() {
+  if (!VIEWER_MODE) return;
+  const label = document.getElementById("case-picker-label");
+  const select = document.getElementById("case-picker");
+  if (!label || !select) return;
+  label.hidden = false;
+  let cases = [];
+  try {
+    cases = await fetch("/api/cases").then(r => r.json());
+  } catch (err) {
+    console.warn(err);
+    return;
+  }
+  if (!Array.isArray(cases)) return;
+  select.innerHTML = "";
+  for (const c of cases) {
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = c.source || c.id;
+    if (c.id === CASE_ID) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener("change", () => {
+    const u = new URL(location.href);
+    u.searchParams.set("case", select.value);
+    const v = params.get("variant");
+    if (v) u.searchParams.set("variant", v);
+    else u.searchParams.delete("variant");
+    location.assign(u.pathname + u.search);
+  });
+}
+
+setupCasePicker().catch(err => console.warn(err));
 resize(); render(); frame();
 }).catch((err) => console.error(err));
 </script>

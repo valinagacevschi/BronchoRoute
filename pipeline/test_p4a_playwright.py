@@ -166,7 +166,7 @@ def test_p4a_import_panel_and_workflow(server):
 
         cprint("open app shell local-001 (step 1 confirmable)", "cyan")
         page.goto(
-            f"{BASE}/?case=local-001&allow_review=1",
+            f"{BASE}/workflow?case=local-001&allow_review=1",
             wait_until="domcontentloaded",
             timeout=120_000,
         )

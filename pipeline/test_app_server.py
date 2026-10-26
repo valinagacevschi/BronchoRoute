@@ -162,6 +162,19 @@ def client(harness):
     return TestClient(app, base_url="http://127.0.0.1")
 
 
+def test_root_serves_renderer_workflow_serves_shell(client):
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "Bronchial Tree Renderer" in root.text
+    assert 'id="switcher"' in root.text
+    assert 'id="workflow"' not in root.text
+
+    shell = client.get("/workflow")
+    assert shell.status_code == 200
+    assert 'id="workflow"' in shell.text
+    assert "Lung Navigator" in shell.text
+
+
 def test_cases_list(client):
     res = client.get("/api/cases")
     assert res.status_code == 200

@@ -227,7 +227,7 @@ def test_p4c_route_target_cards(server, tmp_path):
         page = browser.new_page(viewport=VIEWPORT)
         _attach_console(page)
         page.goto(
-            f"{BASE}/?case=local-001&allow_review=1&debug=1",
+            f"{BASE}/workflow?case=local-001&allow_review=1&debug=1",
             wait_until="networkidle",
         )
         page.wait_for_timeout(1200)
