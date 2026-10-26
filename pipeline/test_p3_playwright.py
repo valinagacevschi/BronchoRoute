@@ -182,6 +182,17 @@ def _set_clinician(page, role="Radiologist", initials="A.B.", ct_view="feet") ->
     )
 
 
+def _ensure_step1(page, case_id: str) -> None:
+    """Local cases need series_confirmed before lesion (Phase 4a)."""
+    if not str(case_id).startswith("local-"):
+        return
+    page.request.post(
+        f"{BASE}/api/cases/{case_id}/series/confirm",
+        data=json.dumps({"overridden": False}),
+        headers={"Content-Type": "application/json"},
+    )
+
+
 @pytest.mark.parametrize("case_id", ["3", "local-001"])
 def test_p3_ct_panes(server, case_id):
     SHOTS.mkdir(parents=True, exist_ok=True)
@@ -191,6 +202,7 @@ def test_p3_ct_panes(server, case_id):
         page = browser.new_page(viewport=VIEWPORT)
         _attach_console(page)
         _set_clinician(page)
+        _ensure_step1(page, case_id)
         _open_ct(page, case_id)
 
         # Q32: overlays disabled before lesion confirmation

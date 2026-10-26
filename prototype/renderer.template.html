@@ -144,6 +144,10 @@ kbd {
   text-transform: uppercase; color: var(--mucosa);
   border: 1px dashed var(--mucosa); border-radius: 4px; padding: 6px 9px;
 }
+/* CT panes: keep Prototype off the toolbar overlays (Route checkbox). */
+body.ct-panes-active .proto {
+  top: auto; bottom: 16px; left: 252px; right: auto; z-index: 5;
+}
 .review-banner {
   position: fixed; top: 0; left: 0; right: 0; z-index: 10;
   padding: 10px 16px; color: #3B2A08; background: #F5C451;
@@ -255,10 +259,14 @@ body.ct-panes-active .limitations-panel.collapsed h2::after { content: " ▸"; }
   color: #fff; text-shadow: 0 1px 2px #000; pointer-events: none;
 }
 .ct-pane-meta {
-  position: absolute; top: 6px; right: 8px; z-index: 2;
-  font: 500 10px/1 "IBM Plex Mono", monospace; color: rgba(255,255,255,.75);
-  pointer-events: none;
+  /* Bottom-right: never collide with top orientation letters (A/S). */
+  position: absolute; bottom: 22px; right: 8px; top: auto; z-index: 2;
+  font: 500 10px/1 "IBM Plex Mono", monospace; color: rgba(255,255,255,.85);
+  text-shadow: 0 1px 2px #000;
+  pointer-events: none; max-width: 46%; text-align: right;
 }
+.ct-route-start-box { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ct-route-start-box select { font: inherit; border: 1px solid var(--edge); border-radius: 4px; padding: 4px 6px; }
 .ct-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
 .shared-marker-3d {
   position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px;
@@ -660,6 +668,18 @@ function drawAnatomical() {
     ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.arc(tp.x, tp.y, 9, 0, 7); ctx.stroke();
     ctx.beginPath(); ctx.arc(tp.x, tp.y, 2.5, 0, 7); ctx.fillStyle = tok("--mucosa"); ctx.fill();
+  }
+  // RouteStart (absolute RAS → payload-relative)
+  if (A.route_start && A.route_start.ras_mm && A.origin_mm) {
+    const rs = A.route_start.ras_mm;
+    const rel = [rs[0] - A.origin_mm[0], rs[1] - A.origin_mm[1], rs[2] - A.origin_mm[2]];
+    const rsp = project(rel, cam);
+    if (rsp) {
+      ctx.strokeStyle = tok("--steel"); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(rsp.x, rsp.y, 10, 0, 7); ctx.stroke();
+      ctx.fillStyle = tok("--steel"); ctx.font = "10px IBM Plex Mono, monospace";
+      ctx.fillText("RouteStart", rsp.x + 12, rsp.y - 4);
+    }
   }
   if (A.poi) {
     const p = project(A.poi, cam);

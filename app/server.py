@@ -1,12 +1,15 @@
 """Local Lung Navigator app server (127.0.0.1 only).
 
-Phase 3 review: LesionBody isfinite; ClinicianNotSet→412; empty role/initials→422.
+Phase 4a review fixes: series/confirm, register-existing, /records 403 for
+completion kinds, lesion requires step 1, job shutdown teardown.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from termcolor import cprint
 
+from app.caseref import CaseRef
 from app.cases import (
     RECORD_KINDS,
     ReviewBlocked,
@@ -24,12 +28,23 @@ from app.cases import (
     append_record,
     case_payload,
     clear_lesion,
+    confirm_existing_series,
     list_cases,
     load_versions,
+    qualifying_route_start_terminals,
     set_lesion,
+    set_route_start,
     validate_record_data,
 )
 from app.ct_crop import build_ct_crop, read_ct_bytes
+from app.imports import ImportDuplicate, confirm_import, scan_series
+from app.jobs import (
+    JobConflict,
+    latest_job,
+    register_segment_artifacts,
+    start_segment_job,
+    terminate_all_jobs,
+)
 from app.masks import MasksUnavailable, build_masks_crop, read_masks_bytes
 from app.settings import (
     DEFAULT_CT_VIEW,
@@ -39,11 +54,27 @@ from app.settings import (
     put_ct_view,
     validate_ct_view,
 )
+from app.workflow import (
+    WORKFLOW_COMPLETION_KINDS,
+    WorkflowBlocked,
+    WorkflowStep,
+    derive_workflow,
+    load_graph,
+    require_prior_steps,
+)
+from run_totalsegmentator import ct_identity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROTOTYPE = REPO_ROOT / "prototype"
 
-app = FastAPI(title="Lung Navigator", docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    yield
+    terminate_all_jobs()
+
+
+app = FastAPI(title="Lung Navigator", docs_url=None, redoc_url=None, lifespan=_lifespan)
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=["127.0.0.1", "localhost"],
@@ -127,6 +158,24 @@ class LesionBody(BaseModel):
         return cleaned
 
 
+class ImportScanBody(BaseModel):
+    src_dir: str
+
+
+class ImportConfirmBody(BaseModel):
+    src_dir: str
+    series: str | int
+    confirm: bool = True
+
+
+class RouteStartBody(BaseModel):
+    node: int
+
+
+class SeriesConfirmBody(BaseModel):
+    overridden: bool = False
+
+
 def _http_for_case(exc: Exception) -> HTTPException:
     if isinstance(exc, UnknownCase):
         return HTTPException(status_code=404, detail="case not found")
@@ -159,6 +208,133 @@ def _clinician_response(data: dict | None) -> dict:
 @app.get("/api/cases")
 def api_cases():
     return list_cases()
+
+
+@app.get("/api/cases/{case_id}/workflow")
+def api_workflow(case_id: str):
+    try:
+        return derive_workflow(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/imports/scan")
+def api_import_scan(body: ImportScanBody):
+    try:
+        return scan_series(body.src_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/imports")
+def api_import_confirm(body: ImportConfirmBody):
+    clinician = _require_clinician()
+    try:
+        return confirm_import(
+            body.src_dir,
+            body.series,
+            clinician=clinician["clinician"],
+            confirm=body.confirm,
+        )
+    except ImportDuplicate as exc:
+        return JSONResponse(status_code=409, content={"detail": exc.message})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (UnknownCase, FileNotFoundError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/series/confirm")
+def api_series_confirm(case_id: str, body: SeriesConfirmBody):
+    """Confirm series already present in case.json source (no silent backfill)."""
+    clinician = _require_clinician()
+    try:
+        return confirm_existing_series(
+            case_id, clinician["clinician"], overridden=body.overridden
+        )
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/segment")
+def api_segment(case_id: str):
+    clinician = _require_clinician()
+    try:
+        CaseRef.parse(case_id)
+        return start_segment_job(case_id, clinician["clinician"])
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except JobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/segment/register-existing")
+def api_segment_register_existing(case_id: str):
+    """Register on-disk segment outputs when run.json markers match current CT."""
+    clinician = _require_clinician()
+    try:
+        require_prior_steps(case_id, int(WorkflowStep.SEGMENT))
+        ref = CaseRef.parse(case_id)
+        current = ct_identity(ref.ct)
+        for marker in (
+            ref.ts_out / "airways_source" / "run.json",
+            ref.ts_out / "lobes" / "run.json",
+        ):
+            if not marker.is_file():
+                raise ValueError(f"missing run.json marker: {marker.name} under {marker.parent.name}")
+            options = json.loads(marker.read_text())
+            marker_ct = options.get("ct") if isinstance(options, dict) else None
+            if marker_ct != current:
+                raise ValueError(
+                    f"run.json CT identity mismatch in {marker.parent.name} "
+                    "(re-run segmentation or adopt-cache for the current CT)"
+                )
+        entry = register_segment_artifacts(
+            case_id, clinician["clinician"], registered_existing=True
+        )
+        return {"record": entry, "registered_existing": True}
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid run.json: {exc}") from exc
+
+
+@app.get("/api/cases/{case_id}/jobs/latest")
+def api_job_latest(case_id: str):
+    try:
+        CaseRef.parse(case_id)
+    except UnknownCase as exc:
+        raise _http_for_case(exc) from exc
+    job = latest_job(case_id)
+    if job is None:
+        return {"case_id": case_id, "status": "none", "log_tail": [], "elapsed_s": 0}
+    return job
+
+
+@app.put("/api/cases/{case_id}/route-start")
+def api_route_start(case_id: str, body: RouteStartBody):
+    clinician = _require_clinician()
+    try:
+        require_prior_steps(case_id, int(WorkflowStep.ROUTE_START))
+        return set_route_start(case_id, body.node, clinician["clinician"])
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.get("/api/cases/{case_id}/route-start/candidates")
+def api_route_start_candidates(case_id: str):
+    try:
+        ref = CaseRef.parse(case_id)
+        graph = load_graph(ref=ref)
+        return {"candidates": qualifying_route_start_terminals(graph)}
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
 
 
 @app.get("/api/cases/{case_id}/payload")
@@ -234,6 +410,12 @@ async def api_put_lesion(case_id: str, request: Request):
     """Parse body manually so NaN/inf yield a plain 422 (JSON-safe detail)."""
     clinician = _require_clinician()
     try:
+        require_prior_steps(case_id, int(WorkflowStep.LESION))
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    try:
         body = await request.json()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail="invalid JSON body") from exc
@@ -286,12 +468,12 @@ def api_put_clinician(body: ClinicianBody):
 
 @app.post("/api/cases/{case_id}/records")
 def api_post_record(case_id: str, body: RecordBody):
-    from app.caseref import CaseRef
-
     try:
         CaseRef.parse(case_id)
     except UnknownCase as exc:
         raise _http_for_case(exc) from exc
+    if body.kind in WORKFLOW_COMPLETION_KINDS:
+        raise HTTPException(status_code=403, detail="use the step endpoint")
     clinician = _require_clinician()
     try:
         return append_record(

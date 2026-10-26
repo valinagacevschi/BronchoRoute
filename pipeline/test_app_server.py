@@ -588,6 +588,22 @@ def test_payload_origin_and_lesion_roundtrip(client, harness):
     assert missing.status_code == 412
 
     client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    # Step 1 must be done before lesion (Phase 4a); seed series_confirmed.
+    case = json.loads(harness["case"].read_text())
+    case.setdefault("source", {
+        "folder": "SERIES0", "series_number": 1,
+        "series_description": "test", "convolution_kernel": "STANDARD",
+    })
+    case.setdefault("records", []).append({
+        "step": 1, "kind": "series_confirmed",
+        "data": {
+            "folder": "SERIES0", "series_number": 1,
+            "description": "test", "kernel": "STANDARD", "overridden": False,
+        },
+        "clinician": "Radiologist, A.B.", "at": "2026-01-01T00:00:00Z",
+    })
+    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+
     outside = client.put(
         "/api/cases/local-001/lesion",
         json={"ras_mm": [1e6, 1e6, 1e6]},

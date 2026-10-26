@@ -1,5 +1,5 @@
 # Real-data guard: fail the session if playwright/tests mutate production case.json /
-# app_state / out/cases under the real pipeline tree.
+# app_state / out/cases under the real pipeline tree, or create ~/.lungnav* paths.
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,6 +8,7 @@ import pytest
 from termcolor import cprint
 
 REAL_PIPELINE = Path(__file__).resolve().parent
+HOME = Path.home()
 
 
 def _guard_targets() -> list[Path]:
@@ -36,13 +37,16 @@ def _snapshot(paths: list[Path]) -> dict[str, tuple[int, int] | None]:
     return out
 
 
+def _lungnav_home_paths() -> list[Path]:
+    return sorted(HOME.glob(".lungnav*"))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _real_data_mtime_guard():
-    """Refuse silent writes into the real pipeline state / case.json files."""
-    # When tests redirect via LUNGNAV_PIPELINE_ROOT the child server is isolated;
-    # still guard the real tree in this pytest process.
+    """Refuse silent writes into the real pipeline state / case.json / ~/.lungnav*."""
     before_paths = _guard_targets()
     before = _snapshot(before_paths)
+    before_home = {str(p.resolve()) for p in _lungnav_home_paths()}
     cprint(f"real-data guard: watching {len(before)} paths under {REAL_PIPELINE}", "cyan")
     yield
     after_paths = _guard_targets()
@@ -60,7 +64,13 @@ def _real_data_mtime_guard():
         raise AssertionError(
             "real pipeline data changed during tests (isolation broken):\n  " + sample
         )
-    # Also refuse a new settings.json appearing under real app_state.
     settings = REAL_PIPELINE / "app_state" / "settings.json"
     if settings.is_file() and str(settings.resolve()) not in before:
         raise AssertionError(f"tests created real settings.json at {settings}")
+    after_home = {str(p.resolve()) for p in _lungnav_home_paths()}
+    new_home = sorted(after_home - before_home)
+    if new_home:
+        raise AssertionError(
+            "tests created ~/.lungnav* paths (use fake HOME under tmp):\n  "
+            + "\n  ".join(new_home[:12])
+        )

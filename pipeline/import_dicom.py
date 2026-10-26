@@ -3,19 +3,23 @@
 Geometry fix: build the NIfTI volume from pydicom (sort by slice normal,
 LPS→RAS affine from IOP/IPP/PixelSpacing) instead of SimpleITK ImageSeriesReader,
 which mirrored superior/inferior for local-001.
+
+Phase 4a review: symlink jail in read_series; locked next_case_id; shared
+case-document builder and duplicate message with app/imports.py.
 """
 
 import argparse
 import hashlib
 import json
 import re
+import shutil
 from datetime import date
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
 import pydicom
-from atomic_json import atomic_write_json
+from atomic_json import atomic_write_json, json_file_lock
 from paths import LOCAL_CASES
 
 
@@ -28,12 +32,25 @@ TILT_ANGLE_TOL_DEG = 1.0
 GEOMETRY_TOL_MM = 0.01
 
 
+def _path_under_root(path: Path, root: Path) -> bool:
+    """True when path resolves inside root (rejects symlink escapes)."""
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(root)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
     src_dir = src_dir.resolve()
     series: dict[str, dict] = {}
     skipped = 0
     for path in src_dir.rglob("*"):
         if not path.is_file():
+            continue
+        if not _path_under_root(path, src_dir):
+            skipped += 1
             continue
         try:
             ds = pydicom.dcmread(path, stop_before_pixels=True, force=False)
@@ -155,12 +172,66 @@ def selection_reason(row: dict, chosen: dict) -> str:
 
 
 def next_case_id(root: Path) -> str:
-    used = {int(m.group(1)) for p in root.glob("local-*")
-            if (m := re.fullmatch(r"local-(\d{3})", p.name))}
-    number = 1
-    while number in used:
-        number += 1
-    return f"local-{number:03d}"
+    """Allocate local-NNN under an exclusive lock (next_case_id.lock)."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / "next_case_id.lock"
+    with json_file_lock(lock_path):
+        used = {int(m.group(1)) for p in root.glob("local-*")
+                if (m := re.fullmatch(r"local-(\d{3})", p.name))}
+        number = 1
+        while number in used:
+            number += 1
+        case_id = f"local-{number:03d}"
+        # Reserve the directory so concurrent allocators skip it.
+        (root / case_id).mkdir(parents=True, exist_ok=False)
+        return case_id
+
+
+def duplicate_message(existing_id: str, chosen: dict) -> str:
+    return (
+        f"already imported as {existing_id} "
+        f"(folder {chosen['folder']} / SeriesNumber {chosen['number']})"
+    )
+
+
+def build_case_document(
+    case_id: str,
+    chosen: dict,
+    series_map: dict[str, dict],
+    reasons: dict[str, str],
+    *,
+    spacing_mm: list[float],
+    size: list[int],
+) -> dict:
+    """Shared case.json body for CLI and app import paths."""
+    return {
+        "id": case_id,
+        "source": {
+            "series_uid_sha256": chosen["series_uid_sha256"],
+            "folder": chosen["folder"],
+            "series_number": chosen["number"],
+            "series_description": chosen["description"],
+            "convolution_kernel": chosen["kernel"],
+            "spacing_mm": spacing_mm,
+            "size": list(size),
+        },
+        "skipped_series": [
+            {
+                "folder": series_map[uid]["folder"],
+                "series_number": series_map[uid]["number"],
+                "reason": reason,
+            }
+            for uid, reason in sorted(
+                reasons.items(), key=lambda item: series_map[item[0]]["number"]
+            )
+        ],
+        "import_tool_version": VERSION,
+        "import_date": date.today().isoformat(),
+        "records": [],
+        "versions": [],
+        "review_signoff": [],
+    }
 
 
 def series_uid_hash(uid: str) -> str:
@@ -311,9 +382,9 @@ def main() -> None:
             except (OSError, json.JSONDecodeError):
                 continue
             if existing_hash == chosen["series_uid_sha256"]:
-                message = (f"already imported as {existing.get('id', case_path.parent.name)} "
-                           f"(folder {chosen['folder']} / SeriesNumber {chosen['number']})")
-                print(message)
+                print(duplicate_message(
+                    existing.get("id", case_path.parent.name), chosen
+                ))
                 return
 
     for uid, row in sorted(series.items(), key=lambda item: item[1]["number"]):
@@ -327,40 +398,37 @@ def main() -> None:
     for uid, reason in sorted(reasons.items(), key=lambda item: series[item[0]]["number"]):
         print(f"Skipped {series[uid]['folder']} / SeriesNumber "
               f"{series[uid]['number']}: {reason}")
-    case_id = args.id or next_case_id(LOCAL_CASES)
-    print(f"Pick: folder {chosen['folder']} / SeriesNumber {chosen['number']} "
-          f"({chosen['description']}) -> {case_id}")
     if args.dry_run:
+        case_id = args.id or "(next)"
+        print(f"Pick: folder {chosen['folder']} / SeriesNumber {chosen['number']} "
+              f"({chosen['description']}) -> {case_id}")
         return
 
-    output_dir = LOCAL_CASES / case_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / f"{case_id}_CT.nii.gz"
-    volume, affine = write_ct_nifti(chosen["files"], target)
-    spacing = [float(np.linalg.norm(affine[:3, axis])) for axis in range(3)]
-    chosen["size"] = list(volume.shape)
-    document = {
-        "id": case_id,
-        "source": {
-            "series_uid_sha256": chosen["series_uid_sha256"],
-            "folder": chosen["folder"],
-            "series_number": chosen["number"],
-            "series_description": chosen["description"],
-            "convolution_kernel": chosen["kernel"],
-            "spacing_mm": spacing,
-            "size": chosen["size"],
-        },
-        "skipped_series": [
-            {"folder": series[uid]["folder"],
-             "series_number": series[uid]["number"], "reason": reason}
-            for uid, reason in sorted(reasons.items(),
-                                      key=lambda item: series[item[0]]["number"])
-        ],
-        "import_tool_version": VERSION,
-        "import_date": date.today().isoformat(),
-    }
-    atomic_write_json(output_dir / "case.json", document)
-    print(f"Wrote {target}")
+    case_id = args.id
+    output_dir = None
+    try:
+        if case_id is None:
+            case_id = next_case_id(LOCAL_CASES)
+            output_dir = LOCAL_CASES / case_id
+        else:
+            output_dir = LOCAL_CASES / case_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Pick: folder {chosen['folder']} / SeriesNumber {chosen['number']} "
+              f"({chosen['description']}) -> {case_id}")
+        target = output_dir / f"{case_id}_CT.nii.gz"
+        volume, affine = write_ct_nifti(chosen["files"], target)
+        spacing = [float(np.linalg.norm(affine[:3, axis])) for axis in range(3)]
+        document = build_case_document(
+            case_id, chosen, series, reasons,
+            spacing_mm=spacing, size=list(volume.shape),
+        )
+        atomic_write_json(output_dir / "case.json", document)
+        print(f"Wrote {target}")
+    except Exception:
+        if output_dir is not None and output_dir.is_dir() and args.id is None:
+            # next_case_id reserved the dir; roll back on failure.
+            shutil.rmtree(output_dir, ignore_errors=True)
+        raise
 
 
 if __name__ == "__main__":
