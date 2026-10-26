@@ -1,15 +1,16 @@
-# Changes: Phase 4c review — stale RouteTarget re-opens step 6 with reason.
+# Changes: Phase 4d review fixes — walk fail-closed (no route_hash fallbacks);
+# pending_return reopens step 4/6 without popping route_target; freeze N+1 reason.
 """Derived 8-step workflow state from case.json records and artifacts.
 
 Phase 4a: ordering-aware derivation, segment artifacts, completion kinds.
 Phase 4b: step 4 also requires no stale corrections; bridge ids via app.review.
 Phase 4c: RouteTarget edge_id → node for walk; stale target → step 6 available.
+Phase 4d: walk confirmations keyed by route_hash + fork node; pending_return.
 """
 
 from __future__ import annotations
 
 import json
-from collections import deque
 from datetime import datetime, timezone
 from enum import IntEnum
 from pathlib import Path
@@ -175,6 +176,11 @@ def _lesion_confirmed_raw(case: dict) -> bool:
 def _review_raw(case: dict, ref: CaseRef) -> bool:
     if not _segment_registered_for_ct(case, ref):
         return False
+    # Walk "No → return to review" keeps step 4 open until cleared.
+    from app.walkthrough import pending_return_step
+
+    if pending_return_step(case) == int(WorkflowStep.REVIEW):
+        return False
     # Lazy import: app.review imports workflow helpers.
     from app.review import bridges_complete, has_stale_correction, review_flags_approved
 
@@ -227,81 +233,33 @@ def _route_target_stale_reason(case: dict, ref: CaseRef) -> str | None:
 
 
 def _route_target_chosen_raw(case: dict, ref: CaseRef | None = None) -> bool:
+    from app.walkthrough import pending_return_step
+
+    # Walk "No → return to target" keeps route_target but reopens step 6.
+    if pending_return_step(case) == int(WorkflowStep.ROUTE_TARGET):
+        return False
     if _latest_kind(case.get("records") or [], "route_target_chosen") is None:
+        return False
+    rt = case.get("route_target")
+    if not isinstance(rt, dict) or rt.get("edge_id") is None:
         return False
     if ref is not None and _route_target_stale_reason(case, ref) is not None:
         return False
     return True
 
 
-def _bifurcation_nodes_on_route(ref: CaseRef, case: dict) -> set[int]:
-    """Nodes on the chosen route (from confirmed RouteStart → target) that bifurcate."""
-    target_rec = _latest_kind(case.get("records") or [], "route_target_chosen")
-    start_rec = _latest_kind(case.get("records") or [], "route_start_confirmed")
-    if target_rec is None or start_rec is None:
-        return set()
-    data = target_rec.get("data") or {}
-    target_node = data.get("node")
-    start_node = start_rec.get("data", {}).get("node")
-    if start_node is None:
-        return set()
-    try:
-        graph = load_graph(case, ref=ref)
-    except ValueError:
-        return set()
-    edges = graph.get("edges") or []
-    # edge_id is the original (raw) edge index; resolve to its `to` node when needed.
-    if target_node is None and data.get("edge_id") is not None:
-        edge_id = int(data["edge_id"])
-        if 0 <= edge_id < len(edges):
-            target_node = edges[edge_id]["to"]
-        else:
-            rt = case.get("route_target") or {}
-            if isinstance(rt, dict) and rt.get("node") is not None:
-                target_node = rt["node"]
-    if target_node is None:
-        return set()
-    children: dict[int, list[int]] = {}
-    for i, e in enumerate(edges):
-        children.setdefault(int(e["from"]), []).append(i)
-    parent_edge: dict[int, int] = {}
-    root = int(start_node)
-    seen = {root}
-    q = deque([root])
-    while q:
-        n = q.popleft()
-        for ei in children.get(n, []):
-            nxt = int(edges[ei]["to"])
-            if nxt not in seen:
-                seen.add(nxt)
-                parent_edge[nxt] = ei
-                q.append(nxt)
-    route_nodes = [int(target_node)]
-    cur = int(target_node)
-    if cur not in seen and cur != root:
-        return set()
-    while cur in parent_edge:
-        ei = parent_edge[cur]
-        cur = int(edges[ei]["from"])
-        route_nodes.append(cur)
-    route_nodes.reverse()
-    return {n for n in route_nodes if len(children.get(n, [])) > 1}
-
-
 def _walk_raw(case: dict, ref: CaseRef) -> bool:
     if not _route_target_chosen_raw(case, ref):
         return False
-    needed = _bifurcation_nodes_on_route(ref, case)
-    if not needed:
-        return True
-    confirmed: set[int] = set()
-    for entry in case.get("records") or []:
-        if entry.get("kind") != "bifurcation_confirmed":
-            continue
-        node = entry.get("data", {}).get("node")
-        if node is not None:
-            confirmed.add(int(node))
-    return needed <= confirmed
+    from app.walkthrough import pending_return_step, walk_complete
+
+    if pending_return_step(case) is not None:
+        return False
+    # Fail closed: missing payload/forks → step 7 not done (no legacy fallback).
+    try:
+        return walk_complete(ref.case_id, case)
+    except (ValueError, FileNotFoundError, KeyError):
+        return False
 
 
 def _signoff_raw(case: dict) -> bool:
@@ -370,19 +328,24 @@ def _completion_at(step: int, case: dict, ref: CaseRef) -> datetime | None:
     if step == int(WorkflowStep.WALK):
         if not _walk_raw(case, ref):
             return None
-        needed = _bifurcation_nodes_on_route(ref, case)
-        if not needed:
-            return _completion_at(int(WorkflowStep.ROUTE_TARGET), case, ref)
-        times = []
-        for entry in records:
-            if entry.get("kind") != "bifurcation_confirmed":
-                continue
-            node = entry.get("data", {}).get("node")
-            if node is not None and int(node) in needed:
-                t = _parse_at(entry.get("at"))
-                if t:
-                    times.append(t)
-        return max(times) if times else None
+        from app.walkthrough import active_route_context, walkthrough_entries_for_hash
+
+        try:
+            ctx = active_route_context(ref.case_id, case)
+            forks = ctx["forks"]
+            if not forks:
+                return _completion_at(int(WorkflowStep.ROUTE_TARGET), case, ref)
+            entries = walkthrough_entries_for_hash(case, ctx["route_hash"])
+            times = []
+            for fork in forks:
+                entry = entries.get(str(int(fork["node"])))
+                if entry and entry.get("confirmed") is True:
+                    t = _parse_at(entry.get("at"))
+                    if t:
+                        times.append(t)
+            return max(times) if times else None
+        except (ValueError, FileNotFoundError, KeyError):
+            return None
     if step == int(WorkflowStep.SIGNOFF):
         if not _signoff_raw(case):
             return None
@@ -466,11 +429,36 @@ def derive_workflow(case_id: str) -> dict[str, Any]:
             reason = None
             if step == int(WorkflowStep.REVIEW):
                 reason = _review_available_reason(case, ref)
+                from app.walkthrough import pending_return_step
+
+                if pending_return_step(case) == int(WorkflowStep.REVIEW):
+                    reason = "returned from walk-through (branch not confirmed on CT)"
             elif step == int(WorkflowStep.ROUTE_TARGET):
                 reason = _route_target_stale_reason(case, ref)
+                from app.walkthrough import pending_return_step
+
+                if pending_return_step(case) == int(WorkflowStep.ROUTE_TARGET):
+                    reason = "returned from walk-through (branch not confirmed on CT)"
         else:
             status = "blocked"
             reason = _block_reason(step, done)
+        # Whenever N is frozen and N+1 is open, surface that on step 8
+        # (even if walk/etc. still block sign-off).
+        if step == int(WorkflowStep.SIGNOFF):
+            versions = case.get("versions") or []
+            frozen = [
+                v for v in versions
+                if isinstance(v, dict) and v.get("frozen")
+            ]
+            if frozen and versions and not versions[-1].get("frozen"):
+                freeze_reason = (
+                    f"version {frozen[-1].get('n')} frozen; changes since → "
+                    f"version {versions[-1].get('n')} needs sign-off"
+                )
+                if status == "available" or reason is None:
+                    reason = freeze_reason
+                else:
+                    reason = f"{reason}; {freeze_reason}"
         steps.append({
             "step": step,
             "name": STEP_NAMES[step],

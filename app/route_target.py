@@ -1,4 +1,5 @@
-# Changes: Phase 4c review fixes — RouteStart-rooted route helper, reachability
+# Changes: Phase 4d review fixes — note_change on RouteTarget; clear pending_return.
+# Phase 4c review fixes — RouteStart-rooted route helper, reachability
 # 422, fly truncate+exact sample, stale target, lock-held PUT, stored gap.
 """Phase 4c — Choose RouteTarget (workflow step 6).
 
@@ -551,12 +552,17 @@ def set_route_target(
             "clinician": clinician,
             "at": at,
         }
+        from app.versions import note_change
+        from app.walkthrough import clear_pending_return
+
+        note_change(record, "route_target")
         record.setdefault("records", []).append(entry)
         record["route_target"] = {
             **data,
             "confirmed_by": clinician,
             "at": at,
         }
+        clear_pending_return(record)
         atomic_write_json(path, record)
         cprint(
             f"route-target set edge={metrics['edge_id']} "

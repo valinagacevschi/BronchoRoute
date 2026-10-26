@@ -1,9 +1,11 @@
-# Changes: Phase 4c review — RouteTargetBody XOR forms; NaN→422; PUT gate in lock.
+# Changes: Phase 4d review fixes — CSP on report; VersionAlreadyFrozen /
+# FreezeDirExists / SignoffArtifactError / ReportNotFrozen → 409; remove ack-return.
 """Local Lung Navigator app server (127.0.0.1 only).
 
 Phase 4a: series/confirm, register-existing, /records 403, jobs.
 Phase 4b: review/bridges/corrections/sign-off endpoints.
 Phase 4c: RouteTarget candidates and confirmation.
+Phase 4d: walk-through, tracing, sign-off freeze, printable report.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from termcolor import cprint
@@ -64,6 +66,18 @@ from app.review import (
     undo_correction,
 )
 from app.route_target import route_target_candidates, set_route_target
+from app.signoff import SignoffArtifactError, apply_signoff, version_report_html
+from app.versions import (
+    REPORT_CSP,
+    FreezeDirExists,
+    ReportNotFrozen,
+    VersionAlreadyFrozen,
+)
+from app.walkthrough import (
+    compute_uncertainty,
+    set_walkthrough_decision,
+    tracing_sequence,
+)
 from app.workflow import (
     WORKFLOW_COMPLETION_KINDS,
     WorkflowBlocked,
@@ -180,6 +194,27 @@ class ImportConfirmBody(BaseModel):
 
 class RouteStartBody(BaseModel):
     node: int
+
+
+class WalkthroughBody(BaseModel):
+    confirmed: bool
+    note: str | None = None
+    return_to: int | None = None
+
+    @model_validator(mode="after")
+    def _return_to_when_no(self) -> "WalkthroughBody":
+        if self.confirmed and self.return_to is not None:
+            raise ValueError("return_to only applies when confirmed is false")
+        if not self.confirmed and self.return_to not in {
+            int(WorkflowStep.REVIEW),
+            int(WorkflowStep.ROUTE_TARGET),
+        }:
+            raise ValueError("return_to must be 4 or 6 when confirmed is false")
+        return self
+
+
+class SignoffBody(BaseModel):
+    statement: str = Field(min_length=1, max_length=2000)
 
 
 class RouteTargetBody(BaseModel):
@@ -651,6 +686,70 @@ def api_post_record(case_id: str, body: RecordBody):
 def api_versions(case_id: str):
     try:
         return load_versions(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.put("/api/cases/{case_id}/walkthrough/{fork_index}")
+def api_walkthrough(case_id: str, fork_index: int, body: WalkthroughBody):
+    clinician = _require_clinician()
+    try:
+        return set_walkthrough_decision(
+            case_id,
+            fork_index,
+            clinician["clinician"],
+            confirmed=body.confirmed,
+            note=body.note,
+            return_to=body.return_to,
+        )
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.get("/api/cases/{case_id}/tracing")
+def api_tracing(case_id: str):
+    try:
+        return tracing_sequence(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.get("/api/cases/{case_id}/uncertainty")
+def api_uncertainty(case_id: str):
+    try:
+        require_prior_steps(case_id, int(WorkflowStep.SIGNOFF))
+        return {"uncertainty": compute_uncertainty(case_id)}
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/signoff")
+def api_signoff(case_id: str, body: SignoffBody):
+    clinician = _require_clinician()
+    try:
+        return apply_signoff(case_id, clinician["clinician"], body.statement)
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except (VersionAlreadyFrozen, FreezeDirExists, SignoffArtifactError) as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.get("/api/cases/{case_id}/versions/{version_n}/report")
+def api_version_report(case_id: str, version_n: int):
+    try:
+        html_body = version_report_html(case_id, version_n)
+        return HTMLResponse(
+            html_body,
+            headers={"Content-Security-Policy": REPORT_CSP},
+        )
+    except ReportNotFrozen as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
 

@@ -1,4 +1,6 @@
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
+     Phase 4d review: start-walkthrough message plays fly with fork pauses;
+     Walk-through layout (endoluminal left + CT panes right, shared pos).
      Phase 4c review: highlight-route also paints CT panes; raw pick ras_mm. -->
 <title>Bronchial Tree Renderer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -217,6 +219,25 @@ body.ct-panes-active .limitations-panel.collapsed h2::after { content: " ▸"; }
   background: var(--ground); flex-direction: column; min-height: 0;
 }
 #ct-stage.active { display: flex; }
+/* Walk-through: endoluminal left, CT panes right, shared SharedPos. */
+body.walkthrough-active .stage {
+  inset: 0 50% 0 236px; z-index: 2;
+}
+body.walkthrough-active #ct-stage {
+  display: flex; inset: 0 0 0 50%; z-index: 2;
+}
+body.walkthrough-active .proto {
+  top: auto; bottom: 16px; left: 252px; right: auto;
+}
+.walk-sim-label {
+  position: fixed; top: 14px; left: calc(50% + 8px); z-index: 7;
+  font: 600 11px/1 "IBM Plex Sans Condensed", sans-serif; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--mucosa);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid var(--edge); border-radius: 4px; padding: 6px 10px;
+  display: none;
+}
+body.walkthrough-active .walk-sim-label { display: block; }
 .ct-offline {
   margin: auto; padding: 24px; color: var(--muted); max-width: 28rem;
   font-size: 15px; line-height: 1.5;
@@ -276,6 +297,7 @@ body.ct-panes-active .limitations-panel.collapsed h2::after { content: " ▸"; }
 
 <div class="stage"><canvas id="c"></canvas><div class="shared-marker-3d" id="shared-marker-3d"></div></div>
 <div id="ct-stage" aria-label="CT panes"></div>
+<div class="walk-sim-label" id="walk-sim-label">Simulated steering — not measured scope orientation</div>
 
 <aside class="rail">
   <div class="brand"><span>Lung Navigator</span>Bronchial tree renderer</div>
@@ -447,6 +469,8 @@ const VARIANTS = [
     hint: "<kbd>drag</kbd> pan · <kbd>scroll</kbd> zoom · flat map: A/P depth not shown" },
   { key: "ct-panes", name: "CT panes",
     hint: "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L · Mark Lesion in axial" },
+  { key: "walkthrough", name: "Walk-through",
+    hint: "Endoluminal + CT panes linked · <kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · pauses at forks · simulated roll" },
 ];
 
 const params = new URLSearchParams(location.search);
@@ -1228,7 +1252,7 @@ function frame() {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = tok("--ground"); ctx.fillRect(0, 0, W, H);
   if (variant === 0) drawAnatomical();
-  else if (variant === 1) drawEndoluminal();
+  else if (variant === 1 || variant === 4) drawEndoluminal();
   else drawTopology();
   requestAnimationFrame(frame);
 }
@@ -1483,6 +1507,21 @@ window.addEventListener("message", (ev) => {
     }
     return;
   }
+  if (data.type === "set-variant" && data.variant) {
+    const idx = VARIANTS.findIndex(v => v.key === data.variant);
+    if (idx >= 0) setVariant(idx);
+    return;
+  }
+  if (data.type === "start-walkthrough") {
+    const idx = VARIANTS.findIndex(v => v.key === "walkthrough");
+    if (idx >= 0) setVariant(idx);
+    fly.s = 0;
+    fly.pausedFork = null;
+    fly.armed = new Set(A.forks.map(f => f.fork));
+    fly.playing = true;
+    draw();
+    return;
+  }
   if (data.type !== "goto-ras" || !Array.isArray(data.ras_mm)) return;
   SharedPos.set(data.ras_mm, data.source || "bridge");
   if (variant !== 3) setVariant(3);
@@ -1529,19 +1568,20 @@ const held = new Set();
 addEventListener("keydown", e => {
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
-  if (e.key >= "1" && e.key <= "4") {
+  if (e.key >= "1" && e.key <= "5") {
     setVariant(+e.key - 1);
     return;
   }
+  const endoKeys = variant === 1 || variant === 4;
   if (variant === 0) {
     if (e.key === "h" || e.key === "H") applyPreset("head45");
     if (e.key === "o" || e.key === "O") applyPreset("operator0");
     if (e.key === "t" || e.key === "T") applyPreset("topdown90");
     if (e.key === "r" || e.key === "R") applyPreset("head45");
-  } else if (variant === 1 && (e.key === "t" || e.key === "T")) {
+  } else if (endoKeys && (e.key === "t" || e.key === "T")) {
     fly.s = 0; fly.pausedFork = null; fly.armed = new Set(A.forks.map(f => f.fork));
   }
-  if (e.key === " " && variant === 1) { fly.playing = !fly.playing; fly.pausedFork = null; e.preventDefault(); }
+  if (e.key === " " && endoKeys) { fly.playing = !fly.playing; fly.pausedFork = null; e.preventDefault(); }
   if (variant === 3) return;
   if (["ArrowUp", "ArrowDown"].includes(e.key)) {
     if (fly.pausedFork && e.key === "ArrowUp" && !e.repeat) {
@@ -1554,7 +1594,7 @@ addEventListener("keydown", e => {
 addEventListener("keyup", e => held.delete(e.key));
 
 setInterval(() => {
-  if (variant !== 1) return;
+  if (variant !== 1 && variant !== 4) return;
   const delta = fly.playing || held.has("ArrowUp")
     ? 0.6
     : held.has("ArrowDown") ? -0.6 : 0;
@@ -1687,19 +1727,24 @@ function render() {
     sw.appendChild(b);
   });
   document.getElementById("hint").innerHTML = VARIANTS[variant].hint +
-    "<br><br>Switch renderer with <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd>.";
-  document.getElementById("g-nav").style.opacity = variant === 1 ? "1" : ".45";
+    "<br><br>Switch renderer with <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd><kbd>5</kbd>.";
+  const walkActive = variant === 4;
+  const endoActive = variant === 1 || walkActive;
+  document.getElementById("g-nav").style.opacity = endoActive ? "1" : ".45";
   document.getElementById("g-cam").hidden = variant !== 0;
   syncPresetButtons();
-  const ctActive = variant === 3;
-  ctStage.classList.toggle("active", ctActive);
-  document.body.classList.toggle("ct-panes-active", ctActive);
-  mainStage.style.visibility = ctActive ? "hidden" : "visible";
+  const ctOnly = variant === 3;
+  const ctActive = ctOnly || walkActive;
+  ctStage.classList.toggle("active", ctOnly);
+  document.body.classList.toggle("ct-panes-active", ctOnly);
+  document.body.classList.toggle("walkthrough-active", walkActive);
+  mainStage.style.visibility = ctOnly ? "hidden" : "visible";
   if (limitationsPanel) {
-    if (ctActive) limitationsPanel.classList.add("collapsed");
+    if (ctOnly) limitationsPanel.classList.add("collapsed");
     else limitationsPanel.classList.remove("collapsed");
   }
   if (ctActive) ensureCtPanes();
+  resize();
 }
 
 if (DEBUG) {

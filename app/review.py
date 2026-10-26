@@ -1,4 +1,6 @@
-# Changes: Phase 4b review fixes — provenance bridge mapping, arc-length
+# Changes: Phase 4d review fixes — note_change on review mutate/signoff;
+# clear pending_return on re-completion; remove ack_walk_return.
+# Phase 4b review fixes — provenance bridge mapping, arc-length
 # selectability, nearest-sample manual layer, root-only rematch, app sign-off
 # with server `at` only, shared mutator helper.
 """Phase 4b — review & correct: bridges, removal corrections, effective graph.
@@ -38,7 +40,7 @@ from termcolor import cprint
 from app.caseref import CaseRef
 from app.cases import _load_or_init_record, load_case_record
 from app.ct_crop import _load_canonical, assert_affine_match
-from app.versions import register_artifact
+from app.versions import note_change, register_artifact
 from app.workflow import WorkflowStep, load_graph, require_prior_steps
 
 NOTE_MAX_CHARS = 300
@@ -758,6 +760,11 @@ def apply_review_mutation(
 
     with json_file_lock(path):
         record = _load_or_init_record(ref, path)
+        from app.walkthrough import clear_pending_return, pending_return_step
+
+        note_change(record, "review")
+        if pending_return_step(record) == int(WorkflowStep.REVIEW):
+            clear_pending_return(record)
         ctx = {
             "at": _utc_now(),
             "bridge_map": bridge_map,
@@ -967,6 +974,11 @@ def apply_review_signoff(
     at = _utc_now()
     with json_file_lock(path):
         record = _load_or_init_record(ref, path)
+        from app.walkthrough import clear_pending_return, pending_return_step
+
+        note_change(record, "review_signoff")
+        if pending_return_step(record) == int(WorkflowStep.REVIEW):
+            clear_pending_return(record)
         entries = record.setdefault("review_signoff", [])
         entry = {
             "kind": kind,

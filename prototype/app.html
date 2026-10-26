@@ -1,5 +1,6 @@
 <!DOCTYPE html>
-<!-- Phase 4c review: lobe/airway fields, 422 detail join, CT+3D hover highlight. -->
+<!-- Phase 4d review fixes: Start walk-through fly+pauses; No derived (no ack-return);
+     sign-off + freeze + report from snapshot. -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -131,6 +132,8 @@
     <button type="button" class="secondary" id="move-route-start-btn" disabled hidden>Move RouteStart</button>
     <button type="button" class="secondary" id="toggle-review">Review</button>
     <button type="button" class="secondary" id="toggle-route-target" disabled>RouteTarget</button>
+    <button type="button" class="secondary" id="toggle-walk" disabled>Walk-through</button>
+    <button type="button" class="secondary" id="toggle-signoff" disabled>Sign-off</button>
     <span id="job-status" class="msg"></span>
   </div>
   <div class="workflow" id="workflow" aria-label="Workflow steps"></div>
@@ -151,6 +154,27 @@
     <div class="row" style="margin-top:10px">
       <button type="button" class="secondary" id="pick-route-target-btn" disabled>Pick another point</button>
       <span class="msg" id="route-target-pick-status"></span>
+    </div>
+  </div>
+  <div class="panel" id="walk-panel">
+    <h2>Walk the route</h2>
+    <div class="msg" id="walk-msg">Confirm each bifurcation on CT while the fly-through pauses.</div>
+    <div class="row">
+      <button type="button" id="start-walk-btn">Start walk-through</button>
+      <button type="button" class="secondary" id="walk-layout-btn">Open Walk-through layout</button>
+    </div>
+    <div id="walk-forks"></div>
+    <pre id="walk-tracing" class="job-log" style="max-height:8rem;margin-top:10px" hidden></pre>
+  </div>
+  <div class="panel" id="signoff-panel">
+    <h2>Sign off and freeze</h2>
+    <div class="msg" id="signoff-msg"></div>
+    <div class="row"><strong>Remaining uncertainty</strong></div>
+    <ul id="signoff-uncertainty" style="margin:0 0 10px;padding-left:1.2rem"></ul>
+    <div class="row">
+      <input type="text" id="signoff-statement" placeholder="Sign-off statement" value="I have reviewed the route and tracing.">
+      <button type="button" id="signoff-btn">Sign &amp; freeze</button>
+      <a id="signoff-report-link" class="msg" href="#" hidden target="_blank" rel="noopener">Open report</a>
     </div>
   </div>
   <div class="panel" id="import-panel">
@@ -197,6 +221,10 @@
   const routeStartBtn = document.getElementById("confirm-route-start-btn");
   const routeTargetPanel = document.getElementById("route-target-panel");
   const routeTargetBtn = document.getElementById("toggle-route-target");
+  const walkPanel = document.getElementById("walk-panel");
+  const walkBtn = document.getElementById("toggle-walk");
+  const signoffPanel = document.getElementById("signoff-panel");
+  const signoffBtnToggle = document.getElementById("toggle-signoff");
   let cases = [];
   let currentCase = null;
   let scanResult = null;
@@ -210,6 +238,8 @@
   let routeTargetCandidates = [];
   let routeTargetPicking = false;
   let chosenRouteTargetKey = null;
+  let walkForks = [];
+  let frozenVersionN = null;
 
   function clearEl(el) {
     while (el.firstChild) el.removeChild(el.firstChild);
@@ -338,8 +368,11 @@
     }
     const s1 = body.steps.find(s => s.step === 1);
     const s3 = body.steps.find(s => s.step === 3);
+    const s4 = body.steps.find(s => s.step === 4);
     const s5 = body.steps.find(s => s.step === 5);
     const s6 = body.steps.find(s => s.step === 6);
+    const s7 = body.steps.find(s => s.step === 7);
+    const s8 = body.steps.find(s => s.step === 8);
     const canSegment = s3 && (s3.status === "available" || s3.status === "done");
     segmentBtn.disabled = !canSegment;
     segmentBtn.textContent = (s3 && s3.status === "done") ? "Re-run segmentation" : "Segment";
@@ -355,6 +388,16 @@
     routeTargetBtn.disabled = !canRt;
     if (canRt && routeTargetPanel.classList.contains("visible")) {
       loadRouteTargetCandidates(currentCase);
+    }
+    const canWalk = !!(s7 && (s7.status === "available" || s7.status === "done"));
+    walkBtn.disabled = !canWalk;
+    if (canWalk && walkPanel.classList.contains("visible")) {
+      loadWalkPanel(currentCase);
+    }
+    const canSign = !!(s8 && (s8.status === "available" || s8.status === "done"));
+    signoffBtnToggle.disabled = !canSign;
+    if (canSign && signoffPanel.classList.contains("visible")) {
+      loadSignoffPanel(currentCase, s8);
     }
   }
 
@@ -969,6 +1012,190 @@
     document.getElementById("route-target-pick-status").textContent =
       "Click a CT-seen centreline in CT panes or 3D.";
     postToRenderer({ type: "arm-route-target-pick", armed: true });
+  };
+
+  async function loadWalkPanel(caseId) {
+    if (!caseId) return;
+    const msg = document.getElementById("walk-msg");
+    const wrap = document.getElementById("walk-forks");
+    const tracingEl = document.getElementById("walk-tracing");
+    clearEl(wrap);
+    msg.textContent = "Loading forks…";
+    const payloadRes = await fetch(
+      `/api/cases/${encodeURIComponent(caseId)}/payload?allow_review=1`
+    );
+    const payload = await payloadRes.json().catch(() => ({}));
+    if (!payloadRes.ok) {
+      msg.textContent = formatDetail(payload.detail, `Payload failed (${payloadRes.status})`);
+      return;
+    }
+    walkForks = payload.forks || [];
+    if (!walkForks.length) {
+      msg.textContent = "No bifurcations on this route — walk is complete.";
+    } else {
+      msg.textContent = "Branch confirmed on CT? Yes / No (+ note). No returns to review or RouteTarget.";
+    }
+    walkForks.forEach((fork, i) => {
+      const row = el("div", { className: "row", style: "align-items:flex-start;margin-bottom:10px" });
+      const clock = fork.clock != null ? `${fork.clock} o'clock` : "straight ahead";
+      const label = el("div", null,
+        `Fork ${fork.fork || (i + 1)} @ ${fork.s} mm — ${fork.name || "unnamed"}, ${clock}`);
+      row.appendChild(label);
+      const note = el("input", {
+        type: "text", placeholder: "Optional note", id: `walk-note-${i}`,
+      });
+      row.appendChild(note);
+      const yes = el("button", { type: "button" }, "Yes");
+      yes.onclick = () => submitWalk(i, true, note.value, null);
+      row.appendChild(yes);
+      const noReview = el("button", { type: "button", className: "secondary" }, "No → review");
+      noReview.onclick = () => submitWalk(i, false, note.value, 4);
+      row.appendChild(noReview);
+      const noTarget = el("button", { type: "button", className: "secondary" }, "No → target");
+      noTarget.onclick = () => submitWalk(i, false, note.value, 6);
+      row.appendChild(noTarget);
+      wrap.appendChild(row);
+    });
+    const tr = await fetch(`/api/cases/${encodeURIComponent(caseId)}/tracing`);
+    const tracing = await tr.json().catch(() => ({}));
+    if (tr.ok && tracing.text) {
+      tracingEl.hidden = false;
+      tracingEl.textContent = tracing.text;
+    } else {
+      tracingEl.hidden = true;
+      tracingEl.textContent = "";
+    }
+  }
+
+  async function submitWalk(forkIndex, confirmed, note, returnTo) {
+    if (!currentCase) return;
+    const body = { confirmed, note: note || null };
+    if (!confirmed) body.return_to = returnTo;
+    const res = await fetch(
+      `/api/cases/${encodeURIComponent(currentCase)}/walkthrough/${forkIndex}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      document.getElementById("walk-msg").textContent =
+        formatDetail(data.detail, `Walk failed (${res.status})`);
+      return;
+    }
+    await loadWorkflow(currentCase);
+    if (confirmed) {
+      await loadWalkPanel(currentCase);
+    } else {
+      walkPanel.classList.remove("visible");
+      if (returnTo === 4) {
+        reviewPanel.classList.add("visible");
+        loadReview(currentCase);
+      } else if (returnTo === 6) {
+        routeTargetPanel.classList.add("visible");
+        loadRouteTargetCandidates(currentCase);
+      }
+    }
+  }
+
+  async function loadSignoffPanel(caseId, s8) {
+    if (!caseId) return;
+    const msg = document.getElementById("signoff-msg");
+    const list = document.getElementById("signoff-uncertainty");
+    const report = document.getElementById("signoff-report-link");
+    const freezeBtn = document.getElementById("signoff-btn");
+    clearEl(list);
+    msg.textContent = (s8 && s8.reason) || "Review uncertainty, then sign & freeze.";
+    freezeBtn.disabled = !(s8 && s8.status === "available");
+    if (s8 && s8.status === "done" && frozenVersionN != null) {
+      report.hidden = false;
+      report.href = `/api/cases/${encodeURIComponent(caseId)}/versions/${frozenVersionN}/report`;
+      report.textContent = `Open report (v${frozenVersionN})`;
+    } else {
+      report.hidden = true;
+    }
+    if (!(s8 && (s8.status === "available" || s8.status === "done"))) return;
+    const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/uncertainty`);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      msg.textContent = formatDetail(body.detail, `Uncertainty failed (${res.status})`);
+      return;
+    }
+    const items = body.uncertainty || [];
+    if (!items.length) {
+      list.appendChild(el("li", null, "None listed"));
+    } else {
+      for (const item of items) {
+        list.appendChild(el("li", null, item.text || JSON.stringify(item)));
+      }
+    }
+  }
+
+  function openWalkthroughLayout() {
+    if (!currentCase) return;
+    const allow = new URLSearchParams(location.search).get("allow_review") === "1";
+    const url = `/renderer.template.html?case=${encodeURIComponent(currentCase)}`
+      + `&variant=walkthrough${allow ? "&allow_review=1" : ""}`;
+    const iframe = stageEl.querySelector("iframe");
+    if (iframe) iframe.src = url;
+    else openCase(currentCase, allow);
+    postToRenderer({ type: "set-variant", variant: "walkthrough" });
+  }
+
+  walkBtn.onclick = () => {
+    walkPanel.classList.toggle("visible");
+    if (walkPanel.classList.contains("visible") && currentCase) {
+      loadWalkPanel(currentCase);
+    }
+  };
+
+  document.getElementById("walk-layout-btn").onclick = () => openWalkthroughLayout();
+
+  document.getElementById("start-walk-btn").onclick = () => {
+    openWalkthroughLayout();
+    // After layout loads, start endoluminal fly (pauses at each fork).
+    setTimeout(() => {
+      postToRenderer({ type: "start-walkthrough" });
+    }, 600);
+    document.getElementById("walk-msg").textContent =
+      "Fly-through running — answer Yes/No at each pause (CT panes show the fork).";
+  };
+
+  signoffBtnToggle.onclick = () => {
+    signoffPanel.classList.toggle("visible");
+    if (signoffPanel.classList.contains("visible") && currentCase && workflowBody) {
+      const s8 = workflowBody.steps.find(s => s.step === 8);
+      loadSignoffPanel(currentCase, s8);
+    }
+  };
+
+  document.getElementById("signoff-btn").onclick = async () => {
+    if (!currentCase) return;
+    const statement = document.getElementById("signoff-statement").value;
+    const res = await fetch(`/api/cases/${encodeURIComponent(currentCase)}/signoff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ statement }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      document.getElementById("signoff-msg").textContent =
+        formatDetail(body.detail, `Sign-off failed (${res.status})`);
+      return;
+    }
+    frozenVersionN = body.version && body.version.n;
+    await loadWorkflow(currentCase);
+    const s8 = workflowBody && workflowBody.steps.find(s => s.step === 8);
+    await loadSignoffPanel(currentCase, s8);
+    const report = document.getElementById("signoff-report-link");
+    if (frozenVersionN != null) {
+      report.hidden = false;
+      report.href = `/api/cases/${encodeURIComponent(currentCase)}/versions/${frozenVersionN}/report`;
+      report.textContent = `Open report (v${frozenVersionN})`;
+      window.open(report.href, "_blank", "noopener");
+    }
   };
 
   window.addEventListener("message", (ev) => {

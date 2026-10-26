@@ -1,10 +1,11 @@
-# Changes: Phase 4c review — case_payload uses RouteStart-rooted plan, stored
-# gap, exact sample fly end; stale route_target explicit (no marker drawn).
+# Changes: Phase 4d review fixes — note_change on lesion/route_start/records;
+# clinician-text checks on note records.
 """Case inventory and locked record writes for the local app server.
 
 Phase 4a: WorkflowStep, guarded load_graph, series/confirm.
 Phase 4b: case_payload uses effective graph + removed + selectable.
 Phase 4c: RouteTarget truncation, stored gap, stale marker.
+Phase 4d: note_change opens N+1 after freeze.
 """
 
 from __future__ import annotations
@@ -310,6 +311,9 @@ def set_route_start(case_id: str, node: int, clinician: str) -> dict:
     at = _utc_now()
     with json_file_lock(path):
         record = _load_or_init_record(ref, path)
+        from app.versions import note_change
+
+        note_change(record, "route_start")
         data = {
             "node": int(node),
             "ras_mm": chosen["ras_mm"],
@@ -426,6 +430,9 @@ def set_lesion(case_id: str, ras_mm: list[float], clinician: str) -> dict:
     at = _utc_now()
     with json_file_lock(path):
         record = _load_or_init_record(ref, path)
+        from app.versions import note_change
+
+        note_change(record, "lesion")
         lesion = {
             "ras_mm": coords,
             "confirmed_by": clinician,
@@ -453,6 +460,9 @@ def clear_lesion(case_id: str, clinician: str) -> dict:
     at = _utc_now()
     with json_file_lock(path):
         record = _load_or_init_record(ref, path)
+        from app.versions import note_change
+
+        note_change(record, "lesion_cleared")
         record.pop("lesion", None)
         entry = {
             "step": int(WorkflowStep.LESION),
@@ -516,6 +526,13 @@ def append_record(
     path = ref.case_json
     with json_file_lock(path):
         record = _load_or_init_record(ref, path)
+        from app.versions import note_change, validate_clinician_text
+
+        note_change(record, f"record:{kind}")
+        if kind == "note":
+            text = (data or {}).get("text") or (data or {}).get("note")
+            if isinstance(text, str) and text.strip():
+                validate_clinician_text(text, field="note")
         entries = record.setdefault("records", [])
         entry = {
             "step": step,

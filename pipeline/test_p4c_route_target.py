@@ -1,4 +1,5 @@
-# Changes: Phase 4c review fixes — RouteStart route length sync, reachability,
+# Changes: Phase 4d review — assert retarget yields a new route_hash (not just truthy).
+# Phase 4c review fixes — RouteStart route length sync, reachability,
 # fly exact sample, stale target, tie-breaks, 409 before step 5, NaN 422.
 from __future__ import annotations
 
@@ -280,7 +281,6 @@ def test_api_gating_and_put(client, harness, fake_home):
 def test_downstream_invalidation_on_retarget(client, harness, fake_home):
     """Changing RouteTarget to a forked path requires a fresh walk confirmation."""
     import time
-    from datetime import datetime, timedelta, timezone
 
     _set_clinician(client)
     _seed_through_step(client, harness, 6)
@@ -293,30 +293,37 @@ def test_downstream_invalidation_on_retarget(client, harness, fake_home):
         "edge_id": top["edge_id"], "sample_index": top["sample_index"],
     })
     assert res.status_code == 200, res.text
-    target_at = res.json()["record"]["at"]
-    t0 = datetime.strptime(target_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    confirm_at = (t0 + timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    case = json.loads(harness["case"].read_text())
-    case["records"].append({
-        "step": 7, "kind": "bifurcation_confirmed",
-        "data": {"node": 1},
-        "clinician": "Radiologist, A.B.",
-        "at": confirm_at,
-    })
-    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+    payload = client.get("/api/cases/local-001/payload?allow_review=1").json()
+    forks = payload.get("forks") or []
+    assert forks, "expected at least one fork on side-branch route"
+    for i in range(len(forks)):
+        res = client.put(f"/api/cases/local-001/walkthrough/{i}", json={
+            "confirmed": True, "note": "ok",
+        })
+        assert res.status_code == 200, res.text
     wf = client.get("/api/cases/local-001/workflow").json()
     assert wf["steps"][5]["status"] == "done"
     assert wf["steps"][6]["status"] == "done", wf["steps"][6]
+    first_hash = res.json()["route_hash"]
+    assert isinstance(first_hash, str) and len(first_hash) == 64
 
-    # Wait so the re-target `at` is strictly after the bifurcation confirm.
-    time.sleep(3.1)
+    # Wait so the re-target `at` is strictly after the walk confirms.
+    time.sleep(1.1)
+    # Same forked edge, earlier sample → new route_hash; forks remain.
+    new_sample = max(0, int(top["sample_index"]) - 5)
+    assert new_sample != int(top["sample_index"])
     res = client.put("/api/cases/local-001/route-target", json={
-        "edge_id": top["edge_id"], "sample_index": top["sample_index"],
+        "edge_id": top["edge_id"], "sample_index": new_sample,
     })
     assert res.status_code == 200, res.text
     wf = client.get("/api/cases/local-001/workflow").json()
     assert wf["steps"][5]["status"] == "done"
+    # New target → walk incomplete (old confirmations keyed by previous route_hash).
     assert wf["steps"][6]["status"] == "available", wf["steps"][6]
+    # Confirm a fork on the new route yields a different route_hash.
+    res2 = client.put("/api/cases/local-001/walkthrough/0", json={"confirmed": True})
+    assert res2.status_code == 200, res2.text
+    assert res2.json()["route_hash"] != first_hash
 
 
 def test_selectable_until_respected(client, harness, fake_home):
