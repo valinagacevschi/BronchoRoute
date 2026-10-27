@@ -71,17 +71,26 @@ spec:
             httpGet:
               path: /healthz
               port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
             periodSeconds: 5
             failureThreshold: 60
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
             periodSeconds: 30
       volumes:
         - name: case-data
