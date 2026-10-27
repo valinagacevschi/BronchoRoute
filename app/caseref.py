@@ -1,4 +1,5 @@
-# Changes: Phase 4b — CaseRef.manual for airway_manual.nii.gz.
+# Changes: crop_cache_dir / bridge_labels honour LUNGNAV_CACHE_DIR; CaseRef.parse
+# respects LUNGNAV_CASES allowlist (unknown → 404).
 """Typed case id reference: local-NNN or AeroPath n, with resolved artifact paths.
 
 Phase 3: bridges path for airway_bridges.nii.gz. Phase 4b: airway_manual.nii.gz.
@@ -31,6 +32,9 @@ class CaseRef:
     def parse(cls, case_id: str) -> CaseRef:
         if not isinstance(case_id, str) or not CASE_ID_RE.fullmatch(case_id):
             raise UnknownCase(f"invalid case id: {case_id!r}")
+        allowed = paths.allowed_case_ids()
+        if allowed is not None and case_id not in allowed:
+            raise UnknownCase(f"unknown case: {case_id}")
         kind: CaseKind = "local" if case_id.startswith("local-") else "aeropath"
         ref = cls(case_id=case_id, kind=kind)
         if not ref.exists():
@@ -88,7 +92,11 @@ class CaseRef:
 
     @property
     def crop_cache_dir(self) -> Path:
-        return paths.TS_OUT / self.case_id
+        return paths.cache_case_dir(self.case_id)
+
+    @property
+    def bridge_labels(self) -> Path:
+        return self.crop_cache_dir / "airway_bridges_labels.nii.gz"
 
     def graph_path(self) -> Path | None:
         if self.kind == "local":

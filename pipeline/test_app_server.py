@@ -1,3 +1,4 @@
+# Changes: mark as server for CI selection (no TS / Playwright / real data).
 """Synthetic tiny volumes only — no patient data, no TotalSegmentator.
 
 Phase 3 review: NaN lesion→422, empty role/initials→422, per-clinician ct_view map.
@@ -19,6 +20,8 @@ from fastapi.testclient import TestClient
 import repo_root
 
 repo_root.ensure()
+
+pytestmark = pytest.mark.server
 
 from app.ct_crop import (  # noqa: E402
     MEMORY_ORDER,

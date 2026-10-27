@@ -1,3 +1,4 @@
+# Changes: app_state under LUNGNAV_CACHE_DIR when set (RO data root).
 """Local clinician identity (role + initials) and per-clinician CT view prefs.
 
 Phase 3 review: clinician_prefs map keyed by "role, initials"; ClinicianNotSet.
@@ -22,6 +23,8 @@ class ClinicianNotSet(ValueError):
 
 
 def app_state_dir() -> Path:
+    if paths.CACHE_DIR is not None:
+        return paths.CACHE_DIR / "app_state"
     return paths.PIPELINE / "app_state"
 
 

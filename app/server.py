@@ -1,6 +1,8 @@
-# Changes: Phase 4d review fixes — CSP on report; VersionAlreadyFrozen /
+# Changes: deploy env — LUNGNAV_VIEWER_ONLY / CASES / HOST / PORT / ALLOWED_HOSTS;
+# GET /healthz; TrustedHost from env; bind 0.0.0.0 when LUNGNAV_HOST set.
+# Phase 4d review fixes — CSP on report; VersionAlreadyFrozen /
 # FreezeDirExists / SignoffArtifactError / ReportNotFrozen → 409; remove ack-return.
-"""Local Lung Navigator app server (127.0.0.1 only).
+"""Local Lung Navigator app server (127.0.0.1 by default).
 
 Phase 4a: series/confirm, register-existing, /records 403, jobs.
 Phase 4b: review/bridges/corrections/sign-off endpoints.
@@ -13,15 +15,16 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from starlette.middleware.base import BaseHTTPMiddleware
 from termcolor import cprint
 
 from app.caseref import CaseRef
@@ -86,10 +89,42 @@ from app.workflow import (
     load_graph,
     require_prior_steps,
 )
-from run_totalsegmentator import ct_identity
+import paths
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROTOTYPE = REPO_ROOT / "prototype"
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_DEFAULT_ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+
+
+def _allowed_hosts() -> list[str]:
+    raw = os.environ.get("LUNGNAV_ALLOWED_HOSTS", "").strip()
+    if not raw:
+        return list(_DEFAULT_ALLOWED_HOSTS)
+    hosts = [part.strip() for part in raw.split(",") if part.strip()]
+    return hosts or list(_DEFAULT_ALLOWED_HOSTS)
+
+
+class _DeployGuards(BaseHTTPMiddleware):
+    """TrustedHost + viewer-only ( /workflow 404, non-GET /api/* 403 )."""
+
+    async def dispatch(self, request: Request, call_next):
+        host = (request.headers.get("host") or "").split(":", 1)[0]
+        allowed = _allowed_hosts()
+        if "*" not in allowed and host not in allowed:
+            return Response("Invalid host header", status_code=400)
+        if paths.viewer_only():
+            path = request.url.path
+            if path == "/workflow" or path.startswith("/workflow/"):
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
+            if path.startswith("/api/") and request.method not in {
+                "GET", "HEAD", "OPTIONS",
+            }:
+                return JSONResponse(
+                    {"detail": "viewer-only: writes disabled"},
+                    status_code=403,
+                )
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -99,11 +134,7 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Lung Navigator", docs_url=None, redoc_url=None, lifespan=_lifespan)
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["127.0.0.1", "localhost"],
-    www_redirect=False,
-)
+app.add_middleware(_DeployGuards)
 
 
 class ClinicianBody(BaseModel):
@@ -310,6 +341,12 @@ def _clinician_response(data: dict | None) -> dict:
     }
 
 
+@app.get("/healthz")
+def healthz():
+    """Liveness/readiness: no data access."""
+    return Response(content="ok", media_type="text/plain")
+
+
 @app.get("/api/cases")
 def api_cases():
     return list_cases()
@@ -378,6 +415,8 @@ def api_segment(case_id: str):
 @app.post("/api/cases/{case_id}/segment/register-existing")
 def api_segment_register_existing(case_id: str):
     """Register on-disk segment outputs when run.json markers match current CT."""
+    from run_totalsegmentator import ct_identity
+
     clinician = _require_clinician()
     try:
         require_prior_steps(case_id, int(WorkflowStep.SEGMENT))
@@ -782,12 +821,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args(argv)
-    if args.host not in {"127.0.0.1", "localhost", "::1"}:
+    env_host = os.environ.get("LUNGNAV_HOST", "").strip()
+    env_port = os.environ.get("LUNGNAV_PORT", "").strip()
+    host = env_host or args.host
+    port = int(env_port) if env_port else args.port
+    if not env_host and host not in _LOCAL_HOSTS:
         raise SystemExit("refusing to bind a non-local host")
     import uvicorn
 
-    cprint(f"Lung Navigator on http://{args.host}:{args.port}/", "cyan")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    cprint(f"Lung Navigator on http://{host}:{port}/", "cyan")
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":

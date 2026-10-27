@@ -1,0 +1,69 @@
+stages:
+  - test
+  - docker
+  - deploy
+
+variables:
+  DOCKER_TLS_CERTDIR: ""
+
+pytest:
+  stage: test
+  image: python:3.12-slim
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends gcc
+    - pip install -r deploy/requirements-server.txt pytest
+    # Collect only server unit modules (avoids importing playwright/kimimaro/pydicom tests).
+    - cd pipeline && pytest -q -m server test_app_server.py test_server_settings.py
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+docker-build:
+  stage: docker
+  image: docker:dind
+  script:
+    - printf '%s' "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build --pull --platform linux/amd64 -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+  only:
+    refs:
+      - main
+    changes:
+      - Dockerfile
+      - .dockerignore
+      - .gitlab-ci.yml
+      - deploy/**/*
+      - app/**/*
+      - pipeline/*.py
+      - prototype/**/*
+
+deploy:
+  stage: deploy
+  image: google/cloud-sdk:latest
+  when: manual
+  script:
+    - set +x
+    - mkdir -p ~/.kube
+    - printf '%s' "$K8S_SECRET_CONF" | base64 -d > ~/.kube/config
+    - chmod 600 ~/.kube/config
+    - apt-get update && apt-get install -y --no-install-recommends gettext-base
+    - kubectl cluster-info
+    - kubectl apply -f deploy/namespace.yaml --validate=false
+    - kubectl get secret docker-xelasys -n default -o json | python3 -c 'import json,sys; d=json.load(sys.stdin); d["metadata"]={"name":"docker-xelasys","namespace":"lung-nav"}; print(json.dumps(d))' | kubectl apply -f -
+    - kubectl apply --validate=false -f deploy/pv.yaml
+    - kubectl apply --validate=false -f deploy/pvc.yaml
+    - export IMAGE="$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+    - for f in deploy/deployment.yaml deploy/service.yaml deploy/ingress.yaml; do envsubst '${IMAGE}' < "$f" | kubectl apply --validate=false -f -; done
+    - kubectl rollout status deployment/lung-nav -n lung-nav --timeout=300s
+  only:
+    refs:
+      - main
+    changes:
+      - Dockerfile
+      - .dockerignore
+      - .gitlab-ci.yml
+      - deploy/**/*
+      - app/**/*
+      - pipeline/*.py
+      - prototype/**/*

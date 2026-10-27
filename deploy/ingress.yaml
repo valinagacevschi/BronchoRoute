@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lung-nav
+  namespace: lung-nav
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: lung-nav-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "lung-nav"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - lung-nav.appcenter.ro
+      secretName: lung-nav-tls
+  rules:
+    - host: lung-nav.appcenter.ro
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lung-nav
+                port:
+                  name: http

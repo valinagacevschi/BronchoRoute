@@ -1,4 +1,6 @@
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
+     Deploy: clamp orifice labels inside canvas clear of the left rail; keep
+     endoluminal step caption compact above the variant switcher (never over lumen).
      Phase 4d review: start-walkthrough message plays fly with fork pauses;
      Walk-through layout (endoluminal left + CT panes right, shared pos).
      Phase 4c review: highlight-route also paints CT panes; raw pick ras_mm.
@@ -1354,6 +1356,10 @@ function drawForkOrifices(toView, projectFn) {
       on_route: o.on_route,
     };
   });
+  const railEl = document.querySelector(".rail");
+  const railRight = railEl ? railEl.getBoundingClientRect().right : 236;
+  const labelPad = 10;
+  const labelBottom = H - 70;
   for (let pass = 0; pass < 8; pass++) {
     let moved = false;
     for (let i = 0; i < labels.length; i++) {
@@ -1372,8 +1378,10 @@ function drawForkOrifices(toView, projectFn) {
       }
     }
     for (const lab of labels) {
-      const nx = Math.max(80, Math.min(W - 80, lab.x));
-      const ny = Math.max(20, Math.min(H - 60, lab.y));
+      ctx.font = `600 ${lab.on_route ? 12 : 11}px "IBM Plex Sans Condensed", sans-serif`;
+      const half = ctx.measureText(lab.text).width / 2;
+      const nx = Math.max(railRight + labelPad + half, Math.min(W - labelPad - half, lab.x));
+      const ny = Math.max(20, Math.min(labelBottom, lab.y));
       if (nx !== lab.x || ny !== lab.y) {
         lab.x = nx; lab.y = ny;
         moved = true;
@@ -1455,62 +1463,63 @@ function drawAnteriorTick(rings, right, up, dir) {
 }
 
 function drawGuidance(right, up, dir, roll) {
+  // Compact strip just above the variant switcher — never covers lumen/orifices.
   const rail = document.querySelector(".rail").getBoundingClientRect();
   const switcher = document.getElementById("switcher").getBoundingClientRect();
-  const left = rail.right + 16;
+  const left = rail.right + 12;
   const switcherTop = switcher.top || H - 22;
-  const bottom = Math.min(H - 16, switcherTop - 12);
-  const cx = left + 42;
-  const cy = bottom - 42;
-  const radius = 35;
+  const bottom = Math.min(H - 12, switcherTop - 8);
+  const radius = 26;
+  const cx = left + 32;
+  const cy = bottom - radius - 6;
   const next = A.forks.find(fork => fork.s >= fly.s);
   const screenAnterior = anteriorInView(dir, right, up);
-  const textX = left + 94;
+  const textX = left + 72;
   const lines = [];
   if (next) {
     const chosen = next.children.find(child => child.on_route);
     const clockText = chosen.clock == null
       ? "straight ahead"
-      : `branch at ${chosen.clock} o'clock${next.name ? ` (${next.name})` : ""}, rolling to 12`;
-    const mark = next.prov === "interpolated" ? " · interpolated" : "";
+      : `${chosen.clock} o'clock${next.name ? ` (${next.name})` : ""}`;
+    const mark = next.prov === "interpolated" ? " · interp" : "";
     lines.push({
-      text: `Fork ${next.fork} in ${Math.max(0, next.s - fly.s).toFixed(0)} mm — ${clockText}${mark}`,
+      text: `Fork ${next.fork} · ${Math.max(0, next.s - fly.s).toFixed(0)} mm — ${clockText}${mark}`,
       color: "#f4f7f8",
     });
   }
   if (fly.pausedFork) {
     lines.push({
-      text: `Paused at fork ${fly.pausedFork} (1 s) — Space / ↑ to continue`,
+      text: `Paused at fork ${fly.pausedFork} — Space / ↑`,
       color: "#f4f7f8",
     });
   }
   if (flyAt(fly.s).prov === "interpolated") {
-    lines.push({ text: "Interpolated segment — not CT-demonstrated airway", color: "#ffd166" });
+    lines.push({ text: "Interpolated — not CT-demonstrated", color: "#ffd166" });
   }
   if (A.target_gap_mm > 0 && !A.target_inside_airway
       && A.fly.s[A.fly.s.length - 1] - fly.s <= 10) {
-    lines.push({ text: `Target ${A.target_gap_mm.toFixed(1)} mm beyond last visible airway`, color: "#f4f7f8" });
+    lines.push({ text: `Target ${A.target_gap_mm.toFixed(1)} mm beyond airway`, color: "#f4f7f8" });
   }
   if (!screenAnterior) {
-    lines.push({ text: "Anterior undefined: view along AP axis", color: "#f4f7f8" });
+    lines.push({ text: "Anterior undefined (AP axis)", color: "#f4f7f8" });
   }
-  lines.push({ text: "Simulated steering · CT-derived · not live tracking", color: "#d5e0e5" });
+  lines.push({ text: "Simulated · CT-derived · not live", color: "#d5e0e5" });
 
   ctx.save();
-  ctx.font = "12px system-ui";
-  const lineHeight = 17;
-  const maxTextWidth = Math.max(80, W - textX - 20);
+  ctx.font = "11px system-ui";
+  const lineHeight = 14;
+  const maxTextWidth = Math.max(80, Math.min(420, W - textX - 16));
   const textWidth = Math.min(maxTextWidth,
     Math.max(...lines.map(line => ctx.measureText(line.text).width)));
-  const textBottom = bottom - 10;
+  const panelBottom = bottom + 2;
+  const textBottom = panelBottom - 8;
   const textTop = textBottom - (lines.length - 1) * lineHeight;
-  const panelLeft = left - 8;
-  const panelTop = Math.min(cy - radius - 18, textTop - 14);
-  const panelRight = Math.min(W - 10, Math.max(cx + radius + 20, textX + textWidth + 12));
-  const panelBottom = bottom + 4;
+  const panelLeft = left - 6;
+  const panelTop = Math.min(cy - radius - 10, textTop - 8);
+  const panelRight = Math.min(W - 10, Math.max(cx + radius + 14, textX + textWidth + 10));
   ctx.fillStyle = "rgba(17, 27, 33, 0.88)";
   ctx.beginPath();
-  ctx.roundRect(panelLeft, panelTop, panelRight - panelLeft, panelBottom - panelTop, 10);
+  ctx.roundRect(panelLeft, panelTop, panelRight - panelLeft, panelBottom - panelTop, 8);
   ctx.fill();
 
   ctx.fillStyle = "#f4f7f8";
@@ -1523,8 +1532,8 @@ function drawGuidance(right, up, dir, roll) {
   for (const [clock, angle] of [
     [12, -Math.PI / 2], [3, 0], [6, Math.PI / 2], [9, Math.PI],
   ]) {
-    ctx.fillText(clock, cx + Math.cos(angle) * (radius + 12) - 4,
-      cy + Math.sin(angle) * (radius + 12) + 4);
+    ctx.fillText(clock, cx + Math.cos(angle) * (radius + 10) - 4,
+      cy + Math.sin(angle) * (radius + 10) + 3);
   }
   if (screenAnterior) {
     ctx.strokeStyle = "#48a9ff";
@@ -1543,7 +1552,7 @@ function drawGuidance(right, up, dir, roll) {
       ctx.fillStyle = child.on_route ? "#58b8ff" : "#87939b";
       ctx.beginPath();
       ctx.arc(cx + Math.cos(screenAngle) * radius,
-        cy + Math.sin(screenAngle) * radius, child.on_route ? 5 : 3, 0, 7);
+        cy + Math.sin(screenAngle) * radius, child.on_route ? 4 : 2.5, 0, 7);
       ctx.fill();
     }
   }

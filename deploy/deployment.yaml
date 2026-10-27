@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lung-nav
+  namespace: lung-nav
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: lung-nav
+  template:
+    metadata:
+      labels:
+        app: lung-nav
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: Unconfined
+      imagePullSecrets:
+        - name: docker-xelasys
+      containers:
+        - name: lung-nav
+          image: ${IMAGE}
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8765
+          env:
+            - name: LUNGNAV_HOST
+              value: "0.0.0.0"
+            - name: LUNGNAV_PORT
+              value: "8765"
+            - name: LUNGNAV_DATA_ROOT
+              value: /data
+            - name: LUNGNAV_CACHE_DIR
+              value: /cache
+            - name: LUNGNAV_VIEWER_ONLY
+              value: "1"
+            - name: LUNGNAV_CASES
+              value: local-001
+            - name: LUNGNAV_ALLOWED_HOSTS
+              value: lung-nav.appcenter.ro,127.0.0.1,localhost
+            - name: TZ
+              value: Europe/Bucharest
+          volumeMounts:
+            - name: case-data
+              mountPath: /data
+              readOnly: true
+            - name: cache
+              mountPath: /cache
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+      volumes:
+        - name: case-data
+          persistentVolumeClaim:
+            claimName: lung-nav-data
+        - name: cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

@@ -1,4 +1,6 @@
-# Changes: Phase 4d review fixes — note_change on review mutate/signoff;
+# Changes: bridge labels write to CaseRef.bridge_labels (LUNGNAV_CACHE_DIR);
+# ensure_bridge_labels skips rewrite when the companion file already exists.
+# Phase 4d review fixes — note_change on review mutate/signoff;
 # clear pending_return on re-completion; remove ack_walk_return.
 # Phase 4b review fixes — provenance bridge mapping, arc-length
 # selectability, nearest-sample manual layer, root-only rematch, app sign-off
@@ -285,12 +287,19 @@ def atomic_write_nifti(path: Path, data: np.ndarray, affine: np.ndarray, header)
 
 
 def ensure_bridge_labels(ref: CaseRef, bridges: list[dict]) -> Path:
-    """Write airway_bridges_labels.nii.gz from bridge JSON (does not alter pipeline files)."""
+    """Write airway_bridges_labels.nii.gz from bridge JSON (cache dir when set).
+
+    Skips rewrite when the companion already exists so GET payload/review paths
+    stay safe on a read-only data root.
+    """
+    out = ref.bridge_labels
+    if out.is_file() and out.stat().st_size > 0:
+        return out
     cprint(f"writing bridge labels for {ref.case_id}", "cyan")
     airways_img = _load_canonical(ref.airways)
     affine = np.asarray(airways_img.affine, dtype=float)
     labels = build_bridge_labels_volume(airways_img.shape, affine, bridges)
-    out = ref.ts_out / "airway_bridges_labels.nii.gz"
+    out.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_nifti(out, labels, affine, airways_img.header)
     assert_affine_match(affine, np.asarray(nib.load(out).affine, dtype=float), "bridge_labels")
     return out
@@ -342,10 +351,9 @@ def map_all_bridges(
     """Map each bridge id → arc-length spans on the graph (writes labels companion)."""
     if not bridges:
         return {}
-    ensure_bridge_labels(ref, bridges)
+    labels_path = ensure_bridge_labels(ref, bridges)
     airways_img = _load_canonical(ref.airways)
     affine = np.asarray(airways_img.affine, dtype=float)
-    labels_path = ref.ts_out / "airway_bridges_labels.nii.gz"
     labels = np.asanyarray(nib.load(labels_path).dataobj)
     return {
         bridge["id"]: match_bridge_spans(graph, bridge, labels, affine)

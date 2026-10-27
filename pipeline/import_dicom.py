@@ -1,3 +1,4 @@
+# Changes: lazy pydicom import so the viewer image can omit pydicom.
 """Select and import an axial CT series without exporting DICOM identifiers.
 
 Geometry fix: build the NIfTI volume from pydicom (sort by slice normal,
@@ -8,6 +9,8 @@ Phase 4a review: symlink jail in read_series; locked next_case_id; shared
 case-document builder and duplicate message with app/imports.py.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -15,12 +18,21 @@ import re
 import shutil
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import nibabel as nib
 import numpy as np
-import pydicom
 from atomic_json import atomic_write_json, json_file_lock
 from paths import LOCAL_CASES
+
+if TYPE_CHECKING:
+    import pydicom as pydicom_mod
+
+
+def _pydicom():
+    import pydicom
+
+    return pydicom
 
 
 VERSION = "1.0"
@@ -53,7 +65,7 @@ def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
             skipped += 1
             continue
         try:
-            ds = pydicom.dcmread(path, stop_before_pixels=True, force=False)
+            ds = _pydicom().dcmread(path, stop_before_pixels=True, force=False)
             uid = str(ds.SeriesInstanceUID)
             sop_class = str(ds.SOPClassUID.name)
             row = series.get(uid)
@@ -238,7 +250,7 @@ def series_uid_hash(uid: str) -> str:
     return hashlib.sha256(uid.encode("utf-8")).hexdigest()
 
 
-def _hu_pixels(ds: pydicom.Dataset) -> np.ndarray:
+def _hu_pixels(ds: Any) -> np.ndarray:
     slope = float(getattr(ds, "RescaleSlope", 1) or 1)
     intercept = float(getattr(ds, "RescaleIntercept", 0) or 0)
     hu = ds.pixel_array.astype(np.float64) * slope + intercept
@@ -257,7 +269,7 @@ def _build_volume(files: list[str]) -> tuple[np.ndarray, np.ndarray, list[dict]]
 
     loaded = []
     for path in files:
-        ds = pydicom.dcmread(path)
+        ds = _pydicom().dcmread(path)
         iop = np.asarray(ds.ImageOrientationPatient, dtype=np.float64)
         ipp = np.asarray(ds.ImagePositionPatient, dtype=np.float64)
         spacing = np.asarray(ds.PixelSpacing, dtype=np.float64)
@@ -360,7 +372,7 @@ def main() -> None:
         headers = sorted(path for path in series_dir.rglob("*") if path.is_file())
         if not headers:
             raise SystemExit(f"no DICOM header found in {series_name}")
-        ds = pydicom.dcmread(headers[0], stop_before_pixels=True, force=False)
+        ds = _pydicom().dcmread(headers[0], stop_before_pixels=True, force=False)
         series_hash = series_uid_hash(str(ds.SeriesInstanceUID))
         case_path = LOCAL_CASES / case_id / "case.json"
         document = json.loads(case_path.read_text())
