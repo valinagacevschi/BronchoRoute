@@ -5,7 +5,7 @@ metadata:
   labels:
     app: lung-nav
 spec:
-  # Create /data/lung-nav on node k8s (see deploy/README.md); chown 10001:10001.
+  # Create /volumes/lung-nav-data on node k8s (see deploy/README.md); chown 10001:10001.
   capacity:
     storage: 2Gi
   accessModes:
@@ -16,7 +16,7 @@ spec:
     namespace: lung-nav
     name: lung-nav-data
   hostPath:
-    path: /data/lung-nav
+    path: /volumes/lung-nav-data
     type: Directory
   nodeAffinity:
     required:

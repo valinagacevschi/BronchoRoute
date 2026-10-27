@@ -6,7 +6,7 @@ patient DICOM in the image. Case data is a static hostPath mount.
 ## Staged files (local-001)
 
 Only these paths under the pipeline layout are required on the node
-(`/data/lung-nav/…`). Regenerable crops/labels are **not** uploaded — the pod
+(`/volumes/lung-nav-data/…`). Regenerable crops/labels are **not** uploaded — the pod
 writes them under `/cache`.
 
 | Relative path |
@@ -33,7 +33,7 @@ scripts/stage-case-data.sh local-001 /tmp/lung-nav-stage
 ```bash
 kubectl -n lung-nav run lung-nav-seed --rm -it --restart=Never \
   --image=alpine:3.20 \
-  --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"k8s"},"containers":[{"name":"seed","image":"alpine:3.20","command":["sleep","3600"],"volumeMounts":[{"name":"data","mountPath":"/data"}],"securityContext":{"runAsUser":0}}],"volumes":[{"name":"data","hostPath":{"path":"/data/lung-nav","type":"DirectoryOrCreate"}}]}}'
+  --overrides='{"spec":{"nodeSelector":{"kubernetes.io/hostname":"k8s"},"containers":[{"name":"seed","image":"alpine:3.20","command":["sleep","3600"],"volumeMounts":[{"name":"data","mountPath":"/data"}],"securityContext":{"runAsUser":0}}],"volumes":[{"name":"data","hostPath":{"path":"/volumes/lung-nav-data","type":"DirectoryOrCreate"}}]}}'
 ```
 
 2. From another terminal, copy the staged tree (files only):
