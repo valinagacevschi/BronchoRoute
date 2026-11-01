@@ -33,3 +33,13 @@ _Avoid_: current dicom, session
 **Case Library**:
 The processed Cases kept on the laptop so they can be reopened without reprocessing; it holds no source DICOM.
 _Avoid_: cache, history, recent files
+
+## Planning
+
+**Lesion**:
+The clinical target the clinician marks on the CT: one point with a diameter, fixed in patient space; one per Case.
+_Avoid_: marker, target, nodule
+
+**RouteTarget**:
+The endpoint of the airway route that the CT demonstrates, chosen near the Lesion; the distance between them is the target gap.
+_Avoid_: target, endpoint
