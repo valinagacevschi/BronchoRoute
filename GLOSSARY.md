@@ -43,3 +43,17 @@ _Avoid_: marker, target, nodule
 **RouteTarget**:
 The endpoint of the airway route that the CT demonstrates, chosen near the Lesion; the distance between them is the target gap.
 _Avoid_: target, endpoint
+
+## Airway provenance
+
+**CT-seen airway**:
+Airway segmented directly from the CT; the only airway a route may follow.
+_Avoid_: real airway, segmented airway
+
+**Interpolated airway**:
+A short bridge (≤ 4 mm) joining two CT-seen airway pieces; routable only once a clinician confirms it.
+_Avoid_: estimated, bridged gap
+
+**Estimated airway**:
+An extension of up to 15 mm beyond the last CT-seen airway tip, inferred from the paired pulmonary artery; shown but never part of a route.
+_Avoid_: interpolated, predicted, synthetic airway
