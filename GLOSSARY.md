@@ -29,3 +29,7 @@ _Avoid_: patient, project, dicom
 **Active Case**:
 The single Case open in the app; loading another Archive replaces it.
 _Avoid_: current dicom, session
+
+**Case Library**:
+The processed Cases kept on the laptop so they can be reopened without reprocessing; it holds no source DICOM.
+_Avoid_: cache, history, recent files
