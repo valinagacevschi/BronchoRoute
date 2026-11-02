@@ -1,3 +1,4 @@
+// Changes: validate Save image names, PNG bytes, and the Pictures/BronchoRoute path.
 // Changes: FileVault status line used by the one-time first-run note.
 // Changes: arm64 gate and one-time warning below 16 GB of memory.
 // Changes: shell helpers including isolated packaged Python launch configuration.
@@ -197,6 +198,56 @@ function atomicWriteJson(file, data) {
   atomicWriteText(file, `${JSON.stringify(data, null, 2)}\n`);
 }
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const SAVE_IMAGE_MAX_BYTES = 50 * 1024 * 1024;
+const SAVE_IMAGE_NAME_RE = /^local-\d{3}_(anatomical|topology|endoluminal)_\d{8}-\d{4}\.png$/;
+
+function isSaveImageName(name) {
+  return typeof name === "string" && SAVE_IMAGE_NAME_RE.test(name);
+}
+
+function pngByteLength(bytes) {
+  if (Buffer.isBuffer(bytes) || ArrayBuffer.isView(bytes)) return bytes.byteLength;
+  if (bytes instanceof ArrayBuffer) return bytes.byteLength;
+  return null;
+}
+
+function pngFitsLimit(length) {
+  return Number.isInteger(length) && length >= 8 && length < SAVE_IMAGE_MAX_BYTES;
+}
+
+function isPngBytes(bytes) {
+  const length = pngByteLength(bytes);
+  if (!pngFitsLimit(length)) return false;
+  const view = (Buffer.isBuffer(bytes) || ArrayBuffer.isView(bytes))
+    ? bytes
+    : new Uint8Array(bytes);
+  for (let i = 0; i < 8; i += 1) {
+    if (view[i] !== PNG_SIGNATURE[i]) return false;
+  }
+  return true;
+}
+
+function resolveSaveImageBaseDir(override, picturesPath) {
+  if (typeof override === "string" && override.trim() !== "") {
+    return path.resolve(override.trim());
+  }
+  if (typeof picturesPath !== "string" || picturesPath.trim() === "") {
+    throw new Error("pictures directory must be set");
+  }
+  return picturesPath;
+}
+
+function saveImageDefaultPath(baseDir, defaultName) {
+  if (typeof baseDir !== "string" || baseDir.trim() === "") {
+    throw new Error("save image base directory must be set");
+  }
+  if (!isSaveImageName(defaultName)) {
+    throw new Error("invalid save image name");
+  }
+  return path.join(baseDir, "BronchoRoute", defaultName);
+}
+
 module.exports = {
   DISCLAIMER,
   FILEVAULT_NOTE,
@@ -217,4 +268,11 @@ module.exports = {
   MIN_RAM_BYTES,
   hardwareBlockReason,
   shouldWarnLowRam,
+  PNG_SIGNATURE,
+  SAVE_IMAGE_MAX_BYTES,
+  isSaveImageName,
+  pngFitsLimit,
+  isPngBytes,
+  resolveSaveImageBaseDir,
+  saveImageDefaultPath,
 };

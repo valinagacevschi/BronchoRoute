@@ -1,9 +1,16 @@
+<!-- Changes: PNG stills redraw at 2× CSS size; strip text chunks; do not log the save path. -->
 <!-- Changes: verify default viewer routes as well as selectable RouteTarget routes. -->
 <!-- Changes: failure copy is one sentence; the override reason is the clinician's. -->
 <!-- Changes: lesion slice distance follows the RAS crop slice increment. -->
 <!-- Changes: outdated-Case prompt must not cover the footer hit targets. -->
 <!-- Changes: retain Settings persistence and subprocess isolation lessons after rebase. -->
 # Lessons Learned
+
+- PNG stills (#42): redraw the current view into an offscreen canvas at 2× the
+  CSS size with the same draw functions, then burn in. The anatomical scale bar
+  uses look-at mm-per-pixel in that CSS space. Canvas PNGs can carry text
+  chunks; keep only IHDR, IDAT, IEND, and optional sRGB/pHYs/gAMA. Never log
+  the save path.
 
 - Bridge selectability does not protect the default viewer route: it can still
   follow a blocked branch before a RouteTarget exists. Stop that payload route at
