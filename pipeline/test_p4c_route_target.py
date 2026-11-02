@@ -1,3 +1,4 @@
+# Changes: candidates need a Lesion only; RouteStart confirmation is not required.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: Phase 4d review — assert retarget yields a new route_hash (not just truthy).
 # Phase 4c review fixes — RouteStart route length sync, reachability,
@@ -222,6 +223,7 @@ def test_api_gating_and_put(client, harness, fake_home):
     _set_clinician(client)
     res = client.get("/api/cases/local-001/route-candidates")
     assert res.status_code == 409, res.text
+    assert res.json()["detail"] == "place a Lesion first"
 
     _seed_through_step(client, harness, 6)
     _place_lesion(harness["case"], [20.0, 0.0, -10.0])
@@ -528,6 +530,13 @@ def test_local001_rll_top_candidate(tmp_path, monkeypatch, fake_home):
     assert top["lobe"] == "right lower lobe" or top["lobe"] == 5
     gaps = [c["target_gap_mm"] for c in cands]
     assert top["target_gap_mm"] == min(gaps)
+    cprint(
+        "local-001 top "
+        f"lobe={top['lobe']} gap_mm={top['target_gap_mm']} "
+        f"generation={top['generation']} route_length_mm={top['route_length_mm']} "
+        f"airway={top.get('airway_name')}",
+        "green",
+    )
 
 
 def _prep_graph(graph: dict) -> dict:
@@ -598,17 +607,32 @@ def test_removed_subtree_excluded():
     assert cands
 
 
-def test_409_before_step_5(client, harness, fake_home):
-    """Steps 1–4 done, step 5 not → route-candidates 409."""
+def test_candidates_need_lesion_not_route_start(client, harness, fake_home):
+    """A Lesion unlocks candidates and RouteTarget; steps 2–5 stay undone."""
+    cprint("candidates need a Lesion, not RouteStart", "cyan")
     _set_clinician(client)
-    _seed_through_step(client, harness, 5)  # priors for step 5 → through review
+    missing = client.get("/api/cases/local-001/route-candidates")
+    assert missing.status_code == 409, missing.text
+    assert missing.json()["detail"] == "place a Lesion first"
     _place_lesion(harness["case"], [20.0, 0.0, -10.0])
     wf = client.get("/api/cases/local-001/workflow").json()
-    assert wf["steps"][3]["status"] == "done"
-    assert wf["steps"][4]["status"] == "available"
+    for index in (1, 2, 3, 4):
+        assert wf["steps"][index]["status"] != "done", wf["steps"][index]
     res = client.get("/api/cases/local-001/route-candidates")
-    assert res.status_code == 409
-    assert "step 5" in res.json()["detail"].lower()
+    assert res.status_code == 200, res.text
+    cands = res.json()["candidates"]
+    assert cands
+    top = cands[0]
+    put = client.put("/api/cases/local-001/route-target", json={
+        "edge_id": top["edge_id"],
+        "sample_index": top["sample_index"],
+    })
+    assert put.status_code == 200, put.text
+    assert put.json()["route_target"]["edge_id"] == top["edge_id"]
+    bare = client.put("/api/cases/local-001/route-target", json={
+        "ras_mm": [0.0, 0.0, 0.0],
+    })
+    assert bare.status_code == 200, bare.text
 
 
 def test_interpolated_mm_only_confirmed_bridges():

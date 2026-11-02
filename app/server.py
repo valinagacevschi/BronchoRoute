@@ -1,3 +1,4 @@
+# Changes: route candidates and RouteTarget require a Lesion, not workflow steps.
 # Changes: PUT lesion accepts an optional diameter_mm.
 # Changes: preserve Archive import and the shared Settings API after rebase.
 # Changes: shared settings API alongside the compatible clinician endpoints.
@@ -574,7 +575,6 @@ def api_route_start_candidates(case_id: str):
 @app.get("/api/cases/{case_id}/route-candidates")
 def api_route_candidates(case_id: str):
     try:
-        require_prior_steps(case_id, int(WorkflowStep.ROUTE_TARGET))
         return {"candidates": route_target_candidates(case_id)}
     except WorkflowBlocked as exc:
         raise HTTPException(status_code=409, detail=exc.reason) from exc

@@ -1,3 +1,4 @@
+<!-- Changes: RouteTarget proposals in the rail; trachea RouteStart; target-gap anchor. -->
 <!-- Changes: anatomical lesion sphere, topology marker beside the nearest CT-seen branch. -->
 <!-- Changes: preserve Settings alongside Archive import after rebasing #28 onto #32. -->
 <!-- Changes: Settings and About dialogs in the fixed footer; shared Python settings. -->
@@ -264,6 +265,35 @@ body.ct-panes-active .proto {
 .review-warnings li + li { margin-top: 4px; }
 .review-warnings.collapsed ul { display: none; }
 .reviewed-note { margin: 5px 0 0; font-size: 11px; color: var(--muted); }
+.route-target-panel[hidden] { display: none; }
+.route-target-cards { display: flex; flex-direction: column; gap: 6px; }
+.route-target-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  width: 100%; text-align: left;
+  font: 500 12px/1.35 "IBM Plex Sans", sans-serif;
+  color: var(--ink); background: var(--ground);
+  border: 1px solid var(--edge); border-radius: 6px;
+  padding: 7px 8px; cursor: pointer;
+}
+.route-target-card:hover,
+.route-target-card:focus-visible { border-color: var(--steel); }
+.route-target-card[aria-pressed="true"] {
+  border-color: var(--steel);
+  box-shadow: inset 0 0 0 1px var(--steel);
+}
+.route-target-gap {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+#route-target-pick {
+  font: 500 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
+  border: 1px solid var(--edge); border-radius: 6px;
+  padding: 7px 8px; background: var(--ground); color: var(--ink); cursor: pointer;
+}
+#route-target-pick[aria-pressed="true"] { border-color: var(--steel); color: var(--steel); }
+#route-target-pick:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+#route-target-status { margin: 0; min-height: 1.2em; font-size: 12px; color: var(--muted); }
+#route-target-status.is-error { color: #a32b24; }
 .limitations-panel {
   position: fixed; top: 14px; right: 16px; z-index: 6;
   width: min(320px, calc(100vw - 272px)); padding: 10px 12px;
@@ -395,8 +425,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
   text-shadow: 0 1px 2px #000;
   pointer-events: none; max-width: 46%; text-align: right;
 }
-.ct-route-start-box { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.ct-route-start-box select { font: inherit; border: 1px solid var(--edge); border-radius: 4px; padding: 4px 6px; }
 .ct-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
 .shared-marker-3d {
   position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px;
@@ -454,6 +482,13 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <button type="button" id="review-warnings-toggle" aria-expanded="true"
       aria-controls="review-warnings-list" title="Show or hide review warnings">Review warnings</button>
     <ul id="review-warnings-list"></ul>
+  </section>
+
+  <section class="group route-target-panel" id="route-target-panel" hidden aria-label="RouteTarget">
+    <h2>RouteTarget</h2>
+    <div class="route-target-cards" id="route-target-cards"></div>
+    <button type="button" id="route-target-pick" aria-pressed="false">Pick a point</button>
+    <p id="route-target-status" role="status"></p>
   </section>
 
   <div class="group group-case">
@@ -1063,6 +1098,9 @@ function project(p, c) {
 
 /* ------------------------------------------------------- variant A: tree */
 let lastAnatomicalLesion = null;
+let lastAnatomicalRouteTarget = null;
+let lastAnatomicalGap = null;
+let anatomicalHighlightDraws = 0;
 
 function lesionRadiusMm(lesion) {
   const d = lesion && Number(lesion.diameter_mm);
@@ -1101,6 +1139,9 @@ function drawAnatomicalLesion() {
 }
 
 function drawAnatomical() {
+  anatomicalHighlightDraws = 0;
+  lastAnatomicalRouteTarget = null;
+  lastAnatomicalGap = null;
   const segs = [];
   for (const e of A.edges) {
     for (let i = 1; i < e.c.length; i++) {
@@ -1143,6 +1184,7 @@ function drawAnatomical() {
     }
     const oi = s.e.oi;
     const hi = oi != null && highlightRouteOis.has(oi);
+    if (hi) anatomicalHighlightDraws += 1;
     ctx.lineWidth = hi ? w + 2.5 : w;
     if (hi) ctx.strokeStyle = `rgba(46,110,136,${Math.min(1, fog + 0.2)})`;
     ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y); ctx.lineTo(s.q.x, s.q.y); ctx.stroke();
@@ -1177,17 +1219,28 @@ function drawAnatomical() {
       ctx.beginPath(); ctx.arc(end.x, end.y, 8, 0, 7); ctx.stroke();
       ctx.fillStyle = "#2E6E88"; ctx.font = "10px IBM Plex Mono, monospace";
       ctx.fillText("RouteTarget", end.x + 12, end.y - 4);
+      lastAnatomicalRouteTarget = { x: end.x, y: end.y, label: "RouteTarget" };
     }
   }
   if (A.poi) {
     const p = project(A.poi, cam);
     const end = A.endpoint && project(A.endpoint, cam);
     if (p) {
-      if (end && A.target_gap_mm > 0 && !A.target_inside_airway) {
-        ctx.strokeStyle = "#727d84"; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
-        ctx.beginPath(); ctx.moveTo(end.x, end.y); ctx.lineTo(p.x, p.y); ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = "#59656c"; ctx.font = "11px system-ui";
-        ctx.fillText(`${A.target_gap_mm.toFixed(1)} mm · no airway shown`, (end.x + p.x) / 2, (end.y + p.y) / 2 - 5);
+      if (end && A.target_gap_mm > 0) {
+        ctx.strokeStyle = "#727d84";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(end.x, end.y);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        lastAnatomicalGap = { dashed: true, mm: A.target_gap_mm };
+        if (!A.target_inside_airway) {
+          ctx.fillStyle = "#59656c";
+          ctx.font = "11px system-ui";
+          ctx.fillText(`${A.target_gap_mm.toFixed(1)} mm · no airway shown`, (end.x + p.x) / 2, (end.y + p.y) / 2 - 5);
+        }
       }
       if (!A.lesion) {
         ctx.fillStyle = "#fff"; ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 2;
@@ -2228,15 +2281,51 @@ function mucosa(d) {
 /* --------------------------------------------------- variant C: topology */
 let topoLayout = null;
 let lastTopologyLesion = null;
+let lastTopologyRouteTarget = null;
+let topologyHighlightDraws = 0;
 
-// #34: when a RouteTarget exists, return {edge, frac, distMm} on that branch.
+// Once a RouteTarget exists, the Lesion sits on that branch with the target gap.
 // Until then the marker stays beside the nearest CT-seen centreline sample.
-function routeTargetLesionAnchor(_lesionRas) {
-  return null;
+function routeTargetLesionAnchor(lesionRas) {
+  const rt = A.route_target;
+  if (!rt || rt.stale || rt.edge_id == null || !Array.isArray(rt.ras_mm)) return null;
+  const edge = (A.edges || []).find(item => Number(item.oi) === Number(rt.edge_id));
+  if (!edge || !edge.c || !edge.c.length) return null;
+  const origin = A.origin_mm || [0, 0, 0];
+  const rel = [
+    rt.ras_mm[0] - origin[0],
+    rt.ras_mm[1] - origin[1],
+    rt.ras_mm[2] - origin[2],
+  ];
+  let bestI = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < edge.c.length; i++) {
+    const p = edge.c[i];
+    const d = Math.hypot(p[0] - rel[0], p[1] - rel[1], p[2] - rel[2]);
+    if (d < bestD) {
+      bestD = d;
+      bestI = i;
+    }
+  }
+  const frac = bestI / Math.max(1, edge.c.length - 1);
+  let distMm = Number(A.target_gap_mm);
+  const lesion = (Array.isArray(lesionRas) && lesionRas.length === 3)
+    ? lesionRas
+    : (A.lesion && A.lesion.ras_mm);
+  if (!Number.isFinite(distMm) && lesion) {
+    distMm = Math.hypot(
+      lesion[0] - rt.ras_mm[0],
+      lesion[1] - rt.ras_mm[1],
+      lesion[2] - rt.ras_mm[2],
+    );
+  }
+  if (!Number.isFinite(distMm)) distMm = 0;
+  return { edge, frac, distMm, index: bestI, onRouteTarget: true };
 }
 
 function drawTopologyLesion() {
   lastTopologyLesion = null;
+  lastTopologyRouteTarget = null;
   if (!A.lesion || !A.lesion.ras_mm || !topoLayout) return;
   if (!window.CtPanes || typeof window.CtPanes.nearestCtSeenSample !== "function") return;
   const anchored = routeTargetLesionAnchor(A.lesion.ras_mm)
@@ -2259,7 +2348,34 @@ function drawTopologyLesion() {
   const len = Math.hypot(ox, oy) || 1;
   const x = pt.x + (-oy / len) * 14;
   const y = pt.y + (ox / len) * 14;
-  const label = `Lesion · ${anchored.distMm.toFixed(1)} mm from airway`;
+  const label = anchored.onRouteTarget
+    ? `Lesion · target gap ${anchored.distMm.toFixed(1)} mm`
+    : `Lesion · ${anchored.distMm.toFixed(1)} mm from airway`;
+  if (anchored.onRouteTarget) {
+    ctx.save();
+    ctx.strokeStyle = "#727d84";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(pt.x, pt.y);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "#2E6E88";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.font = '10px "IBM Plex Mono", monospace';
+    ctx.fillStyle = "#2E6E88";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText("RouteTarget", pt.x + 10, pt.y - 10);
+    ctx.restore();
+    lastTopologyRouteTarget = {
+      x: pt.x, y: pt.y, label: "RouteTarget", gapDashed: true,
+    };
+  }
   ctx.save();
   ctx.fillStyle = "#e85d4c";
   ctx.beginPath();
@@ -2272,6 +2388,7 @@ function drawTopologyLesion() {
   ctx.restore();
   lastTopologyLesion = {
     x, y, label, distMm: anchored.distMm, from: edge.f, to: edge.t, frac,
+    onRouteTarget: !!anchored.onRouteTarget,
   };
 }
 
@@ -2359,6 +2476,7 @@ function topoToScreen(p) {
 }
 
 function drawTopology() {
+  topologyHighlightDraws = 0;
   if (!topoLayout) buildTopology();
   const ox = W / 2 + cam.panX, oy = H / 2 + cam.panY;
   const s = DEFAULT_DIST / cam.dist;
@@ -2380,6 +2498,7 @@ function drawTopology() {
     if (!a || !b) continue;
     const pa = topoToScreen(a), pb = topoToScreen(b);
     const hi = e.oi != null && highlightRouteOis.has(e.oi);
+    if (hi) topologyHighlightDraws += 1;
     ctx.strokeStyle = hi ? "rgba(46,110,136,0.95)" : depthColor(e.g, 0.95);
     ctx.lineWidth = Math.max(0.8, Math.min(9, e.r * 1.6) * s) + (hi ? 2 : 0);
     ctx.beginPath();
@@ -2406,11 +2525,14 @@ function drawTopology() {
     ctx.stroke();
     ctx.setLineDash([]);
   }
-  const t = topoLayout.get(A.target);
-  if (t) {
-    const pt = topoToScreen(t);
-    ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(pt.x, pt.y, 9, 0, 7); ctx.stroke();
+  const routed = A.route_target && !A.route_target.stale && A.endpoint;
+  if (!routed) {
+    const t = topoLayout.get(A.target);
+    if (t) {
+      const pt = topoToScreen(t);
+      ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, 9, 0, 7); ctx.stroke();
+    }
   }
   const railRight = document.querySelector(".rail").getBoundingClientRect().right;
   ctx.fillStyle = tok("--muted");
@@ -2522,6 +2644,8 @@ cv.addEventListener("wheel", e => {
 let selectedEdgeOi = null;
 let highlightRouteOis = new Set();
 let routeTargetPickArmed = false;
+let chooseRouteTargetFromPick = async () => {};
+let refreshRouteTargetPanel = async () => {};
 
 function hideReviewPanels() {
   const rp = document.getElementById("remove-branch-panel");
@@ -2737,6 +2861,10 @@ window.addEventListener("message", (ev) => {
     if (ctPanesApi && typeof ctPanesApi.setRouteTargetPickArmed === "function") {
       ctPanesApi.setRouteTargetPickArmed(routeTargetPickArmed);
     }
+    return;
+  }
+  if (data.type === "route-target-pick") {
+    chooseRouteTargetFromPick(data.ras_mm);
     return;
   }
   if (data.type === "set-variant" && data.variant) {
@@ -2971,6 +3099,7 @@ async function ensureCtPanes() {
       },
       onLesionChange: (lesion) => {
         A.lesion = lesion;
+        refreshRouteTargetPanel();
         if (window.parent && window.parent !== window) {
           try {
             window.parent.postMessage(
@@ -3038,6 +3167,208 @@ function render() {
   resize();
 }
 
+function setupRouteTargetPanel() {
+  const panel = document.getElementById("route-target-panel");
+  const cards = document.getElementById("route-target-cards");
+  const pickBtn = document.getElementById("route-target-pick");
+  if (!panel || !cards || !pickBtn) return;
+  let routeTargetBusy = false;
+  let routeTargetFetchGen = 0;
+
+  function setRouteTargetStatus(text, isError) {
+    const el = document.getElementById("route-target-status");
+    if (!el) return;
+    el.textContent = text || "";
+    el.classList.toggle("is-error", !!isError && !!text);
+  }
+
+  function routeTargetErrorDetail(body, status) {
+    const detail = body && body.detail;
+    if (typeof detail === "string" && detail) return detail;
+    if (Array.isArray(detail)) return detail.map(item => String(item)).join(" ");
+    return `RouteTarget failed (${status})`;
+  }
+
+  function routeTargetMm(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    return n.toFixed(2);
+  }
+
+  function routeTargetPlace(cand) {
+    const lobe = cand && cand.lobe ? String(cand.lobe) : "";
+    const name = cand && cand.airway_name ? String(cand.airway_name) : "";
+    if (lobe && name) return `${lobe} / ${name}`;
+    if (lobe) return lobe;
+    if (name) return name;
+    return "—";
+  }
+
+  function routeTargetSelected(cand) {
+    const rt = A.route_target;
+    if (!rt || rt.stale || !cand) return false;
+    return Number(rt.edge_id) === Number(cand.edge_id)
+      && Number(rt.sample_index) === Number(cand.sample_index);
+  }
+
+  function setRouteTargetPickArmed(on) {
+    routeTargetPickArmed = !VIEWER_MODE && !!on;
+    if (ctPanesApi && typeof ctPanesApi.setRouteTargetPickArmed === "function") {
+      ctPanesApi.setRouteTargetPickArmed(routeTargetPickArmed);
+    }
+    pickBtn.setAttribute("aria-pressed", String(routeTargetPickArmed));
+  }
+
+  function highlightRouteTarget(cand) {
+    const ids = Array.isArray(cand && cand.route_edge_ids) ? cand.route_edge_ids : [];
+    highlightRouteOis = new Set(ids.map(Number).filter(n => Number.isFinite(n)));
+    if (ctPanesApi && typeof ctPanesApi.setHighlightRoute === "function") {
+      ctPanesApi.setHighlightRoute([...highlightRouteOis]);
+    }
+    if (cand && Array.isArray(cand.ras_mm) && cand.ras_mm.length === 3) {
+      SharedPos.set(cand.ras_mm, "route-target-hover");
+    }
+  }
+
+  function clearRouteTargetHighlight() {
+    highlightRouteOis = new Set();
+    if (ctPanesApi && typeof ctPanesApi.setHighlightRoute === "function") {
+      ctPanesApi.setHighlightRoute([]);
+    }
+  }
+
+  function fillRouteTargetCard(button, cand) {
+    button.replaceChildren();
+    button.className = "route-target-card";
+    button.type = "button";
+    button.setAttribute("aria-pressed", routeTargetSelected(cand) ? "true" : "false");
+    const gap = document.createElement("span");
+    gap.className = "route-target-gap";
+    gap.textContent = `target gap ${routeTargetMm(cand.target_gap_mm)} mm`;
+    const gen = document.createElement("span");
+    gen.textContent = `generation ${cand.generation}`;
+    const length = document.createElement("span");
+    length.textContent = `route length ${routeTargetMm(cand.route_length_mm)} mm`;
+    const place = document.createElement("span");
+    place.textContent = routeTargetPlace(cand);
+    button.appendChild(gap);
+    button.appendChild(gen);
+    button.appendChild(length);
+    button.appendChild(place);
+    if (Number(cand.interpolated_mm_on_route) > 0) {
+      const bridge = document.createElement("span");
+      bridge.className = "route-target-bridge";
+      bridge.textContent =
+        `crosses ${routeTargetMm(cand.interpolated_mm_on_route)} mm interpolated (confirmed)`;
+      button.appendChild(bridge);
+    }
+  }
+
+  async function reloadCasePayload() {
+    const query = new URLSearchParams(location.search);
+    const allow = VIEWER_MODE || query.get("allow_review") === "1";
+    let url = `/api/cases/${encodeURIComponent(CASE_ID)}/payload`;
+    if (allow) url += "?allow_review=1";
+    const res = await fetch(url);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(routeTargetErrorDetail(body, res.status));
+    for (const key of Object.keys(A)) {
+      if (!Object.prototype.hasOwnProperty.call(body, key)) delete A[key];
+    }
+    Object.assign(A, body);
+    if (ctPanesApi && typeof ctPanesApi.drawAll === "function") ctPanesApi.drawAll();
+  }
+
+  async function putRouteTarget(payload) {
+    if (VIEWER_MODE || routeTargetBusy || !CASE_ID) return;
+    routeTargetBusy = true;
+    try {
+      const res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/route-target`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setRouteTargetStatus(routeTargetErrorDetail(body, res.status), true);
+        return;
+      }
+      setRouteTargetPickArmed(false);
+      setRouteTargetStatus("", false);
+      await reloadCasePayload();
+      await refreshRouteTargetPanel();
+    } catch (err) {
+      setRouteTargetStatus(String(err.message || err), true);
+    } finally {
+      routeTargetBusy = false;
+    }
+  }
+
+  refreshRouteTargetPanel = async function () {
+    const lesion = A.lesion;
+    if (!SERVER_MODE || !lesion || !lesion.ras_mm) {
+      panel.hidden = true;
+      cards.replaceChildren();
+      clearRouteTargetHighlight();
+      return;
+    }
+    panel.hidden = false;
+    const gen = ++routeTargetFetchGen;
+    let res;
+    try {
+      res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/route-candidates`);
+    } catch (err) {
+      if (gen !== routeTargetFetchGen) return;
+      setRouteTargetStatus(String(err.message || err), true);
+      return;
+    }
+    const body = await res.json().catch(() => ({}));
+    if (gen !== routeTargetFetchGen) return;
+    if (!res.ok) {
+      cards.replaceChildren();
+      setRouteTargetStatus(routeTargetErrorDetail(body, res.status), true);
+      return;
+    }
+    const list = Array.isArray(body.candidates) ? body.candidates : [];
+    cards.replaceChildren();
+    for (const cand of list) {
+      const button = document.createElement("button");
+      fillRouteTargetCard(button, cand);
+      button.addEventListener("pointerenter", () => highlightRouteTarget(cand));
+      button.addEventListener("pointerleave", () => clearRouteTargetHighlight());
+      button.addEventListener("focus", () => highlightRouteTarget(cand));
+      button.addEventListener("blur", () => clearRouteTargetHighlight());
+      button.addEventListener("click", () => {
+        putRouteTarget({
+          edge_id: cand.edge_id,
+          sample_index: cand.sample_index,
+        });
+      });
+      cards.appendChild(button);
+    }
+    if (!routeTargetPickArmed) {
+      const status = document.getElementById("route-target-status");
+      if (status && !status.classList.contains("is-error")) setRouteTargetStatus("", false);
+    }
+  };
+
+  chooseRouteTargetFromPick = async function (ras) {
+    if (!routeTargetPickArmed) return;
+    if (!Array.isArray(ras) || ras.length !== 3) return;
+    await putRouteTarget({ ras_mm: ras.map(Number) });
+  };
+
+  pickBtn.disabled = !!VIEWER_MODE;
+  pickBtn.addEventListener("click", () => {
+    if (VIEWER_MODE) return;
+    const next = !routeTargetPickArmed;
+    setRouteTargetPickArmed(next);
+    if (next) setRouteTargetStatus("Click CT-seen centreline", false);
+    else setRouteTargetStatus("", false);
+  });
+  refreshRouteTargetPanel();
+}
+
 if (DEBUG) {
   function mainBronchusNodes() {
     const carina = carinaNodeId();
@@ -3070,7 +3401,19 @@ if (DEBUG) {
         ? window.CtPanes.nearestCtSeenSample(edges, origin, ras)
         : null
     ),
-    routeTargetLesionAnchor: () => routeTargetLesionAnchor(null),
+    routeTargetLesionAnchor: () => routeTargetLesionAnchor(A.lesion && A.lesion.ras_mm),
+    routeTargetState: () => ({
+      visible: !document.getElementById("route-target-panel").hidden,
+      status: document.getElementById("route-target-status").textContent,
+      armed: routeTargetPickArmed,
+      highlight: [...highlightRouteOis],
+      anatomicalHighlightDraws,
+      topologyHighlightDraws,
+      anatomicalTarget: lastAnatomicalRouteTarget,
+      anatomicalGap: lastAnatomicalGap,
+      topologyTarget: lastTopologyRouteTarget,
+      topologyLesion: lastTopologyLesion,
+    }),
     topology: () => ({
       pan: [cam.panX, cam.panY],
       pickedEdge: A.edges.find(e => toWorld(A.nodes[String(e.t)].p)
@@ -3243,6 +3586,7 @@ async function setupCasePicker() {
 }
 
 setupCasePicker().catch(err => console.warn(err));
+setupRouteTargetPanel();
 resize(); render(); frame();
 }).catch((err) => console.error(err));
 </script>
