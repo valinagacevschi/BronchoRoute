@@ -1,3 +1,4 @@
+<!-- Changes: live Record to MP4 at 1080p30 or 720p30 with the still burn-in. -->
 <!-- Changes: PNG stills at 2× CSS size with burn-in, HUD and Lesion toggles, and Save image. -->
 <!-- Changes: estimated strokes follow the terminal radius; Layers stays above the footer. -->
 <!-- Changes: anatomical estimated-airway layer, dashed and fading, toggled in the session. -->
@@ -510,8 +511,33 @@ body.walkthrough-active .walk-sim-label { display: block; }
 }
 #save-image-btn { background: var(--steel); border-color: var(--steel); color: #fff; }
 #save-image-btn:disabled { opacity: .55; cursor: progress; }
-#save-image-btn:focus-visible, #save-image-options:focus-visible {
+#save-image-btn:focus-visible, #save-image-options:focus-visible,
+#record-btn:focus-visible, #record-stop:focus-visible {
   outline: 2px solid var(--steel); outline-offset: 2px;
+}
+#record-btn, #record-stop {
+  font: 500 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
+  letter-spacing: .03em;
+  border: 1px solid var(--edge); border-radius: 6px;
+  padding: 7px 10px; background: var(--ground); color: var(--ink); cursor: pointer;
+}
+#record-stop { background: #9d2c2c; border-color: #9d2c2c; color: #fff; }
+#record-btn:disabled, #record-stop:disabled { opacity: .55; cursor: progress; }
+#record-btn[hidden], #record-stop[hidden], #record-indicator[hidden], #record-size-label[hidden] {
+  display: none;
+}
+#record-indicator {
+  color: #c42318;
+  font: 600 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
+  letter-spacing: .04em;
+}
+#record-status {
+  margin: 0; color: var(--muted); font-size: 12px; line-height: 1.35;
+}
+#record-status:empty { display: none; }
+#record-size {
+  font: inherit; color: var(--ink); background: var(--ground);
+  border: 1px solid var(--edge); border-radius: 4px; margin-left: 6px;
 }
 .save-image-popover {
   margin: 8px 0 0; width: max-content; height: max-content;
@@ -596,12 +622,22 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <h2>Export</h2>
     <div class="save-image-row">
       <button type="button" id="save-image-btn">Save image</button>
+      <button type="button" id="record-btn" hidden>Record</button>
+      <button type="button" id="record-stop" hidden>Stop</button>
+      <span id="record-indicator" hidden role="status" aria-live="polite">● REC 00:00</span>
       <button type="button" id="save-image-options" popovertarget="save-image-popover"
         aria-controls="save-image-popover">Options</button>
     </div>
+    <p id="record-status" role="status"></p>
     <div id="save-image-popover" class="save-image-popover" popover>
       <label><input type="checkbox" id="save-image-hud" checked> Include HUD</label>
       <label><input type="checkbox" id="save-image-lesion" checked> Show Lesion</label>
+      <label id="record-size-label" hidden>Resolution
+        <select id="record-size" aria-label="Record resolution">
+          <option value="1080" selected>1080p</option>
+          <option value="720">720p</option>
+        </select>
+      </label>
     </div>
   </div>
 
@@ -4038,10 +4074,19 @@ function exportImageFileName(when) {
   return `${exportCaseId()}_${key}_${exportStamp(when).file}.png`;
 }
 
+function exportVideoFileName(when) {
+  const key = exportViewKey();
+  if (!key) return null;
+  return `${exportCaseId()}_${key}_${exportStamp(when).file}.mp4`;
+}
+
 function syncSaveImageControl() {
   const box = document.getElementById("save-image");
   if (!box) return;
   const on = exportViewKey() != null;
+  if (recordSession && !recordSession.stopping && exportViewKey() !== recordSession.view) {
+    finishRecording("save");
+  }
   box.hidden = !on;
   if (!on) {
     const pop = document.getElementById("save-image-popover");
@@ -4049,6 +4094,8 @@ function syncSaveImageControl() {
       pop.hidePopover();
     }
   }
+  const mode = !recordSession ? "idle" : (recordSession.stopping ? "stopping" : "recording");
+  setRecordUi(mode);
 }
 
 function gateHud(fn) {
@@ -4220,12 +4267,46 @@ function drawBurnIn(viewKey, when) {
   };
 }
 
-function renderStillCanvas(options) {
+function exportPaintOptions(options) {
   const opts = options && typeof options === "object" ? options : {};
   const hud = opts.hud !== false;
   const lesion = opts.lesion !== false;
   const when = opts.when instanceof Date && !Number.isNaN(opts.when.getTime()) ? opts.when : new Date();
-  const viewKey = exportViewKey();
+  const viewKey = opts.view || exportViewKey();
+  return { hud, lesion, when, viewKey };
+}
+
+function paintExportView(viewKey, when) {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = tok("--ground");
+  ctx.fillRect(0, 0, W, H);
+  if (viewKey === "anatomical") drawAnatomical();
+  else if (viewKey === "endoluminal") drawEndoluminal();
+  else drawTopology();
+  drawBurnIn(viewKey, when);
+}
+
+function withExportFrame(hud, lesion, paint) {
+  const screenCtx = ctx;
+  const screenW = W;
+  const screenH = H;
+  try {
+    exportFrame.active = true;
+    exportFrame.hud = hud;
+    exportFrame.lesion = lesion;
+    paint();
+  } finally {
+    exportFrame.active = false;
+    exportFrame.hud = true;
+    exportFrame.lesion = true;
+    ctx = screenCtx;
+    W = screenW;
+    H = screenH;
+  }
+}
+
+function renderStillCanvas(options) {
+  const { hud, lesion, when, viewKey } = exportPaintOptions(options);
   if (!viewKey) throw new Error("Save image is not available for this view");
   const cssW = cv.clientWidth;
   const cssH = cv.clientHeight;
@@ -4235,32 +4316,61 @@ function renderStillCanvas(options) {
   off.height = Math.round(cssH * 2);
   const offCtx = off.getContext("2d", { alpha: false }) || off.getContext("2d");
   if (!offCtx) throw new Error("Could not encode PNG");
-  const screenCtx = ctx;
-  const screenW = W;
-  const screenH = H;
-  try {
-    exportFrame.active = true;
-    exportFrame.hud = hud;
-    exportFrame.lesion = lesion;
+  withExportFrame(hud, lesion, () => {
     ctx = offCtx;
     W = cssW;
     H = cssH;
     ctx.setTransform(2, 0, 0, 2, 0, 0);
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = tok("--ground");
-    ctx.fillRect(0, 0, W, H);
-    if (viewKey === "anatomical") drawAnatomical();
-    else if (viewKey === "endoluminal") drawEndoluminal();
-    else drawTopology();
-    drawBurnIn(viewKey, when);
-  } finally {
-    exportFrame.active = false;
-    exportFrame.hud = true;
-    exportFrame.lesion = true;
-    ctx = screenCtx;
-    W = screenW;
-    H = screenH;
+    paintExportView(viewKey, when);
+  });
+  return off;
+}
+
+function recordFrameSize(width, height) {
+  return (width === 1920 && height === 1080) || (width === 1280 && height === 720);
+}
+
+function renderVideoCanvas(options) {
+  const { hud, lesion, when, viewKey } = exportPaintOptions(options);
+  const width = options && options.width;
+  const height = options && options.height;
+  if (!viewKey || !Object.prototype.hasOwnProperty.call(EXPORT_VIEW_NAMES, viewKey)) {
+    throw new Error("Record is not available for this view");
   }
+  if (!recordFrameSize(width, height)) throw new Error("Unsupported record size");
+  const cssW = cv.clientWidth;
+  const cssH = cv.clientHeight;
+  if (!(cssW > 0) || !(cssH > 0)) throw new Error("Canvas has no CSS size");
+  const off = document.createElement("canvas");
+  off.width = width;
+  off.height = height;
+  const offCtx = off.getContext("2d", { alpha: false }) || off.getContext("2d");
+  if (!offCtx) throw new Error("Could not encode video frame");
+  const scale = (cssW / cssH) >= (width / height) ? width / cssW : height / cssH;
+  const contentW = cssW * scale;
+  const contentH = cssH * scale;
+  const offsetX = (width - contentW) / 2;
+  const offsetY = (height - contentH) / 2;
+  withExportFrame(hud, lesion, () => {
+    ctx = offCtx;
+    W = cssW;
+    H = cssH;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = tok("--ground");
+    ctx.fillRect(0, 0, width, height);
+    ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+    paintExportView(viewKey, when);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = tok("--ground");
+    if (offsetY > 0.5) {
+      ctx.fillRect(0, 0, width, offsetY);
+      ctx.fillRect(0, offsetY + contentH, width, height - (offsetY + contentH));
+    }
+    if (offsetX > 0.5) {
+      ctx.fillRect(0, 0, offsetX, height);
+      ctx.fillRect(offsetX + contentW, 0, width - (offsetX + contentW), height);
+    }
+  });
   return off;
 }
 
@@ -4333,6 +4443,354 @@ async function exportStill(options) {
   return new Blob([stripped], { type: "image/png" });
 }
 
+const RECORD_FPS = 30;
+const RECORD_MAX_MS = 10 * 60 * 1000;
+const RECORD_AUTO_STOP = "Recording stopped at 10 minutes.";
+let recordSession = null;
+
+function canvasJpegBytes(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("Could not encode video frame"));
+        return;
+      }
+      blob.arrayBuffer().then((buf) => resolve(new Uint8Array(buf)), reject);
+    }, "image/jpeg", 0.92);
+  });
+}
+
+function createVideoFrameSource(options) {
+  const opts = options && typeof options === "object" ? options : {};
+  const view = opts.view || exportViewKey();
+  const width = opts.width;
+  const height = opts.height;
+  const hud = opts.hud !== false;
+  const lesion = opts.lesion !== false;
+  if (!view || !Object.prototype.hasOwnProperty.call(EXPORT_VIEW_NAMES, view)) {
+    throw new Error("Record is not available for this view");
+  }
+  if (!recordFrameSize(width, height)) throw new Error("Unsupported record size");
+  return {
+    view,
+    width,
+    height,
+    hud,
+    lesion,
+    frame(when) {
+      const ready = document.fonts && document.fonts.ready
+        ? document.fonts.ready.catch(() => {})
+        : Promise.resolve();
+      return ready.then(() => {
+        const canvas = renderVideoCanvas({ view, width, height, hud, lesion, when });
+        return canvasJpegBytes(canvas);
+      });
+    },
+  };
+}
+
+function createRecordScheduler(options) {
+  const opts = options || {};
+  const fps = opts.fps || RECORD_FPS;
+  const maxMs = opts.maxMs == null ? RECORD_MAX_MS : opts.maxMs;
+  const manual = opts.manual === true;
+  const draw = opts.draw;
+  const onFrame = opts.onFrame || function () {};
+  const onAutoStop = opts.onAutoStop || function () {};
+  const onError = opts.onError || function () {};
+  let origin = null;
+  let simNow = 0;
+  let nextIndex = 0;
+  let lastFrame = null;
+  let pendingFrame = null;
+  let drawing = false;
+  let token = 0;
+  let running = false;
+  let stopped = false;
+  let timer = null;
+
+  function time() {
+    return manual ? simNow : performance.now();
+  }
+
+  function framesDue(elapsedMs) {
+    const capped = Math.min(Math.max(0, elapsedMs), maxMs);
+    return Math.floor((capped * fps + 1e-6) / 1000);
+  }
+
+  function halt() {
+    stopped = true;
+    running = false;
+    token += 1;
+    drawing = false;
+    if (timer) clearTimeout(timer);
+    timer = null;
+  }
+
+  function kick() {
+    if (!running || stopped || drawing) return;
+    drawing = true;
+    const my = ++token;
+    Promise.resolve()
+      .then(() => draw())
+      .then((frame) => {
+        if (my !== token || stopped) return;
+        if (frame == null) return;
+        pendingFrame = frame;
+      })
+      .catch((err) => {
+        if (my !== token || stopped) return;
+        onError(err);
+      })
+      .finally(() => {
+        if (my !== token) return;
+        drawing = false;
+        if (pendingFrame != null && running && !stopped && !manual) poll(time());
+      });
+  }
+
+  function emitIndex(index) {
+    let duplicate = true;
+    if (pendingFrame != null) {
+      lastFrame = pendingFrame;
+      pendingFrame = null;
+      duplicate = false;
+    }
+    if (lastFrame == null) return false;
+    onFrame(lastFrame, {
+      duplicate,
+      index,
+      timeMs: (index * 1000) / fps,
+    });
+    if (stopped || !running) return true;
+    if (!drawing && pendingFrame == null) kick();
+    return true;
+  }
+
+  function poll(nowMs) {
+    if (stopped || !running || origin == null) return;
+    const elapsed = nowMs - origin;
+    const due = framesDue(elapsed);
+    while (nextIndex < due && running && !stopped) {
+      if (!emitIndex(nextIndex)) break;
+      nextIndex += 1;
+    }
+    if (!stopped && elapsed >= maxMs && nextIndex >= framesDue(maxMs)) {
+      halt();
+      onAutoStop(RECORD_AUTO_STOP);
+    }
+  }
+
+  function arm() {
+    if (!running || stopped || manual) return;
+    const nowMs = time();
+    const elapsed = Math.max(0, nowMs - origin);
+    const have = framesDue(Math.min(elapsed, maxMs));
+    const nextElapsed = ((have + 1) * 1000) / fps;
+    let delay = origin + nextElapsed - performance.now();
+    if (!(delay > 0)) delay = 1000 / fps;
+    timer = setTimeout(() => {
+      timer = null;
+      if (!running || stopped) return;
+      poll(time());
+      arm();
+    }, delay);
+  }
+
+  return {
+    start() {
+      if (running || stopped) return;
+      running = true;
+      origin = manual ? 0 : performance.now();
+      simNow = origin;
+      kick();
+      if (!manual) arm();
+    },
+    advance(ms) {
+      if (!manual) throw new Error("simulated advance requires a manual clock");
+      simNow += ms;
+      poll(simNow);
+      return { emitted: nextIndex, stopped };
+    },
+    stop() {
+      if (stopped) return;
+      halt();
+    },
+  };
+}
+
+function recordApi() {
+  const api = window.bronchoroute;
+  if (!api || typeof api.recordStart !== "function"
+    || typeof api.recordFrame !== "function"
+    || typeof api.recordStop !== "function"
+    || typeof api.recordCancel !== "function") return null;
+  return api;
+}
+
+function recordSize() {
+  const select = document.getElementById("record-size");
+  if (select && select.value === "720") return { width: 1280, height: 720 };
+  return { width: 1920, height: 1080 };
+}
+
+function formatRecordClock(index) {
+  const total = Math.max(0, Math.floor(index / RECORD_FPS));
+  const mm = String(Math.floor(total / 60)).padStart(2, "0");
+  const ss = String(total % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+function showRecordStatus(text) {
+  const el = document.getElementById("record-status");
+  if (el) el.textContent = text || "";
+}
+
+function recordErrorText(err) {
+  const message = err && err.message ? String(err.message) : "";
+  if (message.includes("Video export needs ffmpeg")) return "Video export needs ffmpeg";
+  return "Could not record video";
+}
+
+function setRecordUi(mode) {
+  const api = recordApi();
+  const onView = exportViewKey() != null;
+  const recording = mode === "recording";
+  const stopping = mode === "stopping";
+  const start = document.getElementById("record-btn");
+  const stop = document.getElementById("record-stop");
+  const indicator = document.getElementById("record-indicator");
+  const sizeLabel = document.getElementById("record-size-label");
+  const size = document.getElementById("record-size");
+  if (start) {
+    start.hidden = !api || !onView || recording || stopping;
+    start.disabled = stopping;
+  }
+  if (stop) stop.hidden = !recording;
+  if (indicator) indicator.hidden = !recording;
+  if (sizeLabel) sizeLabel.hidden = !api || !onView;
+  if (size) size.disabled = recording || stopping;
+}
+
+async function finishRecording(reason) {
+  const session = recordSession;
+  if (!session || session.stopping) return;
+  session.stopping = true;
+  session.scheduler.stop();
+  setRecordUi("stopping");
+  const api = recordApi();
+  try {
+    try {
+      await session.chain;
+    } catch (err) {
+      if (!session.error) session.error = err;
+    }
+    if (api) {
+      if (session.error || reason === "cancel" || session.sent < 1) {
+        await api.recordCancel({ recordingId: session.id });
+        if (session.error && !session.statusSet) showRecordStatus(recordErrorText(session.error));
+      } else {
+        await api.recordStop({ recordingId: session.id });
+      }
+    }
+  } catch (err) {
+    if (api) {
+      try { await api.recordCancel({ recordingId: session.id }); } catch (ignore) { /* already closed */ }
+    }
+    showRecordStatus(recordErrorText(err));
+  } finally {
+    if (recordSession === session) recordSession = null;
+    setRecordUi("idle");
+  }
+}
+
+async function startRecording() {
+  if (recordSession) return;
+  const api = recordApi();
+  if (!api) return;
+  const view = exportViewKey();
+  const name = exportVideoFileName(new Date());
+  if (!view || !name) return;
+  const size = recordSize();
+  const hud = document.getElementById("save-image-hud").checked;
+  const lesion = document.getElementById("save-image-lesion").checked;
+  showRecordStatus("");
+  const startBtn = document.getElementById("record-btn");
+  if (startBtn) startBtn.disabled = true;
+  let started;
+  try {
+    started = await api.recordStart({
+      defaultName: name,
+      width: size.width,
+      height: size.height,
+    });
+  } catch (err) {
+    showRecordStatus(recordErrorText(err));
+    if (startBtn) startBtn.disabled = false;
+    return;
+  }
+  if (startBtn) startBtn.disabled = false;
+  if (!started || started.saved === false || !started.recordingId) return;
+  if (exportViewKey() !== view) {
+    try { await api.recordCancel({ recordingId: started.recordingId }); } catch (err) { /* dialog closed */ }
+    return;
+  }
+  const source = createVideoFrameSource({
+    view,
+    width: size.width,
+    height: size.height,
+    hud,
+    lesion,
+  });
+  const session = {
+    id: started.recordingId,
+    view,
+    sent: 0,
+    error: null,
+    stopping: false,
+    statusSet: false,
+    chain: Promise.resolve(),
+    scheduler: null,
+  };
+  recordSession = session;
+  const indicator = document.getElementById("record-indicator");
+  if (indicator) indicator.textContent = "\u25cf REC 00:00";
+  setRecordUi("recording");
+  session.scheduler = createRecordScheduler({
+    fps: RECORD_FPS,
+    maxMs: RECORD_MAX_MS,
+    draw: () => source.frame(new Date()),
+    onFrame(bytes, info) {
+      if (session.stopping) return;
+      const live = document.getElementById("record-indicator");
+      if (live) live.textContent = `\u25cf REC ${formatRecordClock(info.index)}`;
+      const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      session.chain = session.chain.then(() => {
+        if (session.error) return false;
+        return api.recordFrame({ recordingId: session.id, bytes: payload }).then(() => true);
+      }).then((wrote) => {
+        if (wrote) session.sent += 1;
+      }).catch((err) => {
+        if (session.error) return;
+        session.error = err;
+        session.scheduler.stop();
+        Promise.resolve().then(() => finishRecording("cancel"));
+      });
+    },
+    onAutoStop(message) {
+      session.statusSet = true;
+      showRecordStatus(message);
+      finishRecording("save");
+    },
+    onError(err) {
+      if (session.error) return;
+      session.error = err;
+      Promise.resolve().then(() => finishRecording("cancel"));
+    },
+  });
+  session.scheduler.start();
+}
+
 let saveImageBusy = false;
 document.getElementById("save-image-options").addEventListener("click", () => {
   const pop = document.getElementById("save-image-popover");
@@ -4371,6 +4829,12 @@ document.getElementById("save-image-btn").addEventListener("click", () => {
   } catch (err) {
     console.error(err);
   }
+});
+document.getElementById("record-btn").addEventListener("click", () => {
+  startRecording();
+});
+document.getElementById("record-stop").addEventListener("click", () => {
+  finishRecording("save");
 });
 
 if (DEBUG) {
@@ -4572,6 +5036,8 @@ if (DEBUG) {
     aheadFraction: AHEAD_FRACTION,
     apDegeneracy: AP_DEGENERACY,
     exportStill,
+    createVideoFrameSource,
+    createRecordScheduler,
     burnIn() {
       if (!lastBurnIn) return null;
       return {

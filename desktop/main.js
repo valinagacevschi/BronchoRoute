@@ -1,3 +1,4 @@
+// Changes: Record IPC saves an MP4 under Movies/BronchoRoute and cancels if the window closes.
 // Changes: native Save image dialog under Pictures/BronchoRoute; never log the path.
 // Changes: one-time FileVault note when fdesetup reports FileVault is Off.
 // Changes: refuse non-arm64 launch and warn once when memory is below 16 GB.
@@ -10,6 +11,7 @@
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, session } = require("electron");
 const { execFile, spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -34,7 +36,14 @@ const {
   isPngBytes,
   resolveSaveImageBaseDir,
   saveImageDefaultPath,
+  isSaveVideoName,
+  isRecordSize,
+  isJpegBytes,
+  resolveSaveVideoBaseDir,
+  saveVideoDefaultPath,
+  resolveFfmpeg,
 } = require("./lib");
+const { startEncoder } = require("./encoder");
 
 app.setName("BronchoRoute");
 // Chromium's profile is userData. Point it at the override before ready so a
@@ -52,9 +61,24 @@ let mainWindow = null;
 let allowedPort = null;
 let shutdownStarted = false;
 let saveImageBaseDir = null;
+let saveVideoBaseDir = null;
+const recordings = new Map();
 
 function setSaveImageBaseDir(dir) {
   saveImageBaseDir = typeof dir === "string" && dir.trim() !== "" ? dir : null;
+}
+
+function setSaveVideoBaseDir(dir) {
+  saveVideoBaseDir = typeof dir === "string" && dir.trim() !== "" ? dir : null;
+}
+
+function cancelAllRecordings() {
+  const pending = [];
+  for (const [id, session] of recordings) {
+    recordings.delete(id);
+    pending.push(Promise.resolve(session.encoder.cancel()).catch(() => {}));
+  }
+  return Promise.all(pending);
 }
 
 function delay(ms) {
@@ -120,6 +144,9 @@ function createWindow() {
   // The viewer page has its own <title>; the window stays BronchoRoute.
   win.on("page-title-updated", (event) => {
     event.preventDefault();
+  });
+  win.on("closed", () => {
+    cancelAllRecordings().catch(() => {});
   });
   return win;
 }
@@ -529,6 +556,110 @@ function installSaveImage() {
   ipcMain.handle("bronchoroute:save-image", (event, payload) => saveImage(event, payload));
 }
 
+async function recordStart(event, payload) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error("Record request from an unknown window");
+  }
+  const defaultName = payload && payload.defaultName;
+  const width = payload && payload.width;
+  const height = payload && payload.height;
+  if (!isSaveVideoName(defaultName) || !isRecordSize(width, height) || recordings.size > 0) {
+    throw new Error("Invalid recording");
+  }
+  let defaultPath;
+  try {
+    const base = resolveSaveVideoBaseDir(saveVideoBaseDir, app.getPath("videos"));
+    defaultPath = saveVideoDefaultPath(base, defaultName);
+    fs.mkdirSync(path.dirname(defaultPath), { recursive: true });
+  } catch (err) {
+    throw new Error("Could not prepare the save folder");
+  }
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Save video",
+    defaultPath,
+    filters: [{ name: "MP4", extensions: ["mp4"] }],
+  });
+  if (result.canceled || typeof result.filePath !== "string" || result.filePath === "") {
+    return { saved: false };
+  }
+  let ffmpegPath;
+  try {
+    ffmpegPath = resolveFfmpeg({
+      packaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      env: process.env,
+    });
+  } catch (err) {
+    throw new Error("Video export needs ffmpeg");
+  }
+  let encoder;
+  try {
+    fs.mkdirSync(path.dirname(result.filePath), { recursive: true });
+    encoder = startEncoder({
+      ffmpegPath,
+      width,
+      height,
+      fps: 30,
+      outPath: result.filePath,
+    });
+  } catch (err) {
+    if (err && err.message === "Video export needs ffmpeg") {
+      throw new Error("Video export needs ffmpeg");
+    }
+    throw new Error("Could not record video");
+  }
+  const recordingId = crypto.randomBytes(16).toString("hex");
+  recordings.set(recordingId, { encoder, width, height });
+  return { recordingId };
+}
+
+async function recordFrame(event, payload) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error("Record frame from an unknown window");
+  }
+  const recordingId = payload && payload.recordingId;
+  const session = typeof recordingId === "string" ? recordings.get(recordingId) : null;
+  if (!session || !isJpegBytes(payload && payload.bytes)) {
+    throw new Error("Invalid video frame");
+  }
+  await session.encoder.writeFrame(payload.bytes);
+  return { ok: true };
+}
+
+async function recordStop(event, payload) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error("Record stop from an unknown window");
+  }
+  const recordingId = payload && payload.recordingId;
+  const session = typeof recordingId === "string" ? recordings.get(recordingId) : null;
+  if (!session) throw new Error("Unknown recording");
+  recordings.delete(recordingId);
+  await session.encoder.finish();
+  return { saved: true };
+}
+
+async function recordCancel(event, payload) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error("Record cancel from an unknown window");
+  }
+  const recordingId = payload && payload.recordingId;
+  if (typeof recordingId === "string" && recordings.has(recordingId)) {
+    const session = recordings.get(recordingId);
+    recordings.delete(recordingId);
+    await session.encoder.cancel();
+  } else if (!recordingId) {
+    await cancelAllRecordings();
+  }
+  return { saved: false };
+}
+
+function installRecord() {
+  ipcMain.handle("bronchoroute:record-start", (event, payload) => recordStart(event, payload));
+  ipcMain.handle("bronchoroute:record-frame", (event, payload) => recordFrame(event, payload));
+  ipcMain.handle("bronchoroute:record-stop", (event, payload) => recordStop(event, payload));
+  ipcMain.handle("bronchoroute:record-cancel", (event, payload) => recordCancel(event, payload));
+}
+
 function installArchiveMenu() {
   ipcMain.handle("bronchoroute:open-archive", event => openArchive(event));
   Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -554,6 +685,7 @@ async function launch() {
   mainWindow = createWindow();
   installArchiveMenu();
   installSaveImage();
+  installRecord();
   installNavigationGuards(mainWindow);
   await loadInline(mainWindow, splashHtml());
   mainWindow.show();
@@ -648,4 +780,14 @@ if (isDirectLaunch()) {
   });
 }
 
-module.exports = { start, openArchive, saveImage, setSaveImageBaseDir };
+module.exports = {
+  start,
+  openArchive,
+  saveImage,
+  setSaveImageBaseDir,
+  recordStart,
+  recordFrame,
+  recordStop,
+  recordCancel,
+  setSaveVideoBaseDir,
+};
