@@ -1,3 +1,5 @@
+// Changes: CT estimated airway is a #D2B4F0 stroke over a 1 px halo, faded no lower than 0.5.
+// Changes: estimated airway overlay uses the shared session toggle and the centreline slab.
 // Changes: bridge decisions beside CT controls and slice-slab midpoint rings.
 // Changes: drop RouteStart confirmation controls; draw the target gap dashed grey.
 // Changes: place a Lesion in any pane, drag its diameter, draw the sphere slice, no overlay gate.
@@ -271,6 +273,8 @@ window.CtPanes = (function () {
       debug,
       isViewActive,
       readOnly = false,
+      showEstimatedAirway: readEstimated = () => false,
+      setShowEstimatedAirway: writeEstimated = null,
     } = opts;
 
     const originMm = airway.origin_mm || [0, 0, 0];
@@ -292,6 +296,7 @@ window.CtPanes = (function () {
       lesion: true,
       target: true,
     };
+    const estimatedDrawn = { axial: 0, coronal: 0, sagittal: 0 };
     let marking = false;
     let provisionalDiameter = LESION_DIAMETER_DEFAULT;
     let lesionDrag = null;
@@ -316,6 +321,9 @@ window.CtPanes = (function () {
     let routeHighlightStrokes = 0;
     const offscreen = document.createElement("canvas");
     const offCtx = offscreen.getContext("2d", { willReadFrequently: true });
+    // Halo and tint are assembled here so the fade blends the tint with the CT, not with the halo.
+    const strokeLayer = document.createElement("canvas");
+    const strokeCtx = strokeLayer.getContext("2d");
 
     const state = {
       slices: { axial: 0, coronal: 0, sagittal: 0 },
@@ -496,16 +504,25 @@ window.CtPanes = (function () {
         ["route", "Route"],
         ["lesion", "Lesion"],
         ["target", "RouteTarget"],
+        ["estimated", "Estimated airway"],
       ]) {
         const lab = document.createElement("label");
         const cb = document.createElement("input");
         cb.type = "checkbox";
         cb.dataset.overlay = key;
-        cb.checked = overlays[key];
-        cb.onchange = () => {
-          overlays[key] = cb.checked;
-          drawAll();
-        };
+        if (key === "estimated") {
+          cb.checked = !!readEstimated();
+          cb.onchange = () => {
+            if (writeEstimated) writeEstimated(cb.checked);
+            else drawAll();
+          };
+        } else {
+          cb.checked = overlays[key];
+          cb.onchange = () => {
+            overlays[key] = cb.checked;
+            drawAll();
+          };
+        }
         lab.appendChild(cb);
         lab.appendChild(document.createTextNode(" " + label));
         ov.appendChild(lab);
@@ -1033,6 +1050,91 @@ window.CtPanes = (function () {
         }
       }
 
+      // Same ±1 voxel slab as the centreline overlay. Strokes are not pick targets.
+      // A translucent tint drawn over the halo turns the centre dark on lung grey.
+      estimatedDrawn[key] = 0;
+      if (readEstimated()) {
+        if (strokeLayer.width !== canvas.width || strokeLayer.height !== canvas.height) {
+          strokeLayer.width = canvas.width;
+          strokeLayer.height = canvas.height;
+        }
+        const strokeEstimatedRun = (pts) => {
+          if (!pts || pts.length < 2) return;
+          let dashAlong = 0;
+          for (let i = 1; i < pts.length; i++) {
+            const dist = pts[i][2];
+            const t = Number.isFinite(dist) ? Math.max(0, Math.min(1, dist / 15)) : 0;
+            const alpha = 1 - 0.5 * t;
+            const x0 = pts[i - 1][0];
+            const y0 = pts[i - 1][1];
+            const x1 = pts[i][0];
+            const y1 = pts[i][1];
+            const step = Math.hypot(x1 - x0, y1 - y0);
+            const pad = 6;
+            const x0d = Math.max(0, Math.floor((Math.min(x0, x1) - pad) * dpr));
+            const y0d = Math.max(0, Math.floor((Math.min(y0, y1) - pad) * dpr));
+            const x1d = Math.min(canvas.width, Math.ceil((Math.max(x0, x1) + pad) * dpr));
+            const y1d = Math.min(canvas.height, Math.ceil((Math.max(y0, y1) + pad) * dpr));
+            const sw = x1d - x0d;
+            const sh = y1d - y0d;
+            if (sw > 0 && sh > 0) {
+              strokeCtx.setTransform(1, 0, 0, 1, 0, 0);
+              strokeCtx.clearRect(x0d, y0d, sw, sh);
+              strokeCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+              strokeCtx.globalAlpha = 1;
+              strokeCtx.globalCompositeOperation = "source-over";
+              strokeCtx.lineCap = "butt";
+              strokeCtx.lineJoin = "round";
+              strokeCtx.setLineDash([5, 3]);
+              strokeCtx.lineDashOffset = -dashAlong;
+              strokeCtx.beginPath();
+              strokeCtx.moveTo(x0, y0);
+              strokeCtx.lineTo(x1, y1);
+              strokeCtx.lineWidth = 4;
+              strokeCtx.strokeStyle = "rgba(0,0,0,0.6)";
+              strokeCtx.stroke();
+              strokeCtx.lineWidth = 2;
+              strokeCtx.strokeStyle = "#D2B4F0";
+              strokeCtx.stroke();
+              // Integer device pixels, no smoothing: a fractional blit shifts the dash off the polyline.
+              ctx.save();
+              ctx.setTransform(1, 0, 0, 1, 0, 0);
+              ctx.imageSmoothingEnabled = false;
+              ctx.globalAlpha = alpha;
+              ctx.drawImage(strokeLayer, x0d, y0d, sw, sh, x0d, y0d, sw, sh);
+              ctx.restore();
+            }
+            dashAlong += step;
+            estimatedDrawn[key] += 2;
+          }
+        };
+        ctx.save();
+        for (const segment of (airway.estimated || [])) {
+          const line = segment.c || [];
+          const distances = segment.d || [];
+          const pts = [];
+          for (let i = 0; i < line.length; i++) {
+            const c = line[i];
+            const world = [c[0] + originMm[0], c[1] + originMm[1], c[2] + originMm[2]];
+            const ijk = worldToVoxelCont(world);
+            if (!inCropIjk(ijk, ctMeta.shape) || Math.abs(ijk[map.fixedAxis] - fixed) > 1.0) {
+              strokeEstimatedRun(pts);
+              pts.length = 0;
+              continue;
+            }
+            const uv = map.uvFromIjk(ijk[0], ijk[1], ijk[2]);
+            const dist = Number(distances[i] != null ? distances[i] : distances[i - 1]);
+            pts.push([
+              fit.ox + uv.u * fit.drawW,
+              fit.oy + uv.v * fit.drawH,
+              Number.isFinite(dist) ? dist : 0,
+            ]);
+          }
+          strokeEstimatedRun(pts);
+        }
+        ctx.restore();
+      }
+
       function drawMarker(world, color, label) {
         if (!world) return;
         const ijk = worldToVoxelCont(world);
@@ -1212,6 +1314,9 @@ window.CtPanes = (function () {
     function drawAll() {
       updateWlReadout();
       routeHighlightStrokes = 0;
+      estimatedDrawn.axial = 0;
+      estimatedDrawn.coronal = 0;
+      estimatedDrawn.sagittal = 0;
       for (const key of Object.keys(panes)) drawPane(key);
     }
 
@@ -1502,6 +1607,12 @@ window.CtPanes = (function () {
       };
     }
 
+    function syncEstimatedAirway() {
+      const el = toolbar.querySelector('[data-overlay="estimated"]');
+      if (el) el.checked = !!readEstimated();
+      drawAll();
+    }
+
     const api = {
       getBridgeDraw: () => structuredClone(bridgeDraw),
       drawAll,
@@ -1576,10 +1687,23 @@ window.CtPanes = (function () {
         };
       },
       setOverlay(key, on) {
+        if (key === "estimated") {
+          if (writeEstimated) writeEstimated(!!on);
+          else syncEstimatedAirway();
+          return;
+        }
         overlays[key] = !!on;
         const el = toolbar.querySelector(`[data-overlay="${key}"]`);
         if (el) el.checked = overlays[key];
         drawAll();
+      },
+      syncEstimatedAirway,
+      estimatedCounts() {
+        return {
+          axial: estimatedDrawn.axial,
+          coronal: estimatedDrawn.coronal,
+          sagittal: estimatedDrawn.sagittal,
+        };
       },
       debugState() {
         return {

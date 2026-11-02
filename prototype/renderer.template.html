@@ -1,4 +1,5 @@
 <!-- Changes: live Record to MP4 at 1080p30 or 720p30 with the still burn-in. -->
+<!-- Changes: estimated airway in topology and CT panes shares one session toggle. -->
 <!-- Changes: PNG stills at 2× CSS size with burn-in, HUD and Lesion toggles, and Save image. -->
 <!-- Changes: estimated strokes follow the terminal radius; Layers stays above the footer. -->
 <!-- Changes: anatomical estimated-airway layer, dashed and fading, toggled in the session. -->
@@ -1217,11 +1218,22 @@ let lastAnatomicalGap = null;
 let anatomicalHighlightDraws = 0;
 let showEstimatedAirway = true;
 let estimatedDrawnPoints = 0;
+let topologyEstimatedDrawn = 0;
+let topologyEstimatedLabels = 0;
 const estimatedAirwayToggle = document.getElementById("estimated-airway-toggle");
+function setShowEstimatedAirway(on) {
+  showEstimatedAirway = !!on;
+  if (estimatedAirwayToggle && estimatedAirwayToggle.checked !== showEstimatedAirway) {
+    estimatedAirwayToggle.checked = showEstimatedAirway;
+  }
+  if (ctPanesApi && typeof ctPanesApi.syncEstimatedAirway === "function") {
+    ctPanesApi.syncEstimatedAirway();
+  }
+}
 if (estimatedAirwayToggle) {
   showEstimatedAirway = estimatedAirwayToggle.checked;
   estimatedAirwayToggle.addEventListener("change", () => {
-    showEstimatedAirway = estimatedAirwayToggle.checked;
+    setShowEstimatedAirway(estimatedAirwayToggle.checked);
   });
 }
 
@@ -2923,6 +2935,8 @@ let topoLayout = null;
 let lastTopologyLesion = null;
 let lastTopologyRouteTarget = null;
 let topologyHighlightDraws = 0;
+let topologyEstimatedHits = [];
+let topoPointer = null;
 
 // Once a RouteTarget exists, the Lesion sits on that branch with the target gap.
 // Until then the marker stays beside the nearest CT-seen centreline sample.
@@ -3108,6 +3122,109 @@ function buildTopology() {
   topoLayout = pos;
 }
 
+function estimatedParentEdge(segment) {
+  const edges = A.edges || [];
+  const index = Number(segment && segment.from_edge);
+  if (!Number.isFinite(index)) return null;
+  for (const edge of edges) {
+    if (Number(edge.oi) === index) return edge;
+  }
+  return edges[index] || null;
+}
+
+function distToScreenSegment(sx, sy, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 <= 1e-6) return Math.hypot(sx - a.x, sy - a.y);
+  const t = Math.max(0, Math.min(1, ((sx - a.x) * dx + (sy - a.y) * dy) / len2));
+  return Math.hypot(sx - (a.x + t * dx), sy - (a.y + t * dy));
+}
+
+function nearestTopoEstimated(sx, sy) {
+  let best = null;
+  let bestD = Infinity;
+  for (const hit of topologyEstimatedHits) {
+    const pts = hit.pts;
+    for (let i = 1; i < pts.length; i++) {
+      const d = distToScreenSegment(sx, sy, pts[i - 1], pts[i]);
+      if (d < bestD) {
+        bestD = d;
+        best = hit;
+      }
+    }
+  }
+  return best ? { dist: bestD, gen: best.gen, pts: best.pts } : null;
+}
+
+function drawTopologyEstimated() {
+  // Radial stub only: parent's angle, 15 mm = one ring. Not a layout node.
+  topologyEstimatedHits = [];
+  topologyEstimatedDrawn = 0;
+  topologyEstimatedLabels = 0;
+  if (!showEstimatedAirway || !topoLayout) return;
+  const scale = DEFAULT_DIST / cam.dist;
+  ctx.save();
+  ctx.lineCap = "butt";
+  ctx.lineJoin = "round";
+  ctx.setLineDash([4, 3]);
+  for (const segment of (A.estimated || [])) {
+    const edge = estimatedParentEdge(segment);
+    if (!edge) continue;
+    const parent = topoLayout.get(edge.t);
+    if (!parent || !Number.isFinite(parent.a) || !Number.isFinite(parent.gen)) continue;
+    const distances = segment.d || [];
+    const count = Math.max((segment.c || []).length, distances.length);
+    if (count < 2) continue;
+    const parentGen = Number.isFinite(Number(edge.g)) ? Number(edge.g) : parent.gen;
+    const pts = [];
+    let prev = null;
+    let dashAlong = 0;
+    for (let i = 0; i < count; i++) {
+      const dist = Number(distances[i] != null ? distances[i] : distances[distances.length - 1]);
+      const frac = Number.isFinite(dist) ? Math.max(0, Math.min(1, dist / 15)) : 0;
+      const gen = parent.gen + frac;
+      const local = {
+        x: Math.sin(parent.a) * gen * 34,
+        y: Math.cos(parent.a) * gen * 34,
+      };
+      const pt = topoToScreen(local);
+      pts.push(pt);
+      if (prev) {
+        const step = Math.hypot(pt.x - prev.x, pt.y - prev.y);
+        if (step > 0.05) {
+          const t = Number.isFinite(dist) ? Math.max(0, Math.min(1, dist / 15)) : 0;
+          ctx.lineWidth = Math.max(1.5, Math.min(9, (Number(edge.r) || 1) * 1.6) * scale);
+          ctx.strokeStyle = estimatedColour(1 - 0.75 * t);
+          ctx.lineDashOffset = -dashAlong;
+          ctx.beginPath();
+          ctx.moveTo(prev.x, prev.y);
+          ctx.lineTo(pt.x, pt.y);
+          ctx.stroke();
+          dashAlong += step;
+          topologyEstimatedDrawn += 2;
+        }
+      }
+      prev = pt;
+    }
+    if (pts.length > 1) topologyEstimatedHits.push({ pts, gen: parentGen + 1 });
+  }
+  if (topoPointer) {
+    const hit = nearestTopoEstimated(topoPointer.x, topoPointer.y);
+    if (hit && hit.dist <= 10) {
+      const end = hit.pts[hit.pts.length - 1];
+      ctx.setLineDash([]);
+      ctx.font = '500 11px "IBM Plex Sans", sans-serif';
+      ctx.fillStyle = estimatedColour(1);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(`~${hit.gen}`, end.x + 8, end.y);
+      topologyEstimatedLabels += 1;
+    }
+  }
+  ctx.restore();
+}
+
 function topoToScreen(p) {
   const angle = topoRot * Math.PI / 180;
   const s = DEFAULT_DIST / cam.dist;
@@ -3167,6 +3284,7 @@ function drawTopology() {
     ctx.stroke();
     ctx.setLineDash([]);
   }
+  drawTopologyEstimated();
   const routed = A.route_target && !A.route_target.stale && A.endpoint;
   if (!routed) {
     const t = topoLayout.get(A.target);
@@ -3213,6 +3331,11 @@ function frame(now) {
     if (topoSpinTime != null) setTopoRotation(topoRot + (now - topoSpinTime) * 0.03, false);
     topoSpinTime = now;
   }
+  if (variant !== 0) estimatedDrawnPoints = 0;
+  if (variant !== 2) {
+    topologyEstimatedDrawn = 0;
+    topologyEstimatedLabels = 0;
+  }
   if (variant === 3) {
     requestAnimationFrame(frame);
     return;
@@ -3256,6 +3379,10 @@ cv.addEventListener("pointerup", e => {
   handleViewClick(e.clientX, e.clientY);
 });
 cv.addEventListener("pointermove", e => {
+  if (variant === 2) {
+    const rect = cv.getBoundingClientRect();
+    topoPointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
   if (rigDragging) {
     setRollFromPointer(e);
     return;
@@ -3277,6 +3404,7 @@ cv.addEventListener("pointermove", e => {
   if (variant === 2) { cam.panX += dx; cam.panY += dy; }
   else if (variant === 0) { orbitCamera(dx, dy); }
 });
+cv.addEventListener("pointerleave", () => { topoPointer = null; });
 cv.addEventListener("wheel", e => {
   if (variant === 3) return;
   e.preventDefault();
@@ -3468,6 +3596,10 @@ function handleViewClick(clientX, clientY) {
       const pt = topoToScreen(p);
       const d = Math.hypot(pt.x - sx, pt.y - sy);
       if (d < bestD) { bestD = d; bestId = id; }
+    }
+    const estimatedHit = nearestTopoEstimated(sx, sy);
+    if (estimatedHit && estimatedHit.dist <= 8 && (bestId == null || estimatedHit.dist < bestD)) {
+      return;
     }
     if (bestId != null) {
       SharedPos.set(toWorld(A.nodes[String(bestId)].p), "topology");
@@ -3706,6 +3838,8 @@ async function ensureCtPanes() {
       airway: A,
       sharedPos: SharedPos,
       readOnly: VIEWER_MODE || features.viewer_only,
+      showEstimatedAirway: () => showEstimatedAirway,
+      setShowEstimatedAirway,
       onBridgeChange: async () => {
         await refreshCasePayload();
         await refreshRouteTargetPanel();
@@ -3800,7 +3934,7 @@ function render() {
   document.getElementById("g-nav").style.opacity = endoActive ? "1" : ".45";
   document.getElementById("g-cam").hidden = variant !== 0;
   const estimatedLayers = document.getElementById("g-layers");
-  if (estimatedLayers) estimatedLayers.hidden = variant !== 0;
+  if (estimatedLayers) estimatedLayers.hidden = variant !== 0 && variant !== 2 && variant !== 3;
   syncPresetButtons();
   const ctOnly = variant === 3;
   const ctActive = ctOnly || walkActive;
@@ -3813,6 +3947,10 @@ function render() {
     else limitationsPanel.classList.remove("collapsed");
   }
   if (ctActive) ensureCtPanes();
+  // A toggle made while the panes were hidden drew into a 0×0 canvas.
+  if (ctActive && ctPanesApi && typeof ctPanesApi.drawAll === "function") {
+    ctPanesApi.drawAll();
+  }
   resize();
   syncSaveImageControl();
 }
@@ -4864,6 +5002,13 @@ if (DEBUG) {
       visible: showEstimatedAirway,
       segments: ((A && A.estimated) || []).length,
       drawnPoints: estimatedDrawnPoints,
+      topology: {
+        drawn: topologyEstimatedDrawn,
+        labels: topologyEstimatedLabels,
+      },
+      ct: (ctPanesApi && typeof ctPanesApi.estimatedCounts === "function")
+        ? ctPanesApi.estimatedCounts()
+        : { axial: 0, coronal: 0, sagittal: 0 },
     }),
     focusPoint(point, dist = 90) {
       cam.dist = dist;

@@ -1,6 +1,7 @@
 <!-- Changes: public snapshot keeps renderer.html for the splice tests; scanner waives registry UIDs, the .999 test branch, path-redaction lines, the pygltflib URL, and "Patient Protocol". -->
 <!-- Changes: TotalSegmentator weights path is nnUNet results; roi_subset still prefetches unused parts. -->
 <!-- Changes: Record at a fixed 30 Hz and encode with h264_videotoolbox, not libx264. -->
+<!-- Changes: topology estimated stubs sit on the parent ray, inside the node pick radius. -->
 <!-- Changes: PNG stills redraw at 2× CSS size; strip text chunks; do not log the save path. -->
 <!-- Changes: estimated airway is shifted into patient RAS and stored off the graph. -->
 <!-- Changes: verify default viewer routes as well as selectable RouteTarget routes. -->
@@ -33,6 +34,11 @@
   frames for one tick. Encode only with `h264_videotoolbox` (8M at 1080p, 4M at
   720p). An LGPL ffmpeg has no `libx264`. Dev resolves `BRONCHOROUTE_FFMPEG`, then
   `ffmpeg` on `PATH`; the packaged path is `Resources/ffmpeg/ffmpeg`.
+- Estimated airway in topology and CT (#41): the stub continues along the parent
+  node's screen ray, so part of it sits inside that node's 12 px pick radius.
+  A click there selects nothing only when the stub is strictly closer than the
+  node. Branch, generation, and centreline totals stay on payload edges. CT uses
+  the same ±1 voxel slab as the centreline and adds no pick target.
 - PNG stills (#42): redraw the current view into an offscreen canvas at 2× the
   CSS size with the same draw functions, then burn in. The anatomical scale bar
   uses look-at mm-per-pixel in that CSS space. Canvas PNGs can carry text
