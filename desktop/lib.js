@@ -1,3 +1,4 @@
+// Changes: validate Record names and JPEG frames, resolve ffmpeg, and the Movies/BronchoRoute path.
 // Changes: validate Save image names, PNG bytes, and the Pictures/BronchoRoute path.
 // Changes: FileVault status line used by the one-time first-run note.
 // Changes: arm64 gate and one-time warning below 16 GB of memory.
@@ -206,7 +207,7 @@ function isSaveImageName(name) {
   return typeof name === "string" && SAVE_IMAGE_NAME_RE.test(name);
 }
 
-function pngByteLength(bytes) {
+function byteLength(bytes) {
   if (Buffer.isBuffer(bytes) || ArrayBuffer.isView(bytes)) return bytes.byteLength;
   if (bytes instanceof ArrayBuffer) return bytes.byteLength;
   return null;
@@ -217,7 +218,7 @@ function pngFitsLimit(length) {
 }
 
 function isPngBytes(bytes) {
-  const length = pngByteLength(bytes);
+  const length = byteLength(bytes);
   if (!pngFitsLimit(length)) return false;
   const view = (Buffer.isBuffer(bytes) || ArrayBuffer.isView(bytes))
     ? bytes
@@ -248,6 +249,88 @@ function saveImageDefaultPath(baseDir, defaultName) {
   return path.join(baseDir, "BronchoRoute", defaultName);
 }
 
+const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
+const JPEG_MAX_BYTES = 5 * 1024 * 1024;
+const SAVE_VIDEO_NAME_RE = /^local-\d{3}_(anatomical|topology|endoluminal)_\d{8}-\d{4}\.mp4$/;
+
+function isSaveVideoName(name) {
+  return typeof name === "string" && SAVE_VIDEO_NAME_RE.test(name);
+}
+
+function isRecordSize(width, height) {
+  return (width === 1920 && height === 1080) || (width === 1280 && height === 720);
+}
+
+function jpegFitsLimit(length) {
+  return Number.isInteger(length) && length >= JPEG_SIGNATURE.length && length <= JPEG_MAX_BYTES;
+}
+
+function isJpegBytes(bytes) {
+  const length = byteLength(bytes);
+  if (!jpegFitsLimit(length)) return false;
+  const view = (Buffer.isBuffer(bytes) || ArrayBuffer.isView(bytes))
+    ? bytes
+    : new Uint8Array(bytes);
+  for (let i = 0; i < JPEG_SIGNATURE.length; i += 1) {
+    if (view[i] !== JPEG_SIGNATURE[i]) return false;
+  }
+  return true;
+}
+
+function resolveSaveVideoBaseDir(override, videosPath) {
+  if (typeof override === "string" && override.trim() !== "") {
+    return path.resolve(override.trim());
+  }
+  if (typeof videosPath !== "string" || videosPath.trim() === "") {
+    throw new Error("videos directory must be set");
+  }
+  return videosPath;
+}
+
+function saveVideoDefaultPath(baseDir, defaultName) {
+  if (typeof baseDir !== "string" || baseDir.trim() === "") {
+    throw new Error("save video base directory must be set");
+  }
+  if (!isSaveVideoName(defaultName)) {
+    throw new Error("invalid save video name");
+  }
+  return path.join(baseDir, "BronchoRoute", defaultName);
+}
+
+function findOnPath(fileName, pathEnv, exists) {
+  const entries = String(pathEnv || "").split(path.delimiter);
+  for (const entry of entries) {
+    if (!entry) continue;
+    const candidate = path.join(entry, fileName);
+    if (exists(candidate)) return candidate;
+  }
+  return null;
+}
+
+function resolveFfmpeg(options = {}) {
+  const packaged = options.packaged === true;
+  const env = options.env || process.env;
+  const exists = typeof options.exists === "function" ? options.exists : fs.existsSync;
+  if (packaged) {
+    const resourcesPath = options.resourcesPath;
+    if (typeof resourcesPath !== "string" || resourcesPath.trim() === "") {
+      throw new Error("Video export needs ffmpeg");
+    }
+    const bundled = path.join(resourcesPath, "ffmpeg", "ffmpeg");
+    if (!exists(bundled)) throw new Error("Video export needs ffmpeg");
+    return bundled;
+  }
+  const raw = env && env.BRONCHOROUTE_FFMPEG;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const candidate = path.resolve(raw.trim());
+    if (!exists(candidate)) throw new Error("Video export needs ffmpeg");
+    return candidate;
+  }
+  const found = findOnPath("ffmpeg", env && env.PATH, exists);
+  if (!found) throw new Error("Video export needs ffmpeg");
+  return found;
+}
+
 module.exports = {
   DISCLAIMER,
   FILEVAULT_NOTE,
@@ -275,4 +358,13 @@ module.exports = {
   isPngBytes,
   resolveSaveImageBaseDir,
   saveImageDefaultPath,
+  JPEG_SIGNATURE,
+  JPEG_MAX_BYTES,
+  isSaveVideoName,
+  isRecordSize,
+  jpegFitsLimit,
+  isJpegBytes,
+  resolveSaveVideoBaseDir,
+  saveVideoDefaultPath,
+  resolveFfmpeg,
 };

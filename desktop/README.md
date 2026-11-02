@@ -11,6 +11,10 @@ The shell starts `pipeline/app_server.py` with `uv` (must be on `PATH`) and open
 Set `BRONCHOROUTE_DATA_ROOT` to use a data root other than
 `~/Library/Application Support/BronchoRoute` (a pipeline tree, for local dev).
 
+## Video
+
+Live Record writes MP4 H.264 with ffmpeg's `h264_videotoolbox` encoder. An LGPL ffmpeg build has no `libx264`, so the encoder name stays `h264_videotoolbox`. In development, `BRONCHOROUTE_FFMPEG` selects the binary when it is set to an existing path; otherwise the shell uses `ffmpeg` on `PATH`. A packaged app uses `process.resourcesPath/ffmpeg/ffmpeg` (`Contents/Resources/ffmpeg/ffmpeg`). Bundling that LGPL binary is a later packaging step. `encoder.js` has to be added to the electron-builder file list at the same time.
+
 ## Signing and notarization
 
 `npm run pack` leaves the app unsigned (`identity` is null). Sign that build on this Mac.

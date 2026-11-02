@@ -1,3 +1,4 @@
+// Changes: Record name, JPEG signature, ffmpeg resolution, and injected Movies directory.
 // Changes: Save image name, PNG signature, and injected Pictures directory.
 // Changes: FileVault Off is the only status that asks for the one-time note.
 // Changes: cover the arm64 gate, the 16 GB warning, and sign scripts.
@@ -31,6 +32,14 @@ const {
   isPngBytes,
   resolveSaveImageBaseDir,
   saveImageDefaultPath,
+  JPEG_MAX_BYTES,
+  isSaveVideoName,
+  isRecordSize,
+  jpegFitsLimit,
+  isJpegBytes,
+  resolveSaveVideoBaseDir,
+  saveVideoDefaultPath,
+  resolveFfmpeg,
 } = require("./lib");
 
 test("parsePortLine accepts a single sidecar announcement", () => {
@@ -289,4 +298,153 @@ test("save image default path uses an injected pictures directory", () => {
   assert.throws(() => saveImageDefaultPath(base, "local-001_ct_20261101-2350.png"), /invalid save image name/);
   assert.throws(() => saveImageDefaultPath("  ", name), /base directory/);
   assert.throws(() => resolveSaveImageBaseDir("", "  "), /pictures directory/);
+});
+
+test("save video names accept only local-NNN view mp4s", () => {
+  const ok = [
+    "local-007_anatomical_20261101-2350.mp4",
+    "local-001_topology_20261102-0000.mp4",
+    "local-999_endoluminal_19990101-0000.mp4",
+    "local-001_anatomical_00000000-0000.mp4",
+  ];
+  for (const name of ok) assert.equal(isSaveVideoName(name), true, name);
+  const bad = [
+    "local-007_anatomical_20261101-2350.png",
+    "local-07_anatomical_20261101-2350.mp4",
+    "local-0001_anatomical_20261101-2350.mp4",
+    "local-001_ct-panes_20261101-2350.mp4",
+    "local-001_walkthrough_20261101-2350.mp4",
+    "local-001_Anatomical_20261101-2350.mp4",
+    "local-001_anatomical_2026111-2350.mp4",
+    "local-001_anatomical_20261101-235.mp4",
+    "local-001_anatomical_20261101-23500.mp4",
+    "local-001_anatomical_20261101-2350.MP4",
+    "local-001_anatomical_20261101-2350.mp4.exe",
+    "../local-001_anatomical_20261101-2350.mp4",
+    "local-001/anatomical_20261101-2350.mp4",
+    " local-001_anatomical_20261101-2350.mp4",
+    "local-001_anatomical_20261101-2350.mp4 ",
+    "",
+    null,
+    12,
+  ];
+  for (const name of bad) assert.equal(isSaveVideoName(name), false, String(name));
+  assert.equal(isRecordSize(1920, 1080), true);
+  assert.equal(isRecordSize(1280, 720), true);
+  assert.equal(isRecordSize(1920, 720), false);
+  assert.equal(isRecordSize("1920", 1080), false);
+  assert.equal(isRecordSize(1280.5, 720), false);
+});
+
+test("jpeg bytes require the signature and stay at or under 5 MB", () => {
+  const sig = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+  assert.equal(isJpegBytes(sig), true);
+  assert.equal(isJpegBytes(Buffer.concat([sig, Buffer.from([0, 1])])), true);
+  assert.equal(isJpegBytes(new Uint8Array(sig)), true);
+  assert.equal(isJpegBytes(Uint8Array.from(sig).buffer), true);
+  const padded = Buffer.concat([Buffer.from([1, 2]), sig]);
+  const view = new Uint8Array(padded.buffer, padded.byteOffset + 2, 4);
+  assert.equal(isJpegBytes(view), true);
+  assert.equal(isJpegBytes(Buffer.from([0xff, 0xd8])), false);
+  assert.equal(isJpegBytes(Buffer.from([0xff, 0xd8, 0x00, 0x00])), false);
+  assert.equal(isJpegBytes(Buffer.from("not a jpeg")), false);
+  assert.equal(isJpegBytes(null), false);
+  assert.equal(JPEG_MAX_BYTES, 5 * 1024 * 1024);
+  assert.equal(jpegFitsLimit(3), true);
+  assert.equal(jpegFitsLimit(2), false);
+  assert.equal(jpegFitsLimit(JPEG_MAX_BYTES), true);
+  assert.equal(jpegFitsLimit(JPEG_MAX_BYTES + 1), false);
+  const max = Buffer.alloc(JPEG_MAX_BYTES);
+  max[0] = 0xff;
+  max[1] = 0xd8;
+  max[2] = 0xff;
+  assert.equal(isJpegBytes(max), true);
+  const over = Buffer.alloc(JPEG_MAX_BYTES + 1);
+  over[0] = 0xff;
+  over[1] = 0xd8;
+  over[2] = 0xff;
+  assert.equal(isJpegBytes(over), false);
+});
+
+test("resolveFfmpeg prefers env, then PATH, then the packaged binary", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bronchoroute-43-ff-"));
+  try {
+    const envBin = path.join(root, "from-env");
+    fs.writeFileSync(envBin, "");
+    const binDir = path.join(root, "bin");
+    fs.mkdirSync(binDir);
+    const pathBin = path.join(binDir, "ffmpeg");
+    fs.writeFileSync(pathBin, "");
+    const bundled = path.join(root, "ffmpeg", "ffmpeg");
+    fs.mkdirSync(path.dirname(bundled), { recursive: true });
+    fs.writeFileSync(bundled, "");
+    assert.equal(
+      resolveFfmpeg({
+        packaged: false,
+        env: { BRONCHOROUTE_FFMPEG: `  ${envBin}  `, PATH: binDir },
+      }),
+      path.resolve(envBin),
+    );
+    assert.equal(
+      resolveFfmpeg({
+        packaged: false,
+        env: { BRONCHOROUTE_FFMPEG: "   ", PATH: binDir },
+      }),
+      pathBin,
+    );
+    assert.equal(
+      resolveFfmpeg({
+        packaged: true,
+        resourcesPath: root,
+        env: { BRONCHOROUTE_FFMPEG: envBin, PATH: binDir },
+      }),
+      bundled,
+    );
+    assert.throws(
+      () => resolveFfmpeg({
+        packaged: false,
+        env: { BRONCHOROUTE_FFMPEG: path.join(root, "missing"), PATH: binDir },
+      }),
+      (err) => err instanceof Error && err.message === "Video export needs ffmpeg",
+    );
+    assert.throws(
+      () => resolveFfmpeg({
+        packaged: true,
+        resourcesPath: path.join(root, "empty-resources"),
+        env: { BRONCHOROUTE_FFMPEG: envBin, PATH: binDir },
+      }),
+      (err) => err instanceof Error && err.message === "Video export needs ffmpeg",
+    );
+    assert.throws(
+      () => resolveFfmpeg({
+        packaged: false,
+        env: { PATH: path.join(root, "no-such-dir") },
+      }),
+      (err) => err instanceof Error && err.message === "Video export needs ffmpeg",
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("save video default path uses an injected movies directory", () => {
+  const name = "local-007_anatomical_20261101-2350.mp4";
+  const injected = path.join(os.tmpdir(), "bronchoroute-43-movies");
+  const base = resolveSaveVideoBaseDir(`  ${injected}  `, "/unused/Movies");
+  assert.equal(base, path.resolve(injected));
+  assert.equal(
+    saveVideoDefaultPath(base, name),
+    path.join(path.resolve(injected), "BronchoRoute", name),
+  );
+  assert.equal(
+    resolveSaveVideoBaseDir("   ", "/Users/someone/Movies"),
+    "/Users/someone/Movies",
+  );
+  assert.equal(
+    saveVideoDefaultPath("/Users/someone/Movies", "local-001_endoluminal_20261102-0001.mp4"),
+    path.join("/Users/someone/Movies", "BronchoRoute", "local-001_endoluminal_20261102-0001.mp4"),
+  );
+  assert.throws(() => saveVideoDefaultPath(base, "local-001_anatomical_20261101-2350.png"), /invalid save video name/);
+  assert.throws(() => saveVideoDefaultPath("  ", name), /base directory/);
+  assert.throws(() => resolveSaveVideoBaseDir("", "  "), /videos directory/);
 });

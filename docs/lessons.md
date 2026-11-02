@@ -1,4 +1,5 @@
 <!-- Changes: public snapshot keeps renderer.html for the splice tests; scanner waives registry UIDs, the .999 test branch, path-redaction lines, the pygltflib URL, and "Patient Protocol". -->
+<!-- Changes: Record at a fixed 30 Hz and encode with h264_videotoolbox, not libx264. -->
 <!-- Changes: PNG stills redraw at 2× CSS size; strip text chunks; do not log the save path. -->
 <!-- Changes: estimated airway is shifted into patient RAS and stored off the graph. -->
 <!-- Changes: verify default viewer routes as well as selectable RouteTarget routes. -->
@@ -18,6 +19,12 @@
   lines that reject or redact absolute paths, the pygltflib `gitlab.com` URL,
   and the header-inventory description "Patient Protocol". A private host in
   code aborts; the only host comment is stripped from `pipeline/paths.py`.
+- Live Record (#43): draw the still's CSS-sized view into a 1920×1080 or 1280×720
+  frame and letterbox it, so the burn-in strings stay the same. Tick at 30 Hz on
+  the wall clock and repeat the last JPEG when a draw is late; do not emit extra
+  frames for one tick. Encode only with `h264_videotoolbox` (8M at 1080p, 4M at
+  720p). An LGPL ffmpeg has no `libx264`. Dev resolves `BRONCHOROUTE_FFMPEG`, then
+  `ffmpeg` on `PATH`; the packaged path is `Resources/ffmpeg/ffmpeg`.
 - PNG stills (#42): redraw the current view into an offscreen canvas at 2× the
   CSS size with the same draw functions, then burn in. The anatomical scale bar
   uses look-at mm-per-pixel in that CSS space. Canvas PNGs can carry text
