@@ -11,7 +11,9 @@
     "smoke": "node scripts/smoke.js",
     "build:python": "bash scripts/build-python.sh",
     "pack": "electron-builder --mac dir --arm64 --publish never",
-    "smoke:packaged": "node scripts/smoke-packaged.js"
+    "smoke:packaged": "node scripts/smoke-packaged.js",
+    "sign": "bash scripts/sign-and-notarize.sh",
+    "sign:adhoc": "IDENTITY=- bash scripts/sign-and-notarize.sh"
   },
   "build": {
     "appId": "ro.appcenter.bronchoroute",

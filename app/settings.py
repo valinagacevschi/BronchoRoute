@@ -1,3 +1,4 @@
+# Changes: allow ram_warning_shown on the public settings allowlist.
 # Changes: one atomic settings store preserves switches and unknown fields.
 # Changes: app_state under LUNGNAV_CACHE_DIR when set (RO data root).
 """Local clinician identity (role + initials) and per-clinician CT view prefs.
@@ -183,6 +184,7 @@ def put_ct_view(ct_view: str, path: Path | None = None) -> dict:
 
 PUBLIC_DEFAULTS = {
     "initials": "", "role": "", "updates_enabled": True, "disclaimer_ack": False,
+    "ram_warning_shown": False,
 }
 
 

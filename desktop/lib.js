@@ -1,3 +1,4 @@
+// Changes: arm64 gate and one-time warning below 16 GB of memory.
 // Changes: shell helpers including isolated packaged Python launch configuration.
 // Changes: shell helpers; settings persistence belongs to the Python sidecar.
 // Changes: pure helpers for the dev-mode Electron shell (port, env, origin).
@@ -9,6 +10,22 @@ const path = require("node:path");
 
 const DISCLAIMER = "Research and education tool. Not a medical device. Not for diagnosis or treatment decisions.";
 const SPLASH = "Starting the AI stack… (first launch can take about a minute)";
+// os.totalmem() is physical bytes. A 16 GB Mac is not below this line.
+const MIN_RAM_BYTES = 16 * 1024 * 1024 * 1024;
+
+function hardwareBlockReason(arch) {
+  if (arch !== "arm64") {
+    return "BronchoRoute requires an Apple Silicon Mac (arm64).";
+  }
+  return null;
+}
+
+function shouldWarnLowRam(totalBytes, ramWarningShown) {
+  return typeof totalBytes === "number"
+    && Number.isFinite(totalBytes)
+    && totalBytes < MIN_RAM_BYTES
+    && ramWarningShown !== true;
+}
 
 function parsePortLine(line) {
   const match = /^BRONCHOROUTE_PORT=([0-9]+)$/.exec(String(line).trim());
@@ -185,4 +202,7 @@ module.exports = {
   newLaunchToken,
   atomicWriteText,
   atomicWriteJson,
+  MIN_RAM_BYTES,
+  hardwareBlockReason,
+  shouldWarnLowRam,
 };

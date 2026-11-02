@@ -1,3 +1,4 @@
+# Changes: settings payload includes ram_warning_shown.
 # Changes: import initials share Settings and leave the other preferences intact.
 # Changes: real-click Archive import and cancellation on a free port and isolated state.
 from __future__ import annotations
@@ -108,6 +109,9 @@ def test_archive_import(tracer_server, cancel):
         assert settings_writes == [{"initials": "AB"}]
         with urllib.request.urlopen(f"{base}/api/settings") as response:
             settings = json.load(response)
-        assert settings == {"initials": "AB", "role": "", "updates_enabled": True, "disclaimer_ack": False}
+        assert settings == {
+            "initials": "AB", "role": "", "updates_enabled": True, "disclaimer_ack": False,
+            "ram_warning_shown": False,
+        }
         assert not errors, errors
         browser.close()
