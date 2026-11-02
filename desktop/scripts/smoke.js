@@ -1,4 +1,4 @@
-// Changes: Electron smoke — render a Case, screenshot, SIGKILL leaves no sidecar.
+// Changes: synthetic Case smoke verifies click acknowledgement and persistence after relaunch.
 "use strict";
 
 const { spawn, spawnSync } = require("node:child_process");
@@ -12,10 +12,6 @@ function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function alive(pid) {
@@ -67,34 +63,22 @@ function sameSnapshot(before, after) {
   return true;
 }
 
-function linkInputTrees(dataRoot, pipeline) {
+function createSyntheticCase(dataRoot, pipeline) {
   const env = { ...process.env };
   delete env.PYTHONPATH;
   const code = [
     "import sys",
     "from pathlib import Path",
-    "from conftest import symlink_input_tree",
-    "dst = Path(sys.argv[1])",
-    "src = Path(sys.argv[2])",
-    "for name in ('data', 'ts_out', 'out'):",
-    "    symlink_input_tree(src / name, dst / name)",
+    "from test_app_server import _write_case_tree",
+    "_write_case_tree(Path(sys.argv[1]))",
   ].join("\n");
   const result = spawnSync(
     "uv",
-    ["run", "python", "-c", code, dataRoot, pipeline],
+    ["run", "python", "-c", code, dataRoot],
     { cwd: pipeline, env, encoding: "utf8" },
   );
   if (result.status !== 0) {
-    throw new Error("symlink_input_tree failed");
-  }
-}
-
-function ackSaved(file) {
-  try {
-    const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    return Boolean(data && data.disclaimer_ack === true);
-  } catch (err) {
-    return false;
+    throw new Error("synthetic Case setup failed");
   }
 }
 
@@ -105,18 +89,27 @@ async function childMain() {
     return;
   }
   const wc = launched.window.webContents;
-  const settingsPath = path.join(process.env.BRONCHOROUTE_DATA_ROOT, "settings.json");
+  const relaunch = process.env.BRONCHOROUTE_SMOKE_RELAUNCH === "1";
+  const ack = await wc.executeJavaScript(`(() => {
+    const button = document.getElementById("disclaimer-ack");
+    if (!button) return null;
+    const rect = button.getBoundingClientRect();
+    return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
+  })()`);
+  if (Boolean(ack) === relaunch) {
+    throw new Error(relaunch ? "disclaimer reappeared after relaunch" : "fresh launch has no disclaimer");
+  }
+  if (ack) {
+    wc.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...ack });
+    wc.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...ack });
+  }
   const deadline = Date.now() + 180000;
   let ready = false;
   let readyAt = 0;
   while (Date.now() < deadline) {
     let state = null;
     try {
-      state = await wc.executeJavaScript(`(() => {
-        const button = document.getElementById("disclaimer-ack");
-        if (button) {
-          button.click();
-        }
+      state = await wc.executeJavaScript(`(async () => {
         const canvases = Array.from(document.querySelectorAll("canvas"));
         let painted = false;
         for (const canvas of canvases) {
@@ -155,13 +148,14 @@ async function childMain() {
           buttons: document.querySelectorAll("#switcher button").length,
           overlay: Boolean(document.getElementById("disclaimer-overlay")),
           painted,
+          ackSaved: (await fetch("/api/settings").then(response => response.json())).disclaimer_ack === true,
         };
       })()`);
     } catch (err) {
       await delay(200);
       continue;
     }
-    if (state.buttons > 0 && !state.overlay && ackSaved(settingsPath)) {
+    if (state.buttons > 0 && !state.overlay && state.ackSaved) {
       if (!readyAt) {
         readyAt = Date.now();
       }
@@ -202,106 +196,85 @@ function killPid(pid) {
   }
 }
 
-function parentMain() {
+async function parentMain() {
   const electronBinary = require("electron");
   const repo = path.resolve(__dirname, "..", "..");
   const pipeline = path.join(repo, "pipeline");
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bronchoroute-26-data-"));
-  const trees = ["data", "ts_out", "out"].map((name) => path.join(pipeline, name));
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bronchoroute-32-data-"));
+  const trees = ["data", "ts_out", "out", "app_state"].map((name) => path.join(pipeline, name));
   const before = new Map();
   for (const tree of trees) {
     for (const [key, value] of snapshotDir(tree)) {
       before.set(key, value);
     }
   }
-  linkInputTrees(dataRoot, pipeline);
-  const child = spawn(electronBinary, [path.join(__dirname, "smoke.js")], {
-    cwd: path.resolve(__dirname, ".."),
-    env: {
-      ...process.env,
-      BRONCHOROUTE_DATA_ROOT: dataRoot,
-      BRONCHOROUTE_SMOKE: "1",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let buffer = "";
-  let stderr = "";
-  let shot = null;
-  let failed = null;
-  const done = new Promise((resolve) => {
-    child.stdout.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
-      const ready = buffer.match(/BRONCHOROUTE_SMOKE_READY (.+)\n/);
-      if (ready) {
-        shot = ready[1].trim();
-        resolve();
-      }
-      const fail = buffer.match(/BRONCHOROUTE_SMOKE_FAIL (.+)\n/);
-      if (fail && !shot) {
-        failed = fail[1].trim();
-        resolve();
-      }
+  createSyntheticCase(dataRoot, pipeline);
+  for (const relaunch of [false, true]) {
+    const child = spawn(electronBinary, [path.join(__dirname, "smoke.js")], {
+      cwd: path.resolve(__dirname, ".."),
+      env: {
+        ...process.env,
+        BRONCHOROUTE_DATA_ROOT: dataRoot,
+        BRONCHOROUTE_SMOKE: "1",
+        BRONCHOROUTE_SMOKE_RELAUNCH: relaunch ? "1" : "0",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-      if (stderr.length > 8000) {
-        stderr = stderr.slice(-8000);
+    let buffer = "";
+    let shot = null;
+    let failed = null;
+    const done = new Promise((resolve) => {
+      child.stdout.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        const ready = buffer.match(/BRONCHOROUTE_SMOKE_READY (.+)\n/);
+        const fail = buffer.match(/BRONCHOROUTE_SMOKE_FAIL (.+)\n/);
+        if (ready) {
+          shot = ready[1].trim();
+          resolve();
+        } else if (fail) {
+          failed = fail[1].trim();
+          resolve();
+        }
+      });
+      // Sidecar logs are intentionally not echoed by this test.
+      child.stderr.resume();
+      child.once("exit", resolve);
+      child.once("error", resolve);
+    });
+    const timer = setTimeout(() => killPid(child.pid), 240000);
+    try {
+      await done;
+      if (!shot) {
+        throw new Error(failed || "smoke failed");
       }
-    });
-    child.once("exit", () => {
-      resolve();
-    });
-  });
-  const timer = setTimeout(() => {
-    killPid(child.pid);
-  }, 240000);
-  done.then(() => {
-    clearTimeout(timer);
-    if (!shot) {
-      process.stderr.write(`${failed || "smoke failed"}\n`);
-      if (stderr.trim()) {
-        process.stderr.write(`${stderr.slice(-2000)}\n`);
+      const sidecarPid = Number(fs.readFileSync(path.join(dataRoot, "sidecar.pid"), "utf8").trim());
+      if (!Number.isInteger(sidecarPid) || sidecarPid <= 0) {
+        throw new Error("sidecar pid file is invalid");
       }
       killPid(child.pid);
-      process.exit(1);
-    }
-    const pidText = fs.readFileSync(path.join(dataRoot, "sidecar.pid"), "utf8").trim();
-    const sidecarPid = Number(pidText);
-    if (!Number.isInteger(sidecarPid) || sidecarPid <= 0) {
-      process.stderr.write("sidecar pid file is invalid\n");
+      const deadline = Date.now() + 10000;
+      while (alive(sidecarPid) && Date.now() < deadline) {
+        await delay(200);
+      }
+      if (alive(sidecarPid)) {
+        throw new Error("sidecar still running after SIGKILL");
+      }
+      process.stdout.write(`${relaunch ? "relaunch" : "fresh launch"}: passed\n`);
+      process.stdout.write(`${shot}\n`);
+    } finally {
+      clearTimeout(timer);
       killPid(child.pid);
-      process.exit(1);
     }
-    killPid(child.pid);
-    const deadline = Date.now() + 10000;
-    let gone = false;
-    while (Date.now() < deadline) {
-      if (!alive(sidecarPid)) {
-        gone = true;
-        break;
-      }
-      sleepSync(200);
+  }
+  const after = new Map();
+  for (const tree of trees) {
+    for (const [key, value] of snapshotDir(tree)) {
+      after.set(key, value);
     }
-    if (!gone) {
-      process.stderr.write("sidecar still running after SIGKILL\n");
-      process.exit(1);
-    }
-    const after = new Map();
-    for (const tree of trees) {
-      for (const [key, value] of snapshotDir(tree)) {
-        after.set(key, value);
-      }
-    }
-    if (!sameSnapshot(before, after)) {
-      process.stderr.write("real pipeline tree changed during smoke\n");
-      process.exit(1);
-    }
-    process.stdout.write(`${shot}\n`);
-  }).catch((err) => {
-    killPid(child.pid);
-    process.stderr.write(`${err && err.message ? err.message : "smoke failed"}\n`);
-    process.exit(1);
-  });
+  }
+  if (!sameSnapshot(before, after)) {
+    throw new Error("real pipeline tree changed during smoke");
+  }
 }
 
 if (inElectron) {
@@ -311,10 +284,8 @@ if (inElectron) {
     require("electron").app.exit(1);
   });
 } else {
-  try {
-    parentMain();
-  } catch (err) {
+  parentMain().catch((err) => {
     process.stderr.write(`${err && err.message ? err.message : "smoke failed"}\n`);
     process.exit(1);
-  }
+  });
 }
