@@ -13,7 +13,7 @@ import pytest
 from termcolor import cprint
 
 from test_app_server import _write_case_tree
-from test_viewer_v2_playwright import VIEWPORT, _playwright_or_skip
+from test_viewer_v2_playwright import _playwright_or_skip
 
 
 @pytest.fixture(scope="module")
@@ -66,7 +66,7 @@ def test_about_dialog(server):
         about = json.load(res)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
-        page = browser.new_page(viewport=VIEWPORT)
+        page = browser.new_page(viewport={"width": 1440, "height": 868})
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.on(
@@ -80,6 +80,25 @@ def test_about_dialog(server):
         )
         assert "Could not load" not in page.locator("body").inner_text()
         assert not errors, errors
+        buttons = page.locator("#switcher button")
+        assert buttons.count() == 4
+        for index in range(buttons.count()):
+            buttons.nth(index).click()
+            assert page.locator("#about-open").evaluate("""link => {
+                const rect = link.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0 &&
+                    rect.left >= 0 && rect.top >= 0 &&
+                    rect.right <= innerWidth && rect.bottom <= innerHeight &&
+                    document.elementFromPoint(
+                        rect.left + rect.width / 2, rect.top + rect.height / 2
+                    ) === link;
+            }"""), f"About is unreachable in view {index}"
+            page.locator("#about-open").click()
+            page.locator("#about-dialog").wait_for(state="visible")
+            page.locator("#about-close").click()
+            page.locator("#about-dialog").wait_for(state="hidden")
+        assert page.locator(".brand span").text_content() == "BronchoRoute"
+        assert page.title() == "BronchoRoute"
         page.locator("#about-open").click()
         dialog = page.locator("#about-dialog")
         dialog.wait_for(state="visible")

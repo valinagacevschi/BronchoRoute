@@ -95,7 +95,7 @@ def test_root_is_renderer_not_shell(server):
 
     with urllib.request.urlopen(f"{BASE}/", timeout=10) as res:
         html = res.read().decode("utf-8", errors="replace")
-    assert "Bronchial Tree Renderer" in html
+    assert "BronchoRoute" in html
     assert 'id="switcher"' in html
     assert 'id="workflow"' not in html
 

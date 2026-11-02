@@ -172,7 +172,7 @@ def client(harness):
 def test_root_serves_renderer_workflow_removed(client):
     root = client.get("/")
     assert root.status_code == 200
-    assert "Bronchial Tree Renderer" in root.text
+    assert "BronchoRoute" in root.text
     assert 'id="switcher"' in root.text
     assert 'id="workflow"' not in root.text
 

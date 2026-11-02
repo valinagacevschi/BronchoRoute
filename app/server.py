@@ -164,7 +164,7 @@ async def _lifespan(_app: FastAPI):
         close_sidecar_log(log_handler)
 
 
-app = FastAPI(title="Lung Navigator", docs_url=None, redoc_url=None, lifespan=_lifespan)
+app = FastAPI(title="BronchoRoute", docs_url=None, redoc_url=None, lifespan=_lifespan)
 app.add_middleware(_DeployGuards)
 
 
@@ -892,7 +892,7 @@ def create_app() -> FastAPI:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Lung Navigator local app server")
+    parser = argparse.ArgumentParser(description="BronchoRoute")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--exit-on-stdin-close", action="store_true")

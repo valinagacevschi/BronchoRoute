@@ -1,3 +1,4 @@
+<!-- Changes: keep About reachable in the fixed footer and name the viewer BronchoRoute. -->
 <!-- # Changes: review flags render as a collapsible amber warning panel. -->
 <!-- # Changes: About dialog with licence, notices, and sponsors. -->
 <!-- Changes: local IBM Plex faces and the research-tool footer. -->
@@ -11,7 +12,7 @@
      Phase 4c review: highlight-route also paints CT panes; raw pick ras_mm.
      Lesion confirm/clear posts lesion-changed to parent shell (workflow refresh).
      Drop stale draw() calls in postMessage handlers (rAF frame() redraws). -->
-<title>Bronchial Tree Renderer</title>
+<title>BronchoRoute</title>
 <style>
 /* Vendored IBM Plex (offline). Weights match the old Google Fonts request. */
 @font-face {
@@ -398,9 +399,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
   display: none;
 }
 .about-link {
-  margin-top: auto; align-self: flex-start;
-  font: 500 13px/1 "IBM Plex Sans Condensed", sans-serif;
-  letter-spacing: .04em; color: var(--steel);
+  color: var(--steel);
   text-decoration: underline; text-underline-offset: 2px;
 }
 #about-dialog {
@@ -435,7 +434,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 <div class="walk-sim-label" id="walk-sim-label">Simulated steering — not measured scope orientation</div>
 
 <aside class="rail">
-  <div class="brand"><span>Lung Navigator</span>Bronchial tree renderer</div>
+  <div class="brand"><span>BronchoRoute</span>Airway route viewer</div>
 
   <section class="review-warnings" id="review-warnings" hidden aria-label="Review warnings">
     <button type="button" id="review-warnings-toggle" aria-expanded="true"
@@ -495,11 +494,9 @@ body.walkthrough-active .walk-sim-label { display: block; }
     truthful 3D tree against a legible 2D map, and fly the lumen to judge
     whether moving through it teaches anything.</p>
   </div>
-
-  <a href="#about" class="about-link" id="about-open">About</a>
 </aside>
 
-<p class="research-footer" role="contentinfo">Research and education tool. Not a medical device. Not for diagnosis or treatment decisions.</p>
+<p class="research-footer" role="contentinfo">Research and education tool. Not a medical device. Not for diagnosis or treatment decisions. · <a href="#about" class="about-link" id="about-open">About</a></p>
 
 <div class="proto">Prototype</div>
 
