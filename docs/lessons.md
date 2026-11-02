@@ -1,6 +1,10 @@
+<!-- Changes: lesion slice distance follows the RAS crop slice increment. -->
 <!-- Changes: retain Settings persistence and subprocess isolation lessons after rebase. -->
 # Lessons Learned
 
+- Lesion off-slice distance is to the voxel-centre plane along the crop's slice
+  increment (RAS: +axial superior, +coronal anterior, +sagittal patient right).
+  The drawn radius is sqrt(r² − d²); a faded circle is the wrong glyph.
 - Series selection: ranking by slice step before checking coverage can prefer a partial
   gated reconstruction. Classify eligibility first, use the first convolution-kernel
   value, and rank survivors independently of file discovery order. Keep the header

@@ -1,3 +1,4 @@
+# Changes: lesion placement is any CT pane and overlays are not gated on it.
 # Changes: keep AeroPath renderer coverage with legacy review explicitly enabled.
 # Changes: tmp ts_out trees symlink individual input files (never directories) so
 # review writes like airway_bridges_labels.nii.gz land in the tmp tree.
@@ -210,15 +211,15 @@ def test_p3_ct_panes(server, case_id):
         _ensure_step1(page, case_id)
         _open_ct(page, case_id)
 
-        # Q32: overlays disabled before lesion confirmation
+        # Lesion is optional: overlays stay enabled before one is placed.
         overlays_before = page.evaluate(
             """() => {
               const ct = window.__p3_debug.ct();
               return ct.overlaysEnabled();
             }"""
         )
-        assert overlays_before["airwayDisabled"] is True
-        assert overlays_before["routeDisabled"] is True
+        assert overlays_before["airwayDisabled"] is False
+        assert overlays_before["routeDisabled"] is False
         assert overlays_before["lesionConfirmed"] is False
 
         results = page.evaluate(
@@ -365,7 +366,7 @@ def test_p3_ct_panes(server, case_id):
                   && slicesMid.sagittal === slicesBefore.sagittal,
               };
 
-              // (f) Mark Lesion → axial click → adjust coronal → Confirm → panes → DELETE
+              // (f) Mark Lesion in the coronal pane → Confirm → panes → DELETE
               const lesionI = Math.floor(meta.shape[0] / 2);
               const lesionJ = Math.floor(meta.shape[1] / 2);
               const lesionK = Math.floor(meta.shape[2] / 2);
@@ -374,14 +375,8 @@ def test_p3_ct_panes(server, case_id):
                 aff[1][0]*(lesionI+0.5) + aff[1][1]*(lesionJ+0.5) + aff[1][2]*(lesionK+0.5) + aff[1][3],
                 aff[2][0]*(lesionI+0.5) + aff[2][1]*(lesionJ+0.5) + aff[2][2]*(lesionK+0.5) + aff[2][3],
               ];
-              const adjustWorld = [
-                aff[0][0]*(lesionI+0.5) + aff[0][1]*(lesionJ+1+0.5) + aff[0][2]*(lesionK+0.5) + aff[0][3],
-                aff[1][0]*(lesionI+0.5) + aff[1][1]*(lesionJ+1+0.5) + aff[1][2]*(lesionK+0.5) + aff[1][3],
-                aff[2][0]*(lesionI+0.5) + aff[2][1]*(lesionJ+1+0.5) + aff[2][2]*(lesionK+0.5) + aff[2][3],
-              ];
               ct.armMarkLesion();
               const ovArm = ct.overlaysEnabled();
-              // First click must be axial — coronal should not place
               ct.setWorld(lesionWorld);
               const corScr = ct.screenOfWorld('coronal', lesionWorld);
               const corCanvas = document.querySelector('.ct-pane-coronal canvas');
@@ -392,28 +387,7 @@ def test_p3_ct_panes(server, case_id):
                 clientY: corRect.top + corScr.y,
                 button: 0, pointerId: 2,
               }));
-              const noPlace = ct.getProvisional() == null;
-              // Axial place
-              const axScr = ct.screenOfWorld('axial', lesionWorld);
-              const axCanvas = document.querySelector('.ct-pane-axial canvas');
-              const axRect = axCanvas.getBoundingClientRect();
-              axCanvas.dispatchEvent(new PointerEvent('pointerdown', {
-                bubbles: true,
-                clientX: axRect.left + axScr.x,
-                clientY: axRect.top + axScr.y,
-                button: 0, pointerId: 3,
-              }));
               const placed = ct.getProvisional();
-              // Adjust in coronal
-              ct.setWorld(adjustWorld);
-              const adjScr = ct.screenOfWorld('coronal', adjustWorld);
-              corCanvas.dispatchEvent(new PointerEvent('pointerdown', {
-                bubbles: true,
-                clientX: corRect.left + adjScr.x,
-                clientY: corRect.top + adjScr.y,
-                button: 0, pointerId: 4,
-              }));
-              const adjusted = ct.getProvisional();
               await ct.confirmLesion();
               const lesion = ct.getLesion();
               const perPane = {
@@ -428,15 +402,14 @@ def test_p3_ct_panes(server, case_id):
               await ct.clearLesion();
               const afterDelete = ct.getLesion();
               out.checks.lesion = {
-                noPlace, placed, adjusted, lesion, perPane, dbg, ovArm, ovAfter, afterDelete,
-                ok: noPlace
-                  && !!placed
-                  && !!adjusted
+                placed, lesion, perPane, dbg, ovArm, ovAfter, afterDelete,
+                ok: !!placed
                   && !!lesion && !!lesion.ras_mm
-                  && Math.hypot(lesion.ras_mm[0]-adjustWorld[0],
-                                lesion.ras_mm[1]-adjustWorld[1],
-                                lesion.ras_mm[2]-adjustWorld[2]) < 2.0
+                  && Math.hypot(lesion.ras_mm[0]-placed[0],
+                                lesion.ras_mm[1]-placed[1],
+                                lesion.ras_mm[2]-placed[2]) < 2.0
                   && !!(perPane.axial && perPane.coronal && perPane.sagittal)
+                  && ovArm.airwayDisabled === false
                   && ovAfter.airwayDisabled === false
                   && afterDelete == null,
               };

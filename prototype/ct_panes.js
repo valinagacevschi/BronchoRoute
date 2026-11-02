@@ -1,3 +1,4 @@
+// Changes: place a Lesion in any pane, drag its diameter, draw the sphere slice, no overlay gate.
 /* Phase 4c review: raw click ras_mm (server snaps); hover route highlight in panes.
  * Phase 4b: hatched label 3; setAirwayOverlay; CT airway-voxel → remove branch.
  */
@@ -158,6 +159,88 @@ window.CtPanes = (function () {
     };
   }
 
+  const LESION_DIAMETER_DEFAULT = 10;
+  const LESION_DIAMETER_MIN = 2;
+  const LESION_DIAMETER_MAX = 60;
+
+  // Signed distance follows `increment` (one step of this pane's slice index).
+  // On a RAS crop that step is +superior for axial, +anterior for coronal,
+  // and +patient right for sagittal. In-plane radius is sqrt(r² − d²).
+  function lesionSliceGeometry(centreRas, diameterMm, planePointRas, incrementRas) {
+    const step = Math.hypot(incrementRas[0], incrementRas[1], incrementRas[2]);
+    const radius = Number(diameterMm) / 2;
+    if (!(step > 0) || !(radius >= 0)) {
+      return { through: false, signedDistanceMm: 0, inPlaneRadiusMm: 0 };
+    }
+    const ux = incrementRas[0] / step;
+    const uy = incrementRas[1] / step;
+    const uz = incrementRas[2] / step;
+    const d = (centreRas[0] - planePointRas[0]) * ux
+      + (centreRas[1] - planePointRas[1]) * uy
+      + (centreRas[2] - planePointRas[2]) * uz;
+    const through = d * d <= radius * radius + 1e-6;
+    return {
+      through,
+      signedDistanceMm: d,
+      inPlaneRadiusMm: through ? Math.sqrt(Math.max(0, radius * radius - d * d)) : 0,
+    };
+  }
+
+  function lesionDiameterOf(rec) {
+    const d = rec && Number(rec.diameter_mm);
+    if (Number.isFinite(d) && d >= LESION_DIAMETER_MIN && d <= LESION_DIAMETER_MAX) return d;
+    return LESION_DIAMETER_DEFAULT;
+  }
+
+  // CT-seen samples only. An interpolated edge contributes samples that touch
+  // a non-bridge segment; a fully interpolated edge contributes none.
+  function ctSeenSampleIndices(edge) {
+    const n = (edge.c || []).length;
+    const idx = [];
+    if (!n) return idx;
+    if (edge.prov === "ct") {
+      for (let i = 0; i < n; i++) idx.push(i);
+      return idx;
+    }
+    if (edge.prov !== "interpolated") return idx;
+    const interp = new Set(edge.ci || []);
+    if (!interp.size) return idx;
+    for (let i = 0; i < n; i++) {
+      const touchesInterp = (i > 0 && interp.has(i - 1)) || (i < n - 1 && interp.has(i));
+      const touchesCt = (i > 0 && !interp.has(i - 1)) || (i < n - 1 && !interp.has(i));
+      if (touchesCt && !touchesInterp) idx.push(i);
+    }
+    return idx;
+  }
+
+  function nearestCtSeenSample(edges, originMm, lesionRas) {
+    const origin = originMm || [0, 0, 0];
+    let best = null;
+    for (const edge of edges || []) {
+      const samples = edge.c || [];
+      for (const i of ctSeenSampleIndices(edge)) {
+        const rel = samples[i];
+        if (!rel) continue;
+        const world = [rel[0] + origin[0], rel[1] + origin[1], rel[2] + origin[2]];
+        const distMm = Math.hypot(
+          world[0] - lesionRas[0],
+          world[1] - lesionRas[1],
+          world[2] - lesionRas[2],
+        );
+        if (!best || distMm < best.distMm) {
+          best = {
+            distMm,
+            edge,
+            index: i,
+            frac: i / Math.max(1, samples.length - 1),
+            world,
+          };
+        }
+      }
+    }
+    return best;
+  }
+
   /** Largest mm/px that still fits every pane (shared anatomical scale). */
   function sharedMmPerPx(paneSpecs) {
     let mmPerPx = 0;
@@ -204,6 +287,8 @@ window.CtPanes = (function () {
       target: true,
     };
     let marking = false;
+    let provisionalDiameter = LESION_DIAMETER_DEFAULT;
+    let lesionDrag = null;
     let routeTargetPickArmed = false;
     let highlightRouteOis = new Set();
     let provisional = null;
@@ -212,6 +297,11 @@ window.CtPanes = (function () {
     let hoverPane = null;
     let wlDrag = null;
     let crosshair = sharedPos.get();
+    const lesionDraw = {
+      axial: { kind: "none" },
+      coronal: { kind: "none" },
+      sagittal: { kind: "none" },
+    };
     const offscreen = document.createElement("canvas");
     const offCtx = offscreen.getContext("2d", { willReadFrequently: true });
 
@@ -259,19 +349,10 @@ window.CtPanes = (function () {
     }
 
     function syncOverlayEnablement() {
-      const hint = toolbar.querySelector(".ct-overlay-hint");
-      if (readOnly) {
-        for (const el of toolbar.querySelectorAll("[data-overlay]")) {
-          el.disabled = false;
-        }
-        if (hint) hint.hidden = true;
-        return;
-      }
-      const ok = lesionConfirmed();
+      // The Lesion is optional: airway and route overlays stay usable without one.
       for (const el of toolbar.querySelectorAll("[data-overlay]")) {
-        el.disabled = !ok && el.dataset.overlay !== "lesion";
+        el.disabled = false;
       }
-      if (hint) hint.hidden = ok;
     }
 
     function syncConfirmEnabled() {
@@ -343,12 +424,6 @@ window.CtPanes = (function () {
         lab.appendChild(document.createTextNode(" " + label));
         ov.appendChild(lab);
       }
-      if (!readOnly) {
-        const hint = document.createElement("span");
-        hint.className = "ct-overlay-hint";
-        hint.textContent = "Mark and confirm the Lesion first";
-        ov.appendChild(hint);
-      }
 
       const lesionBox = document.createElement("div");
       lesionBox.className = "ct-lesion-box";
@@ -359,7 +434,9 @@ window.CtPanes = (function () {
       markBtn.onclick = () => {
         marking = true;
         provisional = null;
-        statusMessage("Click in the axial (red) pane");
+        provisionalDiameter = LESION_DIAMETER_DEFAULT;
+        lesionDrag = null;
+        statusMessage("Click a CT pane to place the Lesion");
         syncConfirmEnabled();
         drawAll();
       };
@@ -377,14 +454,7 @@ window.CtPanes = (function () {
       cancelBtn.className = "secondary";
       cancelBtn.textContent = "Cancel";
       cancelBtn.disabled = true;
-      cancelBtn.onclick = () => {
-        marking = false;
-        provisional = null;
-        statusMessage("");
-        syncConfirmEnabled();
-        updateLesionStatus();
-        drawAll();
-      };
+      cancelBtn.onclick = () => cancelMark();
       const clearBtn = document.createElement("button");
       clearBtn.type = "button";
       clearBtn.className = "secondary";
@@ -578,19 +648,29 @@ window.CtPanes = (function () {
     function updateLesionStatus() {
       const el = toolbar.querySelector("#ct-lesion-status");
       if (!el) return;
-      if (lesion && lesion.ras_mm) {
+      if (marking && provisional) {
+        el.textContent = `Ø ${provisionalDiameter.toFixed(1)} mm`;
+      } else if (lesion && lesion.ras_mm) {
         const who = lesion.confirmed_by || "";
         const when = lesion.at || "";
-        el.textContent = `Lesion confirmed${who ? " · " + who : ""}${when ? " · " + when : ""}`;
-      } else if (provisional) {
-        el.textContent = "Provisional marker — Confirm Lesion to save";
+        const dia = lesionDiameterOf(lesion).toFixed(1);
+        el.textContent = `Lesion confirmed · Ø ${dia} mm${who ? " · " + who : ""}${when ? " · " + when : ""}`;
       } else if (marking) {
-        el.textContent = "Click in the axial (red) pane";
+        el.textContent = "Click a CT pane to place the Lesion";
       } else {
         el.textContent = "";
       }
       syncOverlayEnablement();
       syncConfirmEnabled();
+    }
+
+    function cancelMark() {
+      marking = false;
+      provisional = null;
+      provisionalDiameter = LESION_DIAMETER_DEFAULT;
+      lesionDrag = null;
+      updateLesionStatus();
+      drawAll();
     }
 
     async function confirmLesion() {
@@ -612,7 +692,10 @@ window.CtPanes = (function () {
         res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/lesion`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ras_mm: provisional }),
+          body: JSON.stringify({
+          ras_mm: provisional,
+          diameter_mm: Math.round(provisionalDiameter * 10) / 10,
+        }),
         });
       } catch (err) {
         statusMessage(String(err.message || err));
@@ -627,6 +710,8 @@ window.CtPanes = (function () {
       lesion = body.lesion;
       provisional = null;
       marking = false;
+      lesionDrag = null;
+      provisionalDiameter = lesionDiameterOf(lesion);
       airway.lesion = lesion;
       if (onLesionChange) onLesionChange(lesion);
       updateLesionStatus();
@@ -660,9 +745,9 @@ window.CtPanes = (function () {
       lesion = null;
       provisional = null;
       marking = false;
+      lesionDrag = null;
+      provisionalDiameter = LESION_DIAMETER_DEFAULT;
       airway.lesion = null;
-      overlays.airway = false;
-      overlays.route = false;
       if (onLesionChange) onLesionChange(null);
       buildToolbar();
       drawAll();
@@ -715,15 +800,10 @@ window.CtPanes = (function () {
       state.slices.coronal = j;
       state.slices.sagittal = i;
       sharedPos.set(crosshair, source || "ct");
-      // Wheel/keys never move the provisional marker; only axial-place and pane clicks.
-      if (marking) {
-        if (source === "ct-axial-place") {
-          provisional = [...crosshair];
-          updateLesionStatus();
-        } else if (provisional && source === "ct") {
-          provisional = [...crosshair];
-          updateLesionStatus();
-        }
+      // Wheel and keys never move the provisional centre. Only an explicit place does.
+      if (marking && (source === "ct-lesion-place" || source === "ct-axial-place")) {
+        provisional = [...crosshair];
+        updateLesionStatus();
       }
       drawAll();
     }
@@ -851,6 +931,81 @@ window.CtPanes = (function () {
       ctx.restore();
     }
 
+    function sliceFrame(map, fixed) {
+      const ijk = [0, 0, 0];
+      ijk[map.fixedAxis] = fixed;
+      const next = ijk.slice();
+      next[map.fixedAxis] = fixed + 1;
+      const p0 = voxelToWorld(ijk[0], ijk[1], ijk[2]);
+      const p1 = voxelToWorld(next[0], next[1], next[2]);
+      return {
+        planePoint: p0,
+        increment: [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]],
+      };
+    }
+
+    function lesionDistanceLabel(signedMm) {
+      const n = Math.round(signedMm);
+      const sign = n > 0 ? "+" : "";
+      return `Lesion ${sign}${n} mm`;
+    }
+
+    function drawLesionGlyph(ctx, key, map, fit, fixed) {
+      const world = provisional || (lesion && lesion.ras_mm);
+      if (!overlays.lesion || !world) {
+        lesionDraw[key] = { kind: "none" };
+        return;
+      }
+      const diameter = provisional ? provisionalDiameter : lesionDiameterOf(lesion);
+      const frame = sliceFrame(map, fixed);
+      const geom = lesionSliceGeometry(world, diameter, frame.planePoint, frame.increment);
+      const ijk = worldToVoxelCont(world);
+      const uv = map.uvFromIjk(ijk[0], ijk[1], ijk[2]);
+      const sx = fit.ox + uv.u * fit.drawW;
+      const sy = fit.oy + uv.v * fit.drawH;
+      const record = {
+        kind: geom.through ? "circle" : "cross",
+        cx: sx,
+        cy: sy,
+        signedDistanceMm: geom.signedDistanceMm,
+        inPlaneRadiusMm: geom.inPlaneRadiusMm,
+        diameterMm: diameter,
+        label: geom.through ? "Lesion" : lesionDistanceLabel(geom.signedDistanceMm),
+        radiusPx: 0,
+      };
+      ctx.save();
+      ctx.strokeStyle = "#e85d4c";
+      ctx.fillStyle = "#e85d4c";
+      if (geom.through) {
+        const radiusPx = geom.inPlaneRadiusMm / (fit.mmPerPx || 1);
+        record.radiusPx = radiusPx;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(sx, sy, Math.max(radiusPx, 0.5), 0, Math.PI * 2);
+        ctx.stroke();
+        if (marking && provisional) {
+          ctx.font = "12px monospace";
+          ctx.fillText(`Ø ${diameter.toFixed(1)} mm`, sx + radiusPx + 6, sy);
+        }
+      } else {
+        // Off the sphere: faint cross and signed distance, not a faded circle.
+        ctx.globalAlpha = 0.4;
+        ctx.lineWidth = 1.25;
+        const arm = 7;
+        ctx.beginPath();
+        ctx.moveTo(sx - arm, sy);
+        ctx.lineTo(sx + arm, sy);
+        ctx.moveTo(sx, sy - arm);
+        ctx.lineTo(sx, sy + arm);
+        ctx.stroke();
+        ctx.globalAlpha = 0.85;
+        ctx.font = "11px monospace";
+        ctx.fillText(record.label, sx + 10, sy - 6);
+      }
+      ctx.restore();
+      lesionDraw[key] = record;
+    }
+
     function drawPane(key) {
       const pane = panes[key];
       const canvas = pane.canvas;
@@ -890,7 +1045,7 @@ window.CtPanes = (function () {
           px[idx + 1] = g;
           px[idx + 2] = g;
           px[idx + 3] = 255;
-          if (overlays.airway && (readOnly || lesionConfirmed())) {
+          if (overlays.airway) {
             const lab = sampleMask(i, j, k);
             const col = PROV_COLORS[lab];
             if (col) {
@@ -929,7 +1084,7 @@ window.CtPanes = (function () {
         if (pts.length > 1) strokeRouteSeg(ctx, pts, e.prov || "ct", { highlight });
       }
 
-      if (overlays.route && (readOnly || lesionConfirmed()) && airway.route) {
+      if (overlays.route && airway.route) {
         for (const ei of airway.route || []) {
           strokeEdgePolyline(airway.edges[ei], false);
         }
@@ -1000,14 +1155,11 @@ window.CtPanes = (function () {
         ctx.globalAlpha = 1;
       }
 
-      if (overlays.lesion) {
-        const L = provisional || (lesion && lesion.ras_mm);
-        if (L) drawMarker(L, "#e85d4c", "Lesion");
-      }
+      drawLesionGlyph(ctx, key, map, fit, fixed);
       if (airway.route_start && airway.route_start.ras_mm) {
         drawMarker(airway.route_start.ras_mm, "#B4522F", "RouteStart");
       }
-      if (overlays.target && (readOnly || lesionConfirmed())) {
+      if (overlays.target) {
         if (airway.endpoint) {
           const ep = [
             airway.endpoint[0] + originMm[0],
@@ -1132,17 +1284,15 @@ window.CtPanes = (function () {
       if (e.button !== 0) return;
       const world = eventToWorld(key, e.clientX, e.clientY);
       if (!world) return;
-      if (marking && !provisional) {
-        if (key !== "axial") {
-          statusMessage("Click in the axial (red) pane");
-          setCrosshairWorld(world, "ct");
+      if (marking) {
+        const near = provisional && pointerNearLesion(key, e.clientX, e.clientY);
+        if (!provisional || !near) {
+          provisionalDiameter = LESION_DIAMETER_DEFAULT;
+          lesionDrag = { pane: key, x: e.clientX, y: e.clientY, sizing: false };
+          setCrosshairWorld(world, "ct-lesion-place");
           return;
         }
-        setCrosshairWorld(world, "ct-axial-place");
-        return;
-      }
-      if (marking && provisional) {
-        setCrosshairWorld(world, "ct");
+        lesionDrag = { pane: key, x: e.clientX, y: e.clientY, sizing: true };
         return;
       }
       setCrosshairWorld(world, "ct");
@@ -1155,7 +1305,7 @@ window.CtPanes = (function () {
         return;
       }
       // Clicking an airway voxel selects the nearest graph edge for removal.
-      if (!readOnly && maskData && lesionConfirmed()) {
+      if (!readOnly && maskData) {
         const ijk = worldToVoxelCont(world);
         const ii = Math.round(ijk[0]), jj = Math.round(ijk[1]), kk = Math.round(ijk[2]);
         const lab = sampleMask(ii, jj, kk);
@@ -1171,6 +1321,27 @@ window.CtPanes = (function () {
       }
     }
 
+    function pointerNearLesion(paneKey, clientX, clientY) {
+      if (!provisional) return false;
+      const scr = screenOfWorld(paneKey, provisional);
+      if (!scr) return false;
+      const rect = panes[paneKey].canvas.getBoundingClientRect();
+      const px = Math.hypot(clientX - rect.left - scr.x, clientY - rect.top - scr.y);
+      const fit = fitFor(panes[paneKey].canvas, planeMap(paneKey).planeSizeUV);
+      const radiusPx = (provisionalDiameter / 2) / (fit.mmPerPx || 1);
+      return px <= Math.max(12, radiusPx + 4);
+    }
+
+    function diameterFromPointer(paneKey, clientX, clientY) {
+      const scr = screenOfWorld(paneKey, provisional);
+      if (!scr) return provisionalDiameter;
+      const rect = panes[paneKey].canvas.getBoundingClientRect();
+      const px = Math.hypot(clientX - rect.left - scr.x, clientY - rect.top - scr.y);
+      const fit = fitFor(panes[paneKey].canvas, planeMap(paneKey).planeSizeUV);
+      const radiusMm = px * (fit.mmPerPx || 0);
+      return clamp(radiusMm * 2, LESION_DIAMETER_MIN, LESION_DIAMETER_MAX);
+    }
+
     function onPointerMove(e) {
       const wrap = e.target.closest(".ct-pane");
       hoverPane = wrap ? wrap.dataset.pane : hoverPane;
@@ -1180,11 +1351,21 @@ window.CtPanes = (function () {
         windowW = clamp(wlDrag.W + dx * 2, 50, 4000);
         windowL = clamp(wlDrag.L - dy * 2, -1200, 1000);
         drawAll();
+        return;
+      }
+      if (lesionDrag && marking && provisional) {
+        const moved = Math.hypot(e.clientX - lesionDrag.x, e.clientY - lesionDrag.y);
+        if (!lesionDrag.sizing && moved < 3) return;
+        lesionDrag.sizing = true;
+        provisionalDiameter = diameterFromPointer(lesionDrag.pane, e.clientX, e.clientY);
+        updateLesionStatus();
+        drawAll();
       }
     }
 
     function onPointerUp() {
       wlDrag = null;
+      lesionDrag = null;
     }
 
     function onWheel(e) {
@@ -1217,6 +1398,13 @@ window.CtPanes = (function () {
     }
 
     function onKey(e) {
+      if (e.key === "Escape" && marking) {
+        const tag = (e.target.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea" || tag === "select") return;
+        e.preventDefault();
+        cancelMark();
+        return;
+      }
       if (!loaded || !viewIsActive()) return;
       if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
       const tag = (e.target.tagName || "").toLowerCase();
@@ -1392,9 +1580,14 @@ window.CtPanes = (function () {
         if (readOnly) return;
         marking = true;
         provisional = null;
-        statusMessage("Click in the axial (red) pane");
+        provisionalDiameter = LESION_DIAMETER_DEFAULT;
+        lesionDrag = null;
+        statusMessage("Click a CT pane to place the Lesion");
         syncConfirmEnabled();
         drawAll();
+      },
+      lesionDraws() {
+        return JSON.parse(JSON.stringify(lesionDraw));
       },
       setHighlightRoute(edgeIds) {
         highlightRouteOis = new Set(
@@ -1428,18 +1621,17 @@ window.CtPanes = (function () {
           provisional: provisional ? [...provisional] : null,
           lesion: lesion ? { ...lesion, ras_mm: [...(lesion.ras_mm || [])] } : null,
           marking,
+          provisionalDiameter,
           overlays: { ...overlays },
         };
       },
       clickPane(paneKey, clientX, clientY) {
         const world = eventToWorld(paneKey, clientX, clientY);
         if (!world) return null;
-        if (marking && !provisional) {
-          if (paneKey !== "axial") {
-            statusMessage("Click in the axial (red) pane");
-            return { world, placed: false };
-          }
-          setCrosshairWorld(world, "ct-axial-place");
+        if (marking) {
+          provisionalDiameter = LESION_DIAMETER_DEFAULT;
+          lesionDrag = null;
+          setCrosshairWorld(world, "ct-lesion-place");
           return { world, placed: true };
         }
         setCrosshairWorld(world, "ct");
@@ -1506,5 +1698,6 @@ window.CtPanes = (function () {
 
   return {
     createSharedPosition, mount, nearestCentrelineWorld, fitPlane, sharedMmPerPx,
+    lesionSliceGeometry, nearestCtSeenSample,
   };
 })();

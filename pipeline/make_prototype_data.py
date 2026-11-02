@@ -1,3 +1,4 @@
+# Changes: payload lesion includes diameter_mm (10 when the record omits it).
 # Changes: Phase 4c review — build_payload routes from start_node; truncates at
 # last original ≤ sample arc then appends exact end_ras_mm; optional stored gap.
 """Slim graph.json down to something embeddable in a single-file prototype.
@@ -80,6 +81,18 @@ def interpolated_segments(points: list, indices: list[int], spans: list[list[flo
     return [segment for segment, (first, last) in enumerate(zip(indices[:-1], indices[1:]))
             if any(cumulative[first] < end and cumulative[last] > start
                    for start, end in spans)]
+
+
+def lesion_diameter_mm(lesion_rec: dict) -> float:
+    """Payload diameter. Missing or unusable values fall back to 10 mm."""
+    raw = lesion_rec.get("diameter_mm", 10.0) if isinstance(lesion_rec, dict) else 10.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 10.0
+    if value != value or value in (float("inf"), float("-inf")):
+        return 10.0
+    return value
 
 
 def edge_provenance_at(edge: dict, arc_mm: float) -> str:
@@ -417,6 +430,7 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
     if lesion_ras is not None:
         lesion_out = {
             "ras_mm": lesion_ras,
+            "diameter_mm": lesion_diameter_mm(lesion_rec if isinstance(lesion_rec, dict) else {}),
             "confirmed_by": lesion_rec.get("confirmed_by") if isinstance(lesion_rec, dict) else None,
             "at": lesion_rec.get("at") if isinstance(lesion_rec, dict) else None,
         }

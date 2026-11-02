@@ -1,3 +1,4 @@
+# Changes: frozen lesion snapshot and report keep diameter_mm.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: Phase 4d review fixes — note_change opens N+1 inheriting hashes;
 # freeze writes version-scoped snapshot under out/<case>/versions/v<n>/;
@@ -308,6 +309,7 @@ def build_snapshot_dict(
         },
         "lesion": {
             "ras_mm": lesion.get("ras_mm"),
+            "diameter_mm": lesion.get("diameter_mm", 10),
         } if lesion else None,
         "route_start": {
             "node": route_start.get("node"),
@@ -507,7 +509,8 @@ def render_version_report(
   </table>
 
   <h2>Lesion</h2>
-  <p>{_esc(_fmt_ras(lesion.get("ras_mm") if lesion else None))}</p>
+  <p>{_esc(_fmt_ras(lesion.get("ras_mm") if lesion else None))}<br>
+     diameter {_esc(_fmt_mm(lesion.get("diameter_mm") if lesion else None))} mm</p>
 
   <h2>RouteStart</h2>
   <p>node {_esc(route_start.get("node") if route_start else "—")}
