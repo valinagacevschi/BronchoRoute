@@ -1,3 +1,4 @@
+// Changes: launch bundled standalone Python in packaged mode; preserve dev launch.
 // Changes: Python owns disclaimer acknowledgement through the token-guarded settings API.
 // Changes: dev-mode Electron shell — sidecar lifecycle, token, disclaimer.
 "use strict";
@@ -10,7 +11,7 @@ const {
   DISCLAIMER,
   SPLASH,
   atomicWriteText,
-  buildSidecarEnv,
+  sidecarLaunch,
   firstLocalCaseId,
   isAllowedAppUrl,
   newLaunchToken,
@@ -127,16 +128,12 @@ function installTokenHeader(port, token) {
 }
 
 function spawnSidecar(options) {
-  const pipelineDir = path.resolve(__dirname, "..", "pipeline");
-  const child = spawn(
-    "uv",
-    ["run", "python", "app_server.py", "--port", "0", "--exit-on-stdin-close"],
-    {
-      cwd: pipelineDir,
-      env: buildSidecarEnv(process.env, options),
-      stdio: ["pipe", "pipe", "pipe"],
-    },
-  );
+  const launch = sidecarLaunch(app.isPackaged, process.resourcesPath, options, process.env);
+  const child = spawn(launch.command, launch.args, {
+    cwd: launch.cwd,
+    env: launch.env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   child.stderr.on("data", (chunk) => {
     process.stderr.write(chunk);
   });

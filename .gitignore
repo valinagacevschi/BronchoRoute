@@ -15,3 +15,6 @@ __pycache__/
 # Electron dev shell.
 desktop/node_modules/
 desktop/dist/
+
+# Standalone Python build artifacts.
+desktop/build/
