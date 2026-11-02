@@ -1,3 +1,4 @@
+# Changes: emit airway-model progress before mask combination.
 # Changes: invoke TotalSegmentator through the active Python for relocatable bundles.
 """Run TotalSegmentator for airway and lobe masks.
 
@@ -283,6 +284,7 @@ def main() -> None:
                lobe_dir / "run.json", lobe_options,
                adopt_cache=args.adopt_cache)
 
+    print("step: airway model", flush=True)
     merge_lobes(lobe_dir, args.out / "lobes.nii.gz")
     make_airway(airway_dir / airway_filename, lobe_dir / "trachea.nii.gz",
                 args.out / "airways.nii.gz")

@@ -1,0 +1,32 @@
+/* Changes: keep the shared Settings footer reachable on import and processing screens. */
+/* Changes: import screens share the viewer's clinical palette and typography. */
+#import-screen { position: fixed; inset: 0; z-index: 8000; background: var(--ground, #edf1f3); overflow: auto; padding-bottom: 60px; color: #17242b; }
+#import-screen[hidden], #archive-open[hidden] { display: none; }
+.import-heading { display: flex; justify-content: space-between; align-items: center; padding: 24px 40px; border-bottom: 1px solid #ced9df; font-size: 20px; }
+.import-panel { max-width: 1120px; margin: 56px auto; padding: 0 32px; }
+.import-panel h1 { font-size: 40px; margin: 8px 0; font-weight: 500; }
+.import-eyebrow { letter-spacing: .16em; font-size: 11px; color: #526e7c; }
+#import-screen button, #archive-open { background: #2e6e88; color: white; border: 0; border-radius: 5px; padding: 11px 20px; cursor: pointer; font: inherit; }
+#import-screen button:disabled { opacity: .5; cursor: wait; }
+#archive-drop { margin-top: 32px; border: 2px dashed #9bb2be; border-radius: 12px; background: #f9fbfc; padding: 56px 24px; text-align: center; }
+#archive-drop strong { font-size: 24px; font-weight: 500; }
+#archive-open { position: fixed; top: 14px; right: 18px; z-index: 8500; font-size: 12px; }
+#import-message { color: #8b3d2c; min-height: 24px; }
+#study-groups { overflow-x: auto; }
+#study-groups table { width: 100%; border-collapse: collapse; background: #fafcfd; font-size: 13px; }
+#study-groups th, #study-groups td { text-align: left; padding: 14px 10px; border-bottom: 1px solid #d5dfe4; }
+#study-groups th { color: #526e7c; font-weight: 500; }
+#study-groups label { display: flex; gap: 8px; align-items: center; }
+.series-badge { font-size: 11px; display: inline-block; padding: 3px 6px; border-radius: 4px; background: #e0e9ee; }
+.series-badge.recommended { background: #d8eee1; color: #245c3a; }
+.series-badge.not_usable { background: #eee3df; color: #844b37; }
+#import-confirm { margin-top: 24px; }
+#clinician-initials { padding: 8px; margin-left: 12px; width: 100px; }
+#processing-steps { display: flex; gap: 40px; padding: 28px; margin: 28px 0; border-block: 1px solid #c6d6de; }
+#processing-steps li { color: #718893; padding: 10px; }
+#processing-steps li[data-state="active"] { color: #174c65; background: #d9e9f0; border-radius: 5px; }
+#processing-steps li[data-state="done"] { color: #30754c; }
+@media(max-width: 700px) { .import-panel { margin-top: 24px; padding: 0 16px; } #processing-steps { flex-direction: column; gap: 8px; } }
+
+.import-heading { padding-right: 200px; }
+body:has(#import-screen:not([hidden])) .research-footer { z-index: 9000; width: 100%; padding: 12px 18px; text-align: center; background: #edf1f3; }

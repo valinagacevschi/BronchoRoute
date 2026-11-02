@@ -1,16 +1,18 @@
+# Changes: bounded Archive extraction, opaque sessions and identifier-free import results.
 # Changes: expose Series eligibility, kernel class and coverage in scan responses.
 # Changes: log import lifecycle without Archive paths or Series selections.
-"""Step 1 — DICOM series scan and import from the app (Phase 4a).
-
-Scan uses import_dicom dry-run semantics (grouping + pick). Confirm writes the
-NIfTI + case.json and appends series_confirmed. Paths must sit under $HOME.
-Shares case-document builder and duplicate message with pipeline/import_dicom.py.
-"""
+"""Safe Archive sessions and confirmed Series import for the desktop app."""
 
 from __future__ import annotations
 
 import logging
 import shutil
+import secrets
+import stat
+import tempfile
+import threading
+import zipfile
+from pathlib import PurePosixPath, PureWindowsPath
 from pathlib import Path
 
 import numpy as np
@@ -39,26 +41,105 @@ class ImportDuplicate(Exception):
         self.message = message
 
 
+MAX_ARCHIVE_BYTES = 4 * 1024 ** 3
+MAX_ARCHIVE_FILES = 20_000
+_sessions: dict[str, tuple[Path, bool]] = {}
+_sessions_lock = threading.Lock()
+_confirm_lock = threading.Lock()
+
+
 def validate_src_dir(src_dir: str | Path) -> Path:
-    """Require an existing directory under the user's home."""
-    home = Path.home().resolve()
-    try:
-        path = Path(src_dir).expanduser().resolve()
-    except OSError as exc:
-        raise ValueError("invalid source directory") from exc
+    path = Path(src_dir).expanduser().resolve()
     if not path.is_dir():
-        raise ValueError("src_dir is not an existing directory")
-    try:
-        path.relative_to(home)
-    except ValueError as exc:
-        raise ValueError(f"src_dir must be under home ({home})") from exc
+        raise ValueError("Archive folder does not exist")
     return path
+
+
+def extract_archive(archive: Path) -> Path:
+    """Validate every member before writing; never retain Archive member names."""
+    import pydicom
+
+    paths.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="import-", dir=paths.TMP_DIR))
+    try:
+        with zipfile.ZipFile(archive) as source:
+            members = source.infolist()
+            if len(members) > MAX_ARCHIVE_FILES:
+                raise ValueError("Archive file-count limit exceeded")
+            if sum(member.file_size for member in members) > MAX_ARCHIVE_BYTES:
+                raise ValueError("Archive size limit exceeded")
+            for member in members:
+                name = member.filename.replace("\\", "/")
+                if (PurePosixPath(name).is_absolute() or PureWindowsPath(name).drive
+                        or ".." in PurePosixPath(name).parts
+                        or stat.S_ISLNK(member.external_attr >> 16)):
+                    raise ValueError("unsafe Archive entry")
+            total = 0
+            for index, member in enumerate(members):
+                name = PurePosixPath(member.filename.replace("\\", "/"))
+                if (member.is_dir() or "__MACOSX" in name.parts
+                        or name.name.lower() in {"autorun.inf", ".ds_store"}
+                        or name.suffix.lower() in {".exe", ".dll", ".bat", ".cmd"}):
+                    continue
+                target = root / f"{index:05d}.dcm"
+                with source.open(member) as src, target.open("wb") as dst:
+                    while chunk := src.read(1024 * 1024):
+                        total += len(chunk)
+                        if total > MAX_ARCHIVE_BYTES:
+                            raise ValueError("Archive size limit exceeded")
+                        dst.write(chunk)
+                try:
+                    ds = pydicom.dcmread(target, stop_before_pixels=True)
+                    if not getattr(ds, "SeriesInstanceUID", None):
+                        target.unlink()
+                except Exception:
+                    target.unlink(missing_ok=True)
+        return root
+    except Exception as exc:
+        shutil.rmtree(root, ignore_errors=True)
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("Archive could not be read") from None
+
+
+def release_import(import_id: str) -> None:
+    with _sessions_lock:
+        session = _sessions.pop(import_id, None)
+    if session and session[1]:
+        shutil.rmtree(session[0], ignore_errors=True)
+
+
+def import_and_process(import_id: str, series_key: str, clinician: str) -> dict:
+    from app.jobs import start_segment_job
+
+    with _confirm_lock:
+        with _sessions_lock:
+            session = _sessions.get(import_id)
+        if session is None:
+            raise ValueError("Archive session expired; open the Archive again")
+        case_id = None
+        try:
+            result = confirm_import(session[0], series_key, clinician=clinician)
+            case_id = result["case_id"]
+            case_path = paths.LOCAL_CASES / case_id / "case.json"
+            import json
+            document = json.loads(case_path.read_text())
+            document["import_processing"] = True
+            atomic_write_json(case_path, document)
+            result["job"] = start_segment_job(
+                case_id, clinician, import_id=import_id,
+            )
+            return result
+        except Exception:
+            release_import(import_id)
+            if case_id:
+                shutil.rmtree(paths.LOCAL_CASES / case_id, ignore_errors=True)
+            raise
 
 
 def _public_row(row: dict, *, skip: str | None, proposed: bool) -> dict:
     return {
         "series_key": row["series_uid_sha256"],
-        "folder": row["folder"],
         "series_number": row["number"],
         "description": row["description"],
         "kernel": row["kernel"],
@@ -78,24 +159,42 @@ def _public_row(row: dict, *, skip: str | None, proposed: bool) -> dict:
     }
 
 
-def scan_series(src_dir: str | Path) -> dict:
-    """Group + pick with dry-run semantics; allowed facts only (no UIDs/paths)."""
-    root = validate_src_dir(src_dir)
-    logging.getLogger(__name__).info("import scan started")
-    series, unreadable = read_series(root)
-    if not series:
-        raise ValueError("no CT Series found")
-    rows = classify_series(list(series.values()))
-    table = [_public_row(row,
-                         skip=row["reason"] if row["status"] == "not_usable" else None,
-                         proposed=row["status"] == "recommended")
-             for row in sorted(rows, key=lambda row: row["number"])]
-    return {
-        "src_dir": str(root),
-        "unreadable_files": unreadable,
-        "proposed": next((row for row in table if row["proposed"]), None),
-        "series": table,
-    }
+def scan_series(path: str | Path) -> dict:
+    """Return approved Series facts, grouped by opaque Study keys."""
+    source = Path(path).expanduser().resolve()
+    extracted = source.is_file() and source.suffix.lower() == ".zip"
+    root = extract_archive(source) if extracted else validate_src_dir(
+        source.parent if source.is_file() and source.name.upper() == "DICOMDIR" else source
+    )
+    try:
+        series, unreadable = read_series(root)
+        if not series:
+            raise ValueError("no CT Series found")
+        rows = classify_series(list(series.values()))
+        table = [_public_row(row,
+                             skip=row["reason"] if row["status"] == "not_usable" else None,
+                             proposed=row["status"] == "recommended")
+                 for row in sorted(rows, key=lambda row: row["number"])]
+        studies = {}
+        for row, public in zip(sorted(rows, key=lambda row: row["number"]), table):
+            key = row.get("study_key", "unknown")
+            study = studies.setdefault(key, {
+                "study_key": key, "date": row.get("study_date", ""),
+                "description": row.get("study_description", ""), "series": [],
+            })
+            study["series"].append(public)
+        import_id = secrets.token_urlsafe(24)
+        with _sessions_lock:
+            _sessions[import_id] = (root, extracted)
+        return {
+            "import_id": import_id, "unreadable_files": unreadable,
+            "proposed": next((row for row in table if row["proposed"]), None),
+            "series": table, "studies": list(studies.values()),
+        }
+    except Exception:
+        if extracted:
+            shutil.rmtree(root, ignore_errors=True)
+        raise
 
 
 def find_duplicate(series_uid_sha256: str, chosen: dict) -> str | None:
@@ -166,6 +265,10 @@ def confirm_import(
             spacing_mm=spacing,
             size=list(volume.shape),
         )
+        # Folder labels may contain identifiers; the Series hash is the cache key.
+        document["source"].pop("folder", None)
+        for skipped in document["skipped_series"]:
+            skipped.pop("folder", None)
         case_path = output_dir / "case.json"
         atomic_write_json(case_path, document)
 
@@ -174,7 +277,6 @@ def confirm_import(
             int(WorkflowStep.IMPORT),
             "series_confirmed",
             {
-                "folder": chosen["folder"],
                 "series_number": chosen["number"],
                 "description": chosen["description"],
                 "kernel": chosen["kernel"],

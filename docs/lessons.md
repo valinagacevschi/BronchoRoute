@@ -1,3 +1,4 @@
+<!-- Changes: retain Settings persistence and subprocess isolation lessons after rebase. -->
 # Lessons Learned
 
 - Series selection: ranking by slice step before checking coverage can prefer a partial
@@ -44,6 +45,7 @@
 - Shared settings: merging only the new API writes is insufficient when legacy
   clinician and CT preference writers replace the same file. Keep every writer
   under the same lock, preserve unknown keys, and test cross-API writes.
+- Subprocesses do not inherit monkeypatched `paths.*`: pass the effective state root in the launcher environment, including for fake segmentation, or a passing request can overwrite real artifacts.
 - Standalone Python packaging (#27): the frozen runtime includes source-only
   packages such as acvl-utils. Allow uv to build those locked releases rather
   than requiring wheels for every dependency; macOS markers still exclude CUDA.
