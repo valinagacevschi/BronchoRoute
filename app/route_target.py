@@ -1,3 +1,4 @@
+# Changes: RouteTarget needs a Lesion only; RouteStart defaults to the trachea.
 # Changes: Phase 4d review fixes — note_change on RouteTarget; clear pending_return.
 # Phase 4c review fixes — RouteStart-rooted route helper, reachability
 # 422, fly truncate+exact sample, stale target, lock-held PUT, stored gap.
@@ -21,7 +22,7 @@ from termcolor import cprint
 from app.cases import _load_or_init_record, _utc_now, load_case_record, route_start_info
 from app.caseref import CaseRef
 from app.review import densify_centreline, effective_for_case
-from app.workflow import WorkflowBlocked, WorkflowStep, _ordered_done
+from app.workflow import WorkflowBlocked, WorkflowStep
 
 CANDIDATE_STEP_MM = 0.5
 DEDUP_MM = 5.0
@@ -29,6 +30,7 @@ SNAP_MM = 2.0
 TOP_N = 3
 NOT_ON_CT = "not on CT-seen airway"
 NOT_REACHABLE = "not reachable from RouteStart"
+LESION_FIRST = "place a Lesion first"
 
 
 def _edge_oi(edge: dict, idx: int) -> int:
@@ -43,7 +45,7 @@ def _lobe_label(lobe: Any) -> Any:
 
 
 def _route_start_node(graph: dict, case: dict) -> int:
-    """Confirmed RouteStart node, else graph root (demo CLI / step 5 not done)."""
+    """Trachea (graph root), unless a legacy confirmation stored another node."""
     info = route_start_info(graph, case)
     if info.get("confirmed") and info.get("node") is not None:
         return int(info["node"])
@@ -470,7 +472,7 @@ def route_target_candidates(case_id: str) -> list[dict]:
     case = load_case_record(ref)
     lesion = case.get("lesion")
     if not isinstance(lesion, dict) or lesion.get("ras_mm") is None:
-        raise ValueError("case has no confirmed lesion")
+        raise WorkflowBlocked(LESION_FIRST)
     eff = effective_for_case(case_id, case)
     cprint(f"route-target candidates for {case_id}", "cyan")
     return rank_route_target_candidates(
@@ -488,22 +490,16 @@ def set_route_target(
 ) -> dict:
     """Confirm RouteTarget from a candidate or a snapped custom point.
 
-    Gate check, metric computation, and write run under one json_file_lock.
+    A Lesion is the only requirement. Metrics and the write share one lock.
     """
     ref = CaseRef.parse(case_id)
     path = ref.case_json
     at = _utc_now()
     with json_file_lock(path):
         record = _load_or_init_record(ref, path)
-        done, _ = _ordered_done(record, ref)
-        if not all(done[: int(WorkflowStep.ROUTE_TARGET) - 1]):
-            from app.workflow import _block_reason
-
-            raise WorkflowBlocked(_block_reason(int(WorkflowStep.ROUTE_TARGET), done))
-
         lesion = record.get("lesion")
         if not isinstance(lesion, dict) or lesion.get("ras_mm") is None:
-            raise ValueError("case has no confirmed lesion")
+            raise WorkflowBlocked(LESION_FIRST)
         lesion_ras = [float(v) for v in lesion["ras_mm"]]
         eff = effective_for_case(case_id, record)
         graph = eff["graph"]

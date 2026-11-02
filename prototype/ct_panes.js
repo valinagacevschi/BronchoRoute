@@ -1,3 +1,4 @@
+// Changes: drop RouteStart confirmation controls; draw the target gap dashed grey.
 // Changes: place a Lesion in any pane, drag its diameter, draw the sphere slice, no overlay gate.
 /* Phase 4c review: raw click ras_mm (server snaps); hover route highlight in panes.
  * Phase 4b: hatched label 3; setAirwayOverlay; CT airway-voxel → remove branch.
@@ -302,6 +303,12 @@ window.CtPanes = (function () {
       coronal: { kind: "none" },
       sagittal: { kind: "none" },
     };
+    const routeTargetDraw = {
+      axial: { marker: false, gapDashed: false },
+      coronal: { marker: false, gapDashed: false },
+      sagittal: { marker: false, gapDashed: false },
+    };
+    let routeHighlightStrokes = 0;
     const offscreen = document.createElement("canvas");
     const offCtx = offscreen.getContext("2d", { willReadFrequently: true });
 
@@ -471,173 +478,16 @@ window.CtPanes = (function () {
       lesionBox.appendChild(clearBtn);
       lesionBox.appendChild(statusEl);
 
-      const routeStartBox = document.createElement("div");
-      routeStartBox.className = "ct-route-start-box";
-      routeStartBox.id = "ct-route-start-box";
-      const rsLabel = document.createElement("span");
-      rsLabel.textContent = "Start";
-      const rsSelect = document.createElement("select");
-      rsSelect.id = "ct-route-start-select";
-      rsSelect.title = "RouteStart: qualifying terminal (≥ 80% of root radius)";
-      rsSelect.style.minWidth = "7.5rem";
-      const rsConfirm = document.createElement("button");
-      rsConfirm.type = "button";
-      rsConfirm.id = "ct-confirm-route-start";
-      rsConfirm.textContent = "Confirm Start";
-      rsConfirm.onclick = () => {
-        confirmRouteStart().catch(err => statusMessage(String(err.message || err)));
-      };
-      const rsMove = document.createElement("button");
-      rsMove.type = "button";
-      rsMove.id = "ct-move-route-start";
-      rsMove.textContent = "Move RouteStart";
-      rsMove.hidden = true;
-      rsMove.onclick = () => {
-        routeStartMoving = true;
-        syncRouteStartConfirmEnabled();
-        statusMessage("Select another qualifying terminal, then Confirm Start");
-      };
-      const rsStatus = document.createElement("span");
-      rsStatus.className = "ct-lesion-status";
-      rsStatus.id = "ct-route-start-status";
-      routeStartBox.appendChild(rsLabel);
-      routeStartBox.appendChild(rsSelect);
-      routeStartBox.appendChild(rsConfirm);
-      routeStartBox.appendChild(rsMove);
-      routeStartBox.appendChild(rsStatus);
-
-      // Populate RouteStart from cache (filled before first layout) so async
-      // fetches never grow the toolbar mid-interaction.
-      fillRouteStartSelect(rsSelect, rsStatus);
       toolbar.appendChild(presets);
       toolbar.appendChild(view);
       toolbar.appendChild(ov);
       if (!readOnly) {
         toolbar.appendChild(lesionBox);
-        toolbar.appendChild(routeStartBox);
       }
       syncOverlayEnablement();
       syncConfirmEnabled();
       updateLesionStatus();
       updateWlReadout();
-    }
-
-    let routeStartCandidates = [];
-    let routeStartMoving = false;
-
-    function syncRouteStartConfirmEnabled() {
-      const sel = toolbar.querySelector("#ct-route-start-select");
-      const btn = toolbar.querySelector("#ct-confirm-route-start");
-      const move = toolbar.querySelector("#ct-move-route-start");
-      const rs = airway.route_start;
-      if (!btn) return;
-      const confirmed = !!(rs && rs.confirmed);
-      const selected = sel && sel.value !== "" ? Number(sel.value) : (rs && rs.node);
-      const changed = confirmed && selected != null && Number(selected) !== Number(rs.node);
-      if (move) {
-        move.hidden = !confirmed;
-        move.disabled = !confirmed;
-      }
-      if (confirmed && !routeStartMoving && !changed) {
-        btn.disabled = true;
-        btn.textContent = "Confirm Start";
-      } else {
-        btn.disabled = false;
-        btn.textContent = (confirmed || routeStartMoving) ? "Confirm new Start" : "Confirm Start";
-      }
-      if (sel) sel.disabled = confirmed && !routeStartMoving && !changed;
-      if (confirmed && routeStartMoving) {
-        if (sel) sel.disabled = false;
-      }
-    }
-
-    function fillRouteStartSelect(sel, status) {
-      if (!sel) {
-        sel = toolbar.querySelector("#ct-route-start-select");
-        status = toolbar.querySelector("#ct-route-start-status");
-      }
-      if (!sel) return;
-      const current = (airway.route_start && airway.route_start.node != null)
-        ? airway.route_start.node
-        : (routeStartCandidates.find(c => c.is_default) || routeStartCandidates[0] || {}).node;
-      sel.innerHTML = "";
-      if (!routeStartCandidates.length) {
-        const opt = document.createElement("option");
-        opt.value = "";
-        opt.textContent = "—";
-        sel.appendChild(opt);
-      } else {
-        for (const c of routeStartCandidates) {
-          const opt = document.createElement("option");
-          opt.value = String(c.node);
-          opt.textContent = `#${c.node} r${c.radius_mm.toFixed(1)}`
-            + (c.is_default ? "*" : "");
-          sel.appendChild(opt);
-        }
-        if (current != null) sel.value = String(current);
-      }
-      sel.onchange = () => {
-        const node = Number(sel.value);
-        const cand = routeStartCandidates.find(c => c.node === node);
-        if (cand && cand.ras_mm) {
-          airway.route_start = {
-            ...(airway.route_start || {}),
-            node: cand.node,
-            ras_mm: cand.ras_mm,
-            confirmed: !!(airway.route_start && airway.route_start.confirmed),
-          };
-          sharedPos.set(cand.ras_mm, "ct-route-start");
-          syncRouteStartConfirmEnabled();
-          drawAll();
-        }
-      };
-      if (status) {
-        const rs = airway.route_start;
-        status.textContent = rs && rs.confirmed ? `ok #${rs.node}` : (current != null ? `to confirm #${current}` : "");
-      }
-      syncRouteStartConfirmEnabled();
-    }
-
-    async function loadRouteStartCandidates() {
-      try {
-        const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/route-start/candidates`);
-        if (!res.ok) return;
-        const body = await res.json();
-        routeStartCandidates = body.candidates || [];
-      } catch (_) {
-        routeStartCandidates = [];
-      }
-    }
-
-    async function confirmRouteStart() {
-      if (readOnly) return;
-      if (!(await ensureClinician())) return;
-      const sel = toolbar.querySelector("#ct-route-start-select");
-      const node = sel ? Number(sel.value) : (airway.route_start && airway.route_start.node);
-      if (node == null || Number.isNaN(node)) {
-        statusMessage("No RouteStart candidate");
-        return;
-      }
-      const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/route-start`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ node }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.detail || `RouteStart failed (${res.status})`);
-      }
-      airway.route_start = {
-        node: body.route_start.node,
-        ras_mm: body.route_start.ras_mm,
-        confirmed: true,
-        default_node: airway.route_start && airway.route_start.default_node,
-      };
-      routeStartMoving = false;
-      statusMessage(`RouteStart confirmed (node ${node})`);
-      updateLesionStatus();
-      fillRouteStartSelect();
-      drawAll();
     }
 
     function updateWlReadout() {
@@ -1074,14 +924,20 @@ window.CtPanes = (function () {
           const world = [c[0] + originMm[0], c[1] + originMm[1], c[2] + originMm[2]];
           const ijk = worldToVoxelCont(world);
           if (!inCropIjk(ijk, ctMeta.shape) || Math.abs(ijk[map.fixedAxis] - fixed) > 1.0) {
-            if (pts.length > 1) strokeRouteSeg(ctx, pts, e.prov || "ct", { highlight });
+            if (pts.length > 1) {
+            if (highlight) routeHighlightStrokes += 1;
+            strokeRouteSeg(ctx, pts, e.prov || "ct", { highlight });
+          }
             pts.length = 0;
             continue;
           }
           const uv = map.uvFromIjk(ijk[0], ijk[1], ijk[2]);
           pts.push([fit.ox + uv.u * fit.drawW, fit.oy + uv.v * fit.drawH]);
         }
-        if (pts.length > 1) strokeRouteSeg(ctx, pts, e.prov || "ct", { highlight });
+        if (pts.length > 1) {
+          if (highlight) routeHighlightStrokes += 1;
+          strokeRouteSeg(ctx, pts, e.prov || "ct", { highlight });
+        }
       }
 
       if (overlays.route && airway.route) {
@@ -1156,6 +1012,7 @@ window.CtPanes = (function () {
       }
 
       drawLesionGlyph(ctx, key, map, fit, fixed);
+      routeTargetDraw[key] = { marker: false, gapDashed: false };
       if (airway.route_start && airway.route_start.ras_mm) {
         drawMarker(airway.route_start.ras_mm, "#B4522F", "RouteStart");
       }
@@ -1167,25 +1024,25 @@ window.CtPanes = (function () {
             airway.endpoint[2] + originMm[2],
           ];
           drawMarker(ep, "#2E6E88", "RouteTarget");
+          routeTargetDraw[key].marker = true;
           const L = lesion && lesion.ras_mm;
           if (L && overlays.lesion) {
             const ijkL = worldToVoxelCont(L);
             const ijkE = worldToVoxelCont(ep);
-            if (
-              inCropIjk(ijkL, ctMeta.shape) &&
-              inCropIjk(ijkE, ctMeta.shape) &&
-              Math.abs(ijkL[map.fixedAxis] - fixed) <= 1 &&
-              Math.abs(ijkE[map.fixedAxis] - fixed) <= 1
-            ) {
+            const nearL = Math.abs(ijkL[map.fixedAxis] - fixed) <= 1;
+            const nearE = Math.abs(ijkE[map.fixedAxis] - fixed) <= 1;
+            if (inCropIjk(ijkL, ctMeta.shape) && inCropIjk(ijkE, ctMeta.shape) && (nearL || nearE)) {
               const uvL = map.uvFromIjk(ijkL[0], ijkL[1], ijkL[2]);
               const uvE = map.uvFromIjk(ijkE[0], ijkE[1], ijkE[2]);
-              ctx.strokeStyle = "#888";
+              ctx.strokeStyle = "#727d84";
+              ctx.lineWidth = 1;
               ctx.setLineDash([4, 4]);
               ctx.beginPath();
               ctx.moveTo(fit.ox + uvL.u * fit.drawW, fit.oy + uvL.v * fit.drawH);
               ctx.lineTo(fit.ox + uvE.u * fit.drawW, fit.oy + uvE.v * fit.drawH);
               ctx.stroke();
               ctx.setLineDash([]);
+              routeTargetDraw[key].gapDashed = true;
             }
           }
         } else if (airway.nodes && airway.nodes[String(airway.target)]) {
@@ -1253,6 +1110,7 @@ window.CtPanes = (function () {
 
     function drawAll() {
       updateWlReadout();
+      routeHighlightStrokes = 0;
       for (const key of Object.keys(panes)) drawPane(key);
     }
 
@@ -1450,9 +1308,6 @@ window.CtPanes = (function () {
     }
 
     async function load() {
-      // Fetch RouteStart candidates before first toolbar layout so later
-      // rebuilds (e.g. clearLesion → buildToolbar) keep a stable size.
-      await loadRouteStartCandidates();
       buildToolbar();
       try {
         const metaRes = await fetch(`/api/cases/${encodeURIComponent(caseId)}/ct/meta`);
@@ -1588,6 +1443,15 @@ window.CtPanes = (function () {
       },
       lesionDraws() {
         return JSON.parse(JSON.stringify(lesionDraw));
+      },
+      routeTargetDraws() {
+        return JSON.parse(JSON.stringify(routeTargetDraw));
+      },
+      highlightRouteIds() {
+        return [...highlightRouteOis];
+      },
+      highlightStrokes() {
+        return routeHighlightStrokes;
       },
       setHighlightRoute(edgeIds) {
         highlightRouteOis = new Set(
