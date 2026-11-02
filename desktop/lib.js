@@ -1,3 +1,4 @@
+// Changes: keep send_usage_stats false, and point weights at nnUNet results.
 // Changes: validate Record names and JPEG frames, resolve ffmpeg, and the Movies/BronchoRoute path.
 // Changes: validate Save image names, PNG bytes, and the Pictures/BronchoRoute path.
 // Changes: FileVault status line used by the one-time first-run note.
@@ -88,6 +89,24 @@ function buildSidecarEnv(baseEnv, options) {
   return env;
 }
 
+function ensureSendUsageStatsFalse(configPath) {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  if (!fs.existsSync(configPath)) {
+    atomicWriteJson(configPath, { send_usage_stats: false });
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (err) {
+    return;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+  if (parsed.send_usage_stats === false) return;
+  parsed.send_usage_stats = false;
+  atomicWriteJson(configPath, parsed);
+}
+
 function sidecarLaunch(packaged, resourcesPath, options, baseEnv) {
   const env = buildSidecarEnv(baseEnv, options);
   const cwd = packaged
@@ -100,12 +119,10 @@ function sidecarLaunch(packaged, resourcesPath, options, baseEnv) {
   env.PYTHONDONTWRITEBYTECODE = "1";
   env.PYTHONNOUSERSITE = "1";
   env.TOTALSEG_HOME_DIR = path.join(options.dataRoot, "models", "totalseg");
-  env.TOTALSEG_WEIGHTS_PATH = path.join(options.dataRoot, "models");
+  // This variable is nnUNet_results: Dataset folders live directly inside it.
+  env.TOTALSEG_WEIGHTS_PATH = path.join(options.dataRoot, "models", "nnunet", "results");
   const config = path.join(env.TOTALSEG_HOME_DIR, "config.json");
-  fs.mkdirSync(env.TOTALSEG_HOME_DIR, { recursive: true });
-  if (!fs.existsSync(config)) {
-    atomicWriteJson(config, { send_usage_stats: false });
-  }
+  ensureSendUsageStatsFalse(config);
   return {
     command: path.join(resourcesPath, "python", "bin", "python3"),
     args: [path.join(cwd, args[0]), ...args.slice(1)],

@@ -1,3 +1,4 @@
+// Changes: usage stats stay off, including a config that omitted the key.
 // Changes: default Pictures and Movies paths are built at runtime, with no home-directory literal.
 // Changes: Record name, JPEG signature, ffmpeg resolution, and injected Movies directory.
 // Changes: Save image name, PNG signature, and injected Pictures directory.
@@ -176,12 +177,27 @@ test("packaged sidecar uses the resource interpreter and isolated model state", 
     assert.equal(launch.env.PYTHONPATH, undefined);
     assert.equal(launch.env.PYTHONDONTWRITEBYTECODE, "1");
     assert.equal(launch.env.PYTHONNOUSERSITE, "1");
-    assert.equal(launch.env.TOTALSEG_WEIGHTS_PATH, path.join(root, "models"));
+    assert.equal(
+      launch.env.TOTALSEG_WEIGHTS_PATH,
+      path.join(root, "models", "nnunet", "results"),
+    );
     const config = path.join(root, "models", "totalseg", "config.json");
-    assert.deepEqual(JSON.parse(fs.readFileSync(config)), { send_usage_stats: false });
+    assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), { send_usage_stats: false });
     atomicWriteJson(config, { send_usage_stats: false, retained: 42 });
     sidecarLaunch(true, "/bundle/Resources", options, {});
-    assert.deepEqual(JSON.parse(fs.readFileSync(config)), { send_usage_stats: false, retained: 42 });
+    assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), { send_usage_stats: false, retained: 42 });
+    atomicWriteJson(config, { totalseg_id: "keep-me" });
+    sidecarLaunch(true, "/bundle/Resources", options, {});
+    assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), {
+      totalseg_id: "keep-me",
+      send_usage_stats: false,
+    });
+    atomicWriteJson(config, { send_usage_stats: true, totalseg_id: "keep-me" });
+    sidecarLaunch(true, "/bundle/Resources", options, {});
+    assert.deepEqual(JSON.parse(fs.readFileSync(config, "utf8")), {
+      send_usage_stats: false,
+      totalseg_id: "keep-me",
+    });
     const dev = sidecarLaunch(false, "/unused", options, {});
     assert.equal(dev.command, "uv");
     assert.deepEqual(dev.args, ["run", "python", "app_server.py", "--port", "0", "--exit-on-stdin-close"]);
@@ -218,6 +234,8 @@ test("builder includes only runtime resources and targets unsigned arm64 macOS",
   assert.equal(build.mac.identity, null);
   assert.equal(build.mac.minimumSystemVersion, "14.0");
   assert.deepEqual(build.mac.target, [{ target: "dir", arch: ["arm64"] }]);
+  assert.ok(build.files.includes("weights.js"));
+  assert.ok(build.files.includes("weights-manifest.json"));
   assert.match(devDependencies["electron-builder"], /^\d+\.\d+\.\d+$/);
   const pipeline = build.extraResources.find((row) => row.to === "app/pipeline");
   assert.ok(pipeline.filter.includes("repo_root.py"));

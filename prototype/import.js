@@ -1,3 +1,4 @@
+// Changes: download models before processing; existing Cases stay open.
 // Changes: Series override reason and one processing-failure sentence.
 // Changes: Case Library screen, library hit, and outdated-Case prompt.
 // Changes: import initials use the shared Python-owned Settings API.
@@ -83,6 +84,21 @@
     <button type="button" id="outdated-reprocess">Reprocess</button>
     <button type="button" id="outdated-open">Open anyway</button>`;
   document.body.appendChild(outdated);
+  const weightsScreen = document.createElement("section");
+  weightsScreen.id = "weights-screen";
+  weightsScreen.hidden = true;
+  weightsScreen.innerHTML = `
+    <div class="import-heading"><span>BronchoRoute</span></div>
+    <main class="import-panel">
+      <p class="import-eyebrow">LOCAL CT PROCESSING</p>
+      <h1 id="weights-title">Download models</h1>
+      <p>These models are required before an Archive can be processed. Cases already on this Mac still open.</p>
+      <p id="weights-progress" role="status" aria-live="polite">0.0 MB / 0.0 MB · 0%</p>
+      <p id="weights-error" role="alert"></p>
+      <button type="button" id="weights-cancel">Cancel</button>
+      <button type="button" id="weights-retry" hidden>Retry</button>
+    </main>`;
+  document.body.appendChild(weightsScreen);
   const get = id => document.getElementById(id);
   const open = document.createElement("button");
   open.id = "archive-open";
@@ -230,10 +246,103 @@
     location.assign(`/?case=${encodeURIComponent(caseId)}`);
   }
 
+  function formatMb(bytes) {
+    return (Number(bytes) / (1024 * 1024)).toFixed(1);
+  }
+
+  function weightsFailureText(error) {
+    const text = error && error.message ? error.message : "";
+    const checksum = "Model download failed checksum — try again";
+    if (text.includes(checksum)) return checksum;
+    return text || "Model download failed.";
+  }
+
+  function showModelDownload(status) {
+    const total = status.missing.reduce((sum, file) => sum + file.bytes, 0);
+    const screenEl = get("weights-screen");
+    const progress = get("weights-progress");
+    const error = get("weights-error");
+    const retry = get("weights-retry");
+    const cancel = get("weights-cancel");
+    get("weights-title").textContent = `Download models (~${Math.max(1, Math.round(total / (1024 * 1024)))} MB)`;
+    progress.textContent = `0.0 MB / ${formatMb(total)} MB · 0%`;
+    error.textContent = "";
+    retry.hidden = true;
+    cancel.disabled = false;
+    screenEl.hidden = false;
+    let stop = () => {};
+    let cancelled = false;
+    let settled = false;
+    return new Promise(resolve => {
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        stop();
+        cancel.removeEventListener("click", onCancel);
+        retry.removeEventListener("click", onRetry);
+        screenEl.hidden = true;
+        resolve(ok);
+      };
+      const onProgress = (payload) => {
+        const received = Number(payload.received) || 0;
+        const all = Number(payload.total) || total;
+        const pct = all > 0 && received >= all ? 100 : Math.min(99, Math.floor(all > 0 ? (received / all) * 100 : 0));
+        progress.textContent = `${formatMb(received)} MB / ${formatMb(all)} MB · ${pct}%`;
+      };
+      const start = () => {
+        stop();
+        cancelled = false;
+        error.textContent = "";
+        retry.hidden = true;
+        cancel.disabled = false;
+        stop = window.bronchoroute.onWeightsProgress(onProgress);
+        window.bronchoroute.downloadWeights().then(() => finish(true)).catch(err => {
+          stop();
+          stop = () => {};
+          if (cancelled) {
+            finish(false);
+            return;
+          }
+          error.textContent = weightsFailureText(err);
+          retry.hidden = false;
+        });
+      };
+      const onCancel = () => {
+        cancelled = true;
+        cancel.disabled = true;
+        window.bronchoroute.cancelWeights().catch(() => {});
+      };
+      const onRetry = () => start();
+      cancel.addEventListener("click", onCancel);
+      retry.addEventListener("click", onRetry);
+      start();
+    });
+  }
+
+  async function ensureModels() {
+    const bridge = window.bronchoroute;
+    if (!bridge || typeof bridge.weightsRequired !== "function") return true;
+    if (!await bridge.weightsRequired()) return true;
+    const status = await bridge.weightsStatus();
+    if (status.ready) return true;
+    return showModelDownload(status);
+  }
+
+  function cancelledWeights(source) {
+    const text = "Model download cancelled.";
+    if (source === "library") libraryMessage(text);
+    else if (source === "outdated") get("outdated-error").textContent = text;
+    else message(text);
+  }
+
   async function reprocess(caseId, source) {
     if (busy) return;
     busy = true;
     try {
+      if (!await ensureModels()) {
+        cancelledWeights(source);
+        return;
+      }
       await releaseSession();
       showProcessing();
       await api(`/api/cases/${encodeURIComponent(caseId)}/reprocess`, { method: "POST" });
@@ -512,6 +621,10 @@
     busy = true;
     get("series-confirm").disabled = true;
     try {
+      if (!await ensureModels()) {
+        message("Model download cancelled.");
+        return;
+      }
       if (!get("clinician-prompt").hidden) {
         await api("/api/settings", {
           method: "PUT", headers: { "Content-Type": "application/json" },

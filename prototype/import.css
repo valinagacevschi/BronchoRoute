@@ -1,15 +1,16 @@
+/* Changes: first-run model download screen. */
 /* Changes: override-reason field and try-another on the import screen. */
 /* Changes: Case Library list, size warning, and outdated-Case prompt. */
 /* Changes: keep the shared Settings footer reachable on import and processing screens. */
 /* Changes: import screens share the viewer's clinical palette and typography. */
 #import-screen { position: fixed; inset: 0; z-index: 8000; background: var(--ground, #edf1f3); overflow: auto; padding-bottom: 60px; color: #17242b; }
-#import-screen[hidden], #library-screen[hidden], #outdated-note[hidden], #archive-open[hidden] { display: none; }
+#import-screen[hidden], #library-screen[hidden], #outdated-note[hidden], #archive-open[hidden], #weights-screen[hidden] { display: none; }
 #library-screen { position: fixed; inset: 0; z-index: 8100; background: var(--ground, #edf1f3); overflow: auto; padding-bottom: 72px; color: #17242b; }
 .import-heading { display: flex; justify-content: space-between; align-items: center; padding: 24px 40px; border-bottom: 1px solid #ced9df; font-size: 20px; }
 .import-panel { max-width: 1120px; margin: 56px auto; padding: 0 32px; }
 .import-panel h1 { font-size: 40px; margin: 8px 0; font-weight: 500; }
 .import-eyebrow { letter-spacing: .16em; font-size: 11px; color: #526e7c; }
-#import-screen button, #library-screen button, #outdated-note button, #archive-open { background: #2e6e88; color: white; border: 0; border-radius: 5px; padding: 11px 20px; cursor: pointer; font: inherit; }
+#import-screen button, #library-screen button, #weights-screen button, #outdated-note button, #archive-open { background: #2e6e88; color: white; border: 0; border-radius: 5px; padding: 11px 20px; cursor: pointer; font: inherit; }
 #import-screen button:disabled, #library-screen button:disabled { opacity: .5; cursor: wait; }
 .import-actions { display: flex; gap: 8px; }
 #archive-drop { margin-top: 32px; border: 2px dashed #9bb2be; border-radius: 12px; background: #f9fbfc; padding: 56px 24px; text-align: center; }
@@ -59,3 +60,7 @@ body:has(#library-screen:not([hidden])) .research-footer { z-index: 9000; width:
 }
 #outdated-note p { margin: 0 0 10px; }
 #outdated-note button { margin-right: 8px; }
+#weights-screen { position: fixed; inset: 0; z-index: 8600; background: var(--ground, #edf1f3); overflow: auto; padding-bottom: 60px; color: #17242b; }
+#weights-progress { font-variant-numeric: tabular-nums; }
+#weights-error { color: #8b3d2c; min-height: 24px; }
+#weights-retry { margin-left: 8px; }

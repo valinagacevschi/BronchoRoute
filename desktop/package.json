@@ -21,7 +21,9 @@
     "files": [
       "main.js",
       "lib.js",
-      "preload.js"
+      "preload.js",
+      "weights.js",
+      "weights-manifest.json"
     ],
     "mac": {
       "target": [

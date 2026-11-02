@@ -1,3 +1,4 @@
+// Changes: expose model-weight status, download, and cancel.
 // Changes: expose Record start, frame, stop, and cancel.
 // Changes: expose saveImage for a native PNG still dialog.
 // Changes: expose narrow Archive selection IPC and dropped-file paths.
@@ -32,5 +33,22 @@ contextBridge.exposeInMainWorld("bronchoroute", {
   },
   getPathForFile(file) {
     return webUtils.getPathForFile(file);
+  },
+  weightsRequired() {
+    return ipcRenderer.invoke("bronchoroute:weights-required");
+  },
+  weightsStatus() {
+    return ipcRenderer.invoke("bronchoroute:weights-status");
+  },
+  downloadWeights() {
+    return ipcRenderer.invoke("bronchoroute:weights-download");
+  },
+  cancelWeights() {
+    return ipcRenderer.invoke("bronchoroute:weights-cancel");
+  },
+  onWeightsProgress(callback) {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on("bronchoroute:weights-progress", listener);
+    return () => ipcRenderer.removeListener("bronchoroute:weights-progress", listener);
   },
 });
