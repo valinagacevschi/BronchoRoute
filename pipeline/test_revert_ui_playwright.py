@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Revert UI: GET / is the read-only renderer; /workflow is the app shell.
 # Radial topology orientation/laterality; viewer mode issues no writes.
 # Screenshots → pipeline/out/revert_shots/. Tmp pipeline: link files only.
@@ -5,6 +6,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -61,6 +63,7 @@ def tmp_pipeline(tmp_path_factory):
 def server(tmp_pipeline):
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
+    env.pop("BRONCHOROUTE_LEGACY_REVIEW", None)
     fake_home = tmp_pipeline / "fake_home"
     fake_home.mkdir(exist_ok=True)
     env["HOME"] = str(fake_home)
@@ -96,9 +99,11 @@ def test_root_is_renderer_not_shell(server):
     assert 'id="switcher"' in html
     assert 'id="workflow"' not in html
 
-    with urllib.request.urlopen(f"{BASE}/workflow", timeout=10) as res:
-        shell = res.read().decode("utf-8", errors="replace")
-    assert 'id="workflow"' in shell
+    import urllib.error
+
+    with pytest.raises(urllib.error.HTTPError) as error:
+        urllib.request.urlopen(f"{BASE}/workflow", timeout=10)
+    assert error.value.code == 404
 
 
 def test_viewer_mode_no_writes_and_topology_layout(server, tmp_path):
@@ -249,3 +254,68 @@ def test_viewer_mode_no_writes_and_topology_layout(server, tmp_path):
         if src.is_file():
             shutil.copy2(src, SHOTS / name)
     cprint(f"revert shots in {SHOTS}", "green")
+
+
+@pytest.fixture
+def synthetic_server(tmp_path):
+    import urllib.request
+
+    from test_app_server import _write_case_tree
+
+    _write_case_tree(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "LUNGNAV_DATA_ROOT": str(tmp_path),
+        "LUNGNAV_PIPELINE_ROOT": str(tmp_path),
+        "BRONCHOROUTE_LEGACY_REVIEW": "0",
+        "LUNGNAV_VIEWER_ONLY": "0",
+    }
+    env.pop("PYTHONPATH", None)
+    base = "http://127.0.0.1:8773"
+    proc = subprocess.Popen(
+        ["env", "-u", "PYTHONPATH", "uv", "run", "python",
+         "app_server.py", "--port", "8773"],
+        cwd=str(ROOT),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                with urllib.request.urlopen(f"{base}/healthz", timeout=1):
+                    break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("synthetic server did not start")
+                time.sleep(0.1)
+        yield base
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_legacy_off_renderer_switcher(synthetic_server, tmp_path):
+    sync_playwright = _playwright_or_skip()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport=VIEWPORT)
+        page.goto(
+            f"{synthetic_server}/renderer.template.html?case=local-001&allow_review=1"
+            "&debug=1&variant=walkthrough",
+            wait_until="domcontentloaded",
+        )
+        page.wait_for_function("() => typeof window.setVariant === 'function'")
+        assert page.locator("#switcher button").count() == 4
+        assert page.locator("#switcher button", has_text="Walk-through").count() == 0
+        for label in ("CT panes", "Anatomical", "Topology", "Endoluminal"):
+            page.locator("#switcher button", has_text=label).click()
+        shots = Path(tempfile.mkdtemp(prefix="bronchoroute-25-"))
+        screenshot = shots / "legacy-off-renderer.png"
+        page.screenshot(path=str(screenshot), full_page=True)
+        cprint(f"legacy-off screenshot: {screenshot}", "cyan")
+        browser.close()

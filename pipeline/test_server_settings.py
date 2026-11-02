@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: tests for LUNGNAV_VIEWER_ONLY / CASES / CACHE_DIR / healthz.
 """Server deploy settings — no TotalSegmentator, Playwright, or real patient data."""
 
@@ -62,6 +63,7 @@ def test_viewer_only_blocks_workflow_and_writes(client, monkeypatch):
 
 
 def test_cases_allowlist_hides_aeropath(client, monkeypatch):
+    monkeypatch.setenv("BRONCHOROUTE_LEGACY_REVIEW", "1")
     cprint("cases allowlist", "cyan")
     all_ids = {row["id"] for row in client.get("/api/cases").json()}
     assert "local-001" in all_ids
@@ -133,3 +135,65 @@ def test_readonly_data_root_with_cache_dir(tmp_path, monkeypatch):
             data_root.chmod(0o755)
         except OSError:
             pass
+
+
+@pytest.mark.parametrize("method,suffix", [
+    ("GET", "review"), ("POST", "corrections"),
+    ("DELETE", "corrections/example"), ("POST", "review-signoff"),
+    ("GET", "versions"), ("PUT", "walkthrough/0"), ("GET", "tracing"),
+    ("GET", "uncertainty"), ("POST", "signoff"),
+    ("GET", "versions/1/report"),
+])
+def test_legacy_endpoints_hidden(client, monkeypatch, method, suffix):
+    monkeypatch.delenv("BRONCHOROUTE_LEGACY_REVIEW", raising=False)
+    assert client.request(method, f"/api/cases/local-001/{suffix}").status_code == 404
+
+
+def test_default_features_and_cases(client, monkeypatch):
+    monkeypatch.delenv("BRONCHOROUTE_LEGACY_REVIEW", raising=False)
+    monkeypatch.delenv("LUNGNAV_VIEWER_ONLY", raising=False)
+    assert client.get("/api/features").json() == {
+        "legacy_review": False, "viewer_only": False,
+    }
+    assert client.get("/workflow").status_code == 404
+    assert client.get("/app.html").status_code == 404
+    assert [row["id"] for row in client.get("/api/cases").json()] == ["local-001"]
+    assert client.get("/api/cases/3/payload").status_code == 404
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert payload["review"][0]["kind"] == "small_lobe"
+
+
+def test_lesion_does_not_create_version(client, harness, monkeypatch):
+    from app.cases import read_case_json, set_lesion
+    monkeypatch.delenv("BRONCHOROUTE_LEGACY_REVIEW", raising=False)
+    set_lesion("local-001", [0, 0, 0], "AB")
+    record = read_case_json("local-001")
+    assert not record.get("versions")
+    assert not record.get("review_signoff")
+
+
+@pytest.mark.parametrize("value,enabled", [
+    ("1", True),
+    ("TRUE", True),
+    (" yes ", True),
+    ("on", True),
+    ("0", False),
+    ("false", False),
+    ("", False),
+])
+def test_features_flag_values(client, monkeypatch, value, enabled):
+    monkeypatch.setenv("BRONCHOROUTE_LEGACY_REVIEW", value)
+    monkeypatch.setenv("LUNGNAV_VIEWER_ONLY", "1")
+    assert client.get("/api/features").json() == {
+        "legacy_review": enabled, "viewer_only": True,
+    }
+
+
+def test_disabled_version_hooks_preserve_existing_state(monkeypatch):
+    from app.versions import note_change, register_artifact
+    monkeypatch.delenv("BRONCHOROUTE_LEGACY_REVIEW", raising=False)
+    record = {"versions": [{"n": 1, "frozen": True}]}
+    before = json.loads(json.dumps(record))
+    note_change(record, "lesion")
+    register_artifact(record, "graph", "unused")
+    assert record == before

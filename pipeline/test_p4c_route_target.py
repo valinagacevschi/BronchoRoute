@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: Phase 4d review — assert retarget yields a new route_hash (not just truthy).
 # Phase 4c review fixes — RouteStart route length sync, reachability,
 # fly exact sample, stale target, tie-breaks, 409 before step 5, NaN 422.
@@ -106,6 +107,7 @@ def _rt_graph() -> dict:
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRONCHOROUTE_LEGACY_REVIEW", "1")
     cprint(f"p4c harness at {tmp_path}", "cyan")
     assert not str(tmp_path).startswith("/tmp"), "tests must not use /tmp"
     paths = _write_case_tree(tmp_path)

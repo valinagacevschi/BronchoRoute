@@ -1,3 +1,4 @@
+# Changes: keep AeroPath renderer coverage with legacy review explicitly enabled.
 # Changes: tmp ts_out trees symlink individual input files (never directories) so
 # review writes like airway_bridges_labels.nii.gz land in the tmp tree.
 # Phase 3 review: playwright against a tmp PIPELINE root (symlinked read-only
@@ -32,6 +33,12 @@ def _copy_file(src: Path, dst: Path) -> None:
 
 def build_tmp_pipeline(tmp: Path) -> Path:
     """Tmp PIPELINE with per-file symlinked inputs and copied case.json."""
+    if not (ROOT / "out/local-001/local-001_graph.json").is_file():
+        pytest.skip("renderer integration requires generated local Case graph")
+    if not any(path.is_file() for path in (
+        ROOT / "out/fallback/3_graph.json", ROOT / "out/3_graph.json",
+    )):
+        pytest.skip("renderer integration requires generated AeroPath graph")
     cprint(f"building tmp pipeline at {tmp}", "cyan")
     (tmp / "app_state").mkdir(parents=True)
     (tmp / "out" / "cases").mkdir(parents=True)
@@ -113,6 +120,7 @@ def tmp_pipeline(tmp_path_factory):
 def server(tmp_pipeline):
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
+    env["BRONCHOROUTE_LEGACY_REVIEW"] = "1"
     env["LUNGNAV_PIPELINE_ROOT"] = str(tmp_pipeline)
     cprint(f"starting app server on {PORT} with LUNGNAV_PIPELINE_ROOT={tmp_pipeline}", "cyan")
     proc = subprocess.Popen(

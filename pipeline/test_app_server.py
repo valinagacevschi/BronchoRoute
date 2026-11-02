@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: mark as server for CI selection (no TS / Playwright / real data).
 """Synthetic tiny volumes only — no patient data, no TotalSegmentator.
 
@@ -150,6 +151,7 @@ def _write_aeropath_case(root: Path, case_id: str = "3") -> dict[str, Path]:
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
     """Patch paths once; modules must read paths.X at call time."""
+    monkeypatch.setenv("BRONCHOROUTE_LEGACY_REVIEW", "1")
     paths = _write_case_tree(tmp_path)
     monkeypatch.setattr("paths.PIPELINE", tmp_path)
     monkeypatch.setattr("paths.LOCAL_CASES", tmp_path / "data/extracted/local")
@@ -165,7 +167,7 @@ def client(harness):
     return TestClient(app, base_url="http://127.0.0.1")
 
 
-def test_root_serves_renderer_workflow_serves_shell(client):
+def test_root_serves_renderer_workflow_removed(client):
     root = client.get("/")
     assert root.status_code == 200
     assert "Bronchial Tree Renderer" in root.text
@@ -173,9 +175,7 @@ def test_root_serves_renderer_workflow_serves_shell(client):
     assert 'id="workflow"' not in root.text
 
     shell = client.get("/workflow")
-    assert shell.status_code == 200
-    assert 'id="workflow"' in shell.text
-    assert "Lung Navigator" in shell.text
+    assert shell.status_code == 404
 
 
 def test_cases_list(client):

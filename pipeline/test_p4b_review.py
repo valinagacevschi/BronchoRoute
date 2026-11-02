@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: Phase 4b review-fixes coverage — provenance bridge map, arc-length
 # selectability, nearest-sample manual (Y junction), root-only rematch, sign-off at.
 # Phase 4b: effective graph, bridges, corrections, manual mask, step-4 workflow.
@@ -117,6 +118,7 @@ def _paint_bridge_mask(harness, tree=(11.0, 9.0, 13.5), piece=(11.0, 9.0, 12.0))
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRONCHOROUTE_LEGACY_REVIEW", "1")
     cprint(f"p4b harness at {tmp_path}", "cyan")
     assert not str(tmp_path).startswith("/tmp"), "tests must not use /tmp"
     paths = _write_case_tree(tmp_path)

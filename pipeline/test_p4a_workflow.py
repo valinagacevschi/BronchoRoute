@@ -1,4 +1,5 @@
 # Changes: use eligible full-thorax Series in import override coverage.
+# Changes: hide legacy review behind the default-off feature flag.
 # Phase 4a review-fix tests: ordering-aware workflow, series/confirm,
 # register-existing, /records 403, jobs restart/timeout/redaction, import
 # isolation under fake HOME. Never writes ~/.lungnav* or /tmp/lungnav-*.
@@ -34,6 +35,7 @@ from test_app_server import _write_aeropath_case, _write_case_tree  # noqa: E402
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRONCHOROUTE_LEGACY_REVIEW", "1")
     cprint(f"p4a harness at {tmp_path}", "cyan")
     paths = _write_case_tree(tmp_path)
     graph = json.loads(paths["graph"].read_text())

@@ -21,3 +21,7 @@
   separately. Rotate positions in their shared screen projection; draw glyphs
   without rotating the canvas. Use synthetic graphs and dynamic server ports in
   browser tests so local case availability and other worktrees cannot affect them.
+- Feature flags must cover writes from shared edit hooks as well as HTTP routes.
+  Hiding legacy review endpoints alone still lets Lesion and route edits create
+  versions. Guard the shared version hooks and test both empty and frozen state
+  with the flag off.
