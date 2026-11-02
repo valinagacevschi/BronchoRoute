@@ -1,4 +1,7 @@
+// Changes: first-launch acknowledgement and IPC Archive import persist across relaunch.
 // Changes: synthetic Case smoke verifies click acknowledgement and persistence after relaunch.
+// Changes: synthetic Archive via native IPC → picker → processing → Case; verify shutdown isolation.
+// Changes: Electron smoke — render a Case, screenshot, SIGKILL leaves no sidecar.
 "use strict";
 
 const { spawn, spawnSync } = require("node:child_process");
@@ -63,27 +66,35 @@ function sameSnapshot(before, after) {
   return true;
 }
 
-function createSyntheticCase(dataRoot, pipeline) {
+function createArchive(dataRoot, pipeline) {
   const env = { ...process.env };
   delete env.PYTHONPATH;
-  const code = [
-    "import sys",
-    "from pathlib import Path",
-    "from test_app_server import _write_case_tree",
-    "_write_case_tree(Path(sys.argv[1]))",
-  ].join("\n");
   const result = spawnSync(
-    "uv",
-    ["run", "python", "-c", code, dataRoot],
+    "uv", ["run", "python", "tracer_fixture.py", path.join(dataRoot, "input.zip")],
     { cwd: pipeline, env, encoding: "utf8" },
   );
   if (result.status !== 0) {
-    throw new Error("synthetic Case setup failed");
+    throw new Error("synthetic Archive creation failed");
   }
 }
 
+async function clickElement(wc, selector) {
+  const point = await wc.executeJavaScript(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element || element.disabled) return null;
+    const rect = element.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
+  })()`);
+  if (!point) {
+    throw new Error("smoke control is not available");
+  }
+  wc.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...point });
+  wc.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...point });
+}
+
 async function childMain() {
-  const { start } = require("../main");
+  const { start, openArchive } = require("../main");
   const launched = await start();
   if (!launched || !launched.window) {
     return;
@@ -105,10 +116,32 @@ async function childMain() {
   }
   const deadline = Date.now() + 180000;
   let ready = false;
+  let archiveOpened = false;
+  let pickerConfirmed = false;
+  let processingSeen = false;
   let readyAt = 0;
   while (Date.now() < deadline) {
     let state = null;
     try {
+      if (!relaunch && !archiveOpened) {
+        const acknowledged = await wc.executeJavaScript("!document.getElementById('disclaimer-overlay')");
+        if (acknowledged) {
+          await openArchive({ sender: wc }, path.join(process.env.BRONCHOROUTE_DATA_ROOT, "input.zip"));
+          archiveOpened = true;
+        }
+      }
+      if (!relaunch && !pickerConfirmed) {
+        const pickerReady = await wc.executeJavaScript(`(() => {
+          const picker = document.getElementById("series-picker");
+          return Boolean(picker && !picker.hidden);
+        })()`);
+        if (pickerReady) {
+          await clickElement(wc, "#clinician-initials");
+          await wc.insertText("AB");
+          await clickElement(wc, "#series-confirm");
+          pickerConfirmed = true;
+        }
+      }
       state = await wc.executeJavaScript(`(async () => {
         const canvases = Array.from(document.querySelectorAll("canvas"));
         let painted = false;
@@ -148,6 +181,9 @@ async function childMain() {
           buttons: document.querySelectorAll("#switcher button").length,
           overlay: Boolean(document.getElementById("disclaimer-overlay")),
           painted,
+          imported: new URLSearchParams(location.search).get("case") === "local-001",
+          processing: Boolean(document.getElementById("processing") && !document.getElementById("processing").hidden),
+          caseListed: (await fetch("/api/cases").then(response => response.json())).some(item => item.id === "local-001" && item.has_graph),
           ackSaved: (await fetch("/api/settings").then(response => response.json())).disclaimer_ack === true,
         };
       })()`);
@@ -155,7 +191,8 @@ async function childMain() {
       await delay(200);
       continue;
     }
-    if (state.buttons > 0 && !state.overlay && state.ackSaved) {
+    processingSeen = processingSeen || state.processing;
+    if (state.imported && state.caseListed && state.buttons > 0 && !state.overlay && state.ackSaved) {
       if (!readyAt) {
         readyAt = Date.now();
       }
@@ -172,6 +209,9 @@ async function childMain() {
     require("electron").app.exit(1);
     return;
   }
+  if (!relaunch && (!pickerConfirmed || !processingSeen)) {
+    throw new Error("Archive import did not show picker and processing");
+  }
   await wc.executeJavaScript(
     "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))",
   );
@@ -181,7 +221,7 @@ async function childMain() {
     require("electron").app.exit(1);
     return;
   }
-  const shot = path.join(os.tmpdir(), "bronchoroute-26", "viewer.png");
+  const shot = path.join(os.tmpdir(), "bronchoroute-28", relaunch ? "relaunch.png" : "viewer.png");
   fs.mkdirSync(path.dirname(shot), { recursive: true });
   fs.writeFileSync(shot, png);
   process.stdout.write(`BRONCHOROUTE_SMOKE_READY ${shot}\n`);
@@ -200,7 +240,7 @@ async function parentMain() {
   const electronBinary = require("electron");
   const repo = path.resolve(__dirname, "..", "..");
   const pipeline = path.join(repo, "pipeline");
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bronchoroute-32-data-"));
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bronchoroute-28-data-"));
   const trees = ["data", "ts_out", "out", "app_state"].map((name) => path.join(pipeline, name));
   const before = new Map();
   for (const tree of trees) {
@@ -208,7 +248,7 @@ async function parentMain() {
       before.set(key, value);
     }
   }
-  createSyntheticCase(dataRoot, pipeline);
+  createArchive(dataRoot, pipeline);
   for (const relaunch of [false, true]) {
     const child = spawn(electronBinary, [path.join(__dirname, "smoke.js")], {
       cwd: path.resolve(__dirname, ".."),
@@ -216,6 +256,7 @@ async function parentMain() {
         ...process.env,
         BRONCHOROUTE_DATA_ROOT: dataRoot,
         BRONCHOROUTE_SMOKE: "1",
+        BRONCHOROUTE_FAKE_SEGMENT: "1",
         BRONCHOROUTE_SMOKE_RELAUNCH: relaunch ? "1" : "0",
       },
       stdio: ["ignore", "pipe", "pipe"],

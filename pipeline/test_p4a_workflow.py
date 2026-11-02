@@ -1,3 +1,4 @@
+# Changes: migrate import coverage to opaque sessions and automatic processing.
 # Changes: use eligible full-thorax Series in import override coverage.
 # Changes: hide legacy review behind the default-off feature flag.
 # Phase 4a review-fix tests: ordering-aware workflow, series/confirm,
@@ -352,20 +353,20 @@ def test_aeropath_step1_done(client, harness, tmp_path, monkeypatch):
     assert body["steps"][0]["reason"] == AEROPATH_STEP1_REASON
 
 
-def test_import_scan_outside_home_422(client, harness, fake_home, tmp_path):
+def test_import_scan_empty_outside_home_422(client, harness, fake_home, tmp_path):
     _set_clinician(client)
     outside = tmp_path / "outside_home_scan"
     outside.mkdir()
-    res = client.post("/api/imports/scan", json={"src_dir": str(outside)})
+    res = client.post("/api/imports/scan", json={"path": str(outside)})
     assert res.status_code == 422
-    assert "home" in res.json()["detail"].lower()
+    assert "no CT Series" in res.json()["detail"]
 
 
 def test_import_scan_empty_under_fake_home(client, harness, fake_home):
     _set_clinician(client)
     empty = fake_home / "empty_dicom"
     empty.mkdir()
-    res = client.post("/api/imports/scan", json={"src_dir": str(empty)})
+    res = client.post("/api/imports/scan", json={"path": str(empty)})
     assert res.status_code == 422
 
 
@@ -454,27 +455,30 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
         ds.is_implicit_VR = True
         ds.save_as(path)
 
-    scan = client.post("/api/imports/scan", json={"src_dir": str(src)})
+    scan = client.post("/api/imports/scan", json={"path": str(src)})
     assert scan.status_code == 200, scan.text
-    assert scan.json()["proposed"]["folder"] == "THIN"
+    assert scan.json()["proposed"]["series_number"] == 1
     assert scan.json()["proposed"]["kernel"] == "Bf37f"
     assert scan.json()["proposed"]["status"] == "recommended"
     assert scan.json()["proposed"]["z_span_mm"] == 250.0
 
-    # Override with folder (unique).
+    monkeypatch.setattr("app.jobs.start_segment_job", lambda *args, **kwargs: {"status": "queued"})
+    selected = scan.json()["series"][1]["series_key"]
+    # Override with the opaque Series key.
     res = client.post("/api/imports", json={
-        "src_dir": str(src), "series": "THICK", "confirm": True,
+        "import_id": scan.json()["import_id"], "series_key": selected,
     })
     assert res.status_code == 200, res.text
     assert res.json()["record"]["data"]["overridden"] is True
-    assert res.json()["record"]["data"]["folder"] == "THICK"
+    assert "folder" not in res.json()["record"]["data"]
     assert res.json()["source"]["status"] == "usable"
     assert res.json()["record"]["data"]["override_reason"]
     case_id = res.json()["case_id"]
 
     # Duplicate → 409
+    scan = client.post("/api/imports/scan", json={"path": str(src)})
     dup = client.post("/api/imports", json={
-        "src_dir": str(src), "series": "THICK", "confirm": True,
+        "import_id": scan.json()["import_id"], "series_key": selected,
     })
     assert dup.status_code == 409
     assert "already imported" in dup.json()["detail"]
@@ -482,8 +486,9 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
     # Happy non-override path on a fresh series tree.
     src2 = fake_home / "dicom_src2"
     _write_series(src2 / "ONLY", 3, "1.2.840.10008.1.2.1.300", n=251)
+    scan = client.post("/api/imports/scan", json={"path": str(src2)}).json()
     ok = client.post("/api/imports", json={
-        "src_dir": str(src2), "series": "ONLY", "confirm": True,
+        "import_id": scan["import_id"], "series_key": scan["proposed"]["series_key"],
     })
     assert ok.status_code == 200, ok.text
     assert ok.json()["record"]["data"]["overridden"] is False
@@ -693,7 +698,7 @@ def test_scan_status_and_rejected_override(client, fake_home, monkeypatch):
         "b": survivor(number=9, spacing=5.0, series_uid_sha256="b" * 64),
     }
     monkeypatch.setattr("app.imports.read_series", lambda root: (rows, 0))
-    scan = client.post("/api/imports/scan", json={"src_dir": str(fake_home)})
+    scan = client.post("/api/imports/scan", json={"path": str(fake_home)})
     assert scan.status_code == 200
     result = scan.json()
     assert result["proposed"]["status"] == "recommended"
@@ -702,20 +707,20 @@ def test_scan_status_and_rejected_override(client, fake_home, monkeypatch):
     assert result["proposed"]["contrast"] is False
     assert result["series"][1]["status"] == "not_usable"
     refused = client.post("/api/imports", json={
-        "src_dir": str(fake_home), "series": "b" * 64, "confirm": True,
+        "import_id": result["import_id"], "series_key": "b" * 64,
     })
     assert refused.status_code == 422
     assert "step" in refused.json()["detail"]
 
     rows.pop("b")
     rows["a"]["manufacturer"] = "GE"
-    result = client.post("/api/imports/scan", json={"src_dir": str(fake_home)}).json()
+    result = client.post("/api/imports/scan", json={"path": str(fake_home)}).json()
     assert result["proposed"] is None
     assert result["series"][0]["status"] == "usable"
     assert result["series"][0]["skip_reason"] is None
 
     rows["a"]["z_span_mm"] = 190
-    result = client.post("/api/imports/scan", json={"src_dir": str(fake_home)}).json()
+    result = client.post("/api/imports/scan", json={"path": str(fake_home)}).json()
     assert result["proposed"] is None
     assert result["series"][0]["status"] == "not_usable"
 

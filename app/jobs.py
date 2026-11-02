@@ -1,3 +1,4 @@
+# Changes: import lifecycle cleanup, cancellable jobs, step progress and guarded smoke launcher.
 # Changes: surface empty airway failures as a plain graph-step error.
 # Changes: viewer-only startup skips recovery, tmp, and file logs; redact Archive paths only.
 # Changes: persistent process registry, global job guard and redacted rotating logs.
@@ -65,6 +66,10 @@ def _clean_env() -> dict[str, str]:
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env.pop("BRONCHOROUTE_TOKEN", None)
+    # Unit-test monkeypatches do not cross a subprocess boundary.
+    env["LUNGNAV_DATA_ROOT"] = str(paths.PIPELINE)
+    env["LUNGNAV_TMP_DIR"] = str(paths.TMP_DIR)
+    env["LUNGNAV_LOG_DIR"] = str(paths.LOG_DIR)
     return env
 
 
@@ -139,6 +144,10 @@ class JobState:
     error: str | None = None
     pid: int | None = None
     log_lines: list[str] = field(default_factory=list)
+    import_id: str | None = None
+    _cleanup_dirs: tuple[Path, ...] = field(default_factory=tuple, repr=False)
+    _case_path: Path | None = field(default=None, repr=False)
+    _done: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _pgid: int | None = field(default=None, repr=False)
     # Pinned at first persist so background threads keep writing the tmp-tree
@@ -168,8 +177,11 @@ class JobState:
             return {
                 "case_id": self.case_id,
                 "kind": self.kind,
-                "status": self.status,
+                "status": "running" if self.import_id and not self._done.is_set() else self.status,
                 "elapsed_s": round(elapsed, 2),
+                "estimate_s": 390,
+                "step": next((step for step in ("graph", "airway model", "segmentation", "reading")
+                              if f"step: {step}" in self.log_lines), "reading"),
                 "error": self.error,
                 "pid": self.pid,
                 "log_tail": self.log_lines[-50:],
@@ -321,6 +333,11 @@ def _segment_commands(ref: CaseRef) -> list[list[str]]:
         if ref.kind == "local"
         else paths.AEROPATH / ref.case_id
     )
+    if os.environ.get("BRONCHOROUTE_FAKE_SEGMENT") == "1" and (
+        os.environ.get("BRONCHOROUTE_TESTING") == "1"
+        or os.environ.get("BRONCHOROUTE_SMOKE") == "1"
+    ):
+        return [[sys.executable, "fake_segment.py", ref.case_id]]
     return [
         [
             sys.executable, "run_totalsegmentator.py",
@@ -383,11 +400,12 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
     logging.getLogger(__name__).info("pipeline job started")
     deadline = time.monotonic() + _job_timeout_s
     try:
+        job.append_log("step: reading")
         for cmd in cmds:
-            job.append_log("pipeline step started")
+            job.append_log("step: graph" if "build_graph.py" in cmd else "step: segmentation")
             with job._lock:
                 if job._cancelled.is_set():
-                    raise RuntimeError("server shutdown")
+                    raise RuntimeError("cancelled")
                 proc = _launcher(cmd, cwd)
                 job.pid = proc.pid
                 try:
@@ -435,6 +453,8 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
                     ) else f"pipeline step exited {code}")
                     raise RuntimeError(f"graph step failed: {reason}. Try another Series")
                 raise RuntimeError(f"pipeline step exited {code}")
+        if job._cancelled.is_set():
+            raise RuntimeError("cancelled")
         register_segment_artifacts(job.case_id, clinician)
         job.status = "succeeded"
         job.pid = None
@@ -442,30 +462,45 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
         logging.getLogger(__name__).info("pipeline job succeeded")
     except Exception as exc:  # noqa: BLE001
         job.status = "failed"
-        job.set_error(str(exc))
+        job.set_error("cancelled" if job._cancelled.is_set() else str(exc))
         job.append_log(f"ERROR: {redact_log_line(str(exc))}")
         logging.getLogger(__name__).error("pipeline job failed: %s", job.error)
         if job._pgid is not None or job.pid is not None:
             _kill_process_group(job._pgid, job.pid)
     finally:
+        if job.import_id:
+            from app.imports import release_import
+            release_import(job.import_id)
+            if job.status == "succeeded" and job._case_path:
+                with json_file_lock(job._case_path):
+                    document = json.loads(job._case_path.read_text())
+                    document.pop("import_processing", None)
+                    atomic_write_json(job._case_path, document)
+            else:
+                for directory in job._cleanup_dirs:
+                    shutil.rmtree(directory, ignore_errors=True)
         _clear_pid(job)
         job.finished_at = time.monotonic()
         job.pid = None
         _persist_job(job)
         with _jobs_lock:
             _running.pop(job.case_id, None)
+        job._done.set()
 
 
-def start_segment_job(case_id: str, clinician: str) -> dict:
+def start_segment_job(case_id: str, clinician: str, *, import_id: str | None = None) -> dict:
     """Start TotalSegmentator + build_graph; 409 if already running."""
-    require_prior_steps(case_id, int(WorkflowStep.SEGMENT))
+    if import_id is None:
+        require_prior_steps(case_id, int(WorkflowStep.SEGMENT))
     ref = CaseRef.parse(case_id)
     if not ref.ct.is_file():
         raise FileNotFoundError(f"CT not found for {case_id}")
 
     restore_job_from_disk(case_id)
 
-    job = JobState(case_id=case_id, kind="segment")
+    job = JobState(case_id=case_id, kind="segment", import_id=import_id)
+    job._case_path = ref.case_json
+    job._cleanup_dirs = (paths.LOCAL_CASES / case_id, paths.TS_OUT / case_id, paths.OUT / case_id)
     with _jobs_lock:
         if _running:
             raise JobConflict(case_id)
@@ -485,6 +520,22 @@ def start_segment_job(case_id: str, clinician: str) -> dict:
     with _worker_threads_lock:
         _worker_threads.append(thread)
     thread.start()
+    return job.snapshot()
+
+
+def cancel_latest_job(case_id: str) -> dict:
+    restore_job_from_disk(case_id)
+    with _jobs_lock:
+        job = _latest.get(case_id)
+    if job is None:
+        raise ValueError("no processing job")
+    with job._lock:
+        if job.status not in {"queued", "running"}:
+            return {"status": job.status}
+        job._cancelled.set()
+        _kill_process_group(job._pgid, job.pid)
+    if not job._done.wait(timeout=10):
+        raise ValueError("cancellation still in progress")
     return job.snapshot()
 
 
@@ -608,6 +659,14 @@ def initialize_sidecar() -> RotatingFileHandler | None:
                     data.update(status="failed", error="app restarted", pid=None)
                     atomic_write_json(job_path, data)
         path.unlink(missing_ok=True)
+    # A crash before publication must not leave an unfinished library entry.
+    for case_path in paths.LOCAL_CASES.glob("*/case.json"):
+        document = json.loads(case_path.read_text())
+        if document.get("import_processing"):
+            case_id = case_path.parent.name
+            if CASE_ID_RE.fullmatch(case_id):
+                for directory in (case_path.parent, paths.TS_OUT / case_id, paths.OUT / case_id):
+                    shutil.rmtree(directory, ignore_errors=True)
     paths.TMP_DIR.mkdir(parents=True, exist_ok=True)
     for child in paths.TMP_DIR.iterdir():
         if child.is_dir() and not child.is_symlink():

@@ -1,3 +1,4 @@
+# Changes: retain only hashed Study grouping and allowed picker metadata.
 # Changes: apply header eligibility and vendor-aware Series ranking at import.
 """Select and import an axial CT series without exporting DICOM identifiers.
 
@@ -70,6 +71,9 @@ def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
             if row is None:
                 row = {
                     "series_uid_sha256": uid,
+                    "study_key": series_uid_hash(str(getattr(ds, "StudyInstanceUID", ""))),
+                    "study_date": str(getattr(ds, "StudyDate", "")),
+                    "study_description": str(getattr(ds, "StudyDescription", "")),
                     "number": int(ds.SeriesNumber),
                     "folder": (path.relative_to(src_dir).parts[0]
                                if len(path.relative_to(src_dir).parts) > 1 else "."),

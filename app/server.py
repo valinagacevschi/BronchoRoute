@@ -1,9 +1,11 @@
+# Changes: preserve Archive import and the shared Settings API after rebase.
 # Changes: shared settings API alongside the compatible clinician endpoints.
 # Changes: serve About (name, version, licence), LICENSE, notices, and sponsors.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: blank BRONCHOROUTE_TOKEN counts as unset so the launch guard stays off.
 # Changes: guarded sidecar token, socket handoff, stdin lifecycle and recovery.
 # Changes: deploy env — LUNGNAV_VIEWER_ONLY / CASES / HOST / PORT / ALLOWED_HOSTS;
+# Changes: opaque Archive API, bounded browser upload and processing cancellation.
 # GET /healthz; TrustedHost from env; bind 0.0.0.0 when LUNGNAV_HOST set.
 # Phase 4d review fixes — CSP on report; VersionAlreadyFrozen /
 # FreezeDirExists / SignoffArtifactError / ReportNotFrozen → 409; remove ack-return.
@@ -23,6 +25,7 @@ import json
 import math
 import os
 import socket
+import tempfile
 import sys
 import threading
 import tomllib
@@ -36,7 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.caseref import CaseRef
+from app.caseref import CASE_ID_RE, CaseRef
 from app.cases import (
     RECORD_KINDS,
     ReviewBlocked,
@@ -53,9 +56,10 @@ from app.cases import (
     validate_record_data,
 )
 from app.ct_crop import build_ct_crop, read_ct_bytes
-from app.imports import ImportDuplicate, confirm_import, scan_series
+from app.imports import ImportDuplicate, import_and_process, release_import, scan_series, MAX_ARCHIVE_BYTES
 from app.jobs import (
     JobConflict,
+    cancel_latest_job,
     initialize_sidecar,
     close_sidecar_log,
     latest_job,
@@ -248,13 +252,12 @@ class LesionBody(BaseModel):
 
 
 class ImportScanBody(BaseModel):
-    src_dir: str
+    path: str
 
 
 class ImportConfirmBody(BaseModel):
-    src_dir: str
-    series: str | int
-    confirm: bool = True
+    import_id: str
+    series_key: str
 
 
 class RouteStartBody(BaseModel):
@@ -405,21 +408,53 @@ def api_workflow(case_id: str):
 @app.post("/api/imports/scan")
 def api_import_scan(body: ImportScanBody):
     try:
-        return scan_series(body.src_dir)
+        return scan_series(body.path)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/imports/upload")
+async def api_import_upload(request: Request):
+    paths.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    fd, filename = tempfile.mkstemp(suffix=".zip", dir=paths.TMP_DIR)
+    try:
+        with os.fdopen(fd, "wb") as target:
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > MAX_ARCHIVE_BYTES:
+                    raise HTTPException(status_code=413, detail="Archive size limit exceeded")
+                target.write(chunk)
+        return scan_series(filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        Path(filename).unlink(missing_ok=True)
+
+
+@app.delete("/api/imports/{import_id}")
+def api_import_release(import_id: str):
+    release_import(import_id)
+    return {"released": True}
+
+
+@app.post("/api/cases/{case_id}/jobs/latest/cancel")
+def api_job_cancel(case_id: str):
+    try:
+        if not CASE_ID_RE.fullmatch(case_id):
+            raise UnknownCase("invalid Case")
+        return cancel_latest_job(case_id)
+    except (UnknownCase, ValueError) as exc:
+        raise _http_for_case(exc) from exc
 
 
 @app.post("/api/imports")
 def api_import_confirm(body: ImportConfirmBody):
     clinician = _require_clinician()
     try:
-        return confirm_import(
-            body.src_dir,
-            body.series,
-            clinician=clinician["clinician"],
-            confirm=body.confirm,
-        )
+        return import_and_process(body.import_id, body.series_key, clinician["clinician"])
+    except JobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ImportDuplicate as exc:
         return JSONResponse(status_code=409, content={"detail": exc.message})
     except ValueError as exc:
@@ -492,10 +527,11 @@ def api_segment_register_existing(case_id: str):
 @app.get("/api/cases/{case_id}/jobs/latest")
 def api_job_latest(case_id: str):
     try:
-        CaseRef.parse(case_id)
+        if not CASE_ID_RE.fullmatch(case_id):
+            raise UnknownCase("invalid Case")
+        job = latest_job(case_id)
     except UnknownCase as exc:
         raise _http_for_case(exc) from exc
-    job = latest_job(case_id)
     if job is None:
         return {"case_id": case_id, "status": "none", "log_tail": [], "elapsed_s": 0}
     return job

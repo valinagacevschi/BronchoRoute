@@ -1,9 +1,11 @@
+// Changes: combine native Archive IPC with API-owned disclaimer acknowledgement.
 // Changes: launch bundled standalone Python in packaged mode; preserve dev launch.
 // Changes: Python owns disclaimer acknowledgement through the token-guarded settings API.
 // Changes: dev-mode Electron shell — sidecar lifecycle, token, disclaimer.
+// Changes: native Archive IPC and File menu alongside sidecar lifecycle.
 "use strict";
 
-const { app, BrowserWindow, dialog, session } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, session } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -331,6 +333,42 @@ async function showFatal(message) {
   app.exit(1);
 }
 
+async function openArchive(event, selectedPath) {
+  if (event.sender !== mainWindow.webContents) {
+    throw new Error("Archive request from an unknown window");
+  }
+  let archivePath = selectedPath;
+  if (!archivePath) {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Open Archive",
+      properties: ["openFile", "openDirectory"],
+      filters: [{ name: "Archives", extensions: ["zip", "dcm", ""] }],
+    });
+    if (result.canceled) {
+      return;
+    }
+    archivePath = result.filePaths[0];
+  }
+  if (typeof archivePath !== "string") {
+    throw new Error("Invalid Archive selection");
+  }
+  mainWindow.webContents.send("bronchoroute:archive", archivePath);
+}
+
+function installArchiveMenu() {
+  ipcMain.handle("bronchoroute:open-archive", event => openArchive(event));
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: "appMenu" },
+    { label: "File", submenu: [
+      { label: "Open Archive…", accelerator: "CmdOrCtrl+O", click: () => {
+        openArchive({ sender: mainWindow.webContents }).catch(() => {});
+      } },
+      { role: "close" },
+    ] },
+    { role: "editMenu" },
+  ]));
+}
+
 async function launch() {
   await app.whenReady();
   const dataRoot = resolveDataRoot(process.env, app.getPath("userData"));
@@ -340,6 +378,7 @@ async function launch() {
   fs.mkdirSync(logDir, { recursive: true });
   const token = newLaunchToken();
   mainWindow = createWindow();
+  installArchiveMenu();
   installNavigationGuards(mainWindow);
   await loadInline(mainWindow, splashHtml());
   mainWindow.show();
@@ -425,4 +464,4 @@ if (isDirectLaunch()) {
   });
 }
 
-module.exports = { start };
+module.exports = { start, openArchive };

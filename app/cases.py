@@ -1,3 +1,4 @@
+# Changes: keep unfinished imported Cases out of the library.
 # Changes: recheck saved header facts before confirming an imported Series.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: Phase 4d review fixes — note_change on lesion/route_start/records;
@@ -62,8 +63,11 @@ def list_cases() -> list[dict]:
                 ref = CaseRef.parse(case_id)
             except UnknownCase:
                 continue
+            record = json.loads(case_path.read_text())
+            if record.get("import_processing"):
+                continue
             seen.add(case_id)
-            items.append(_case_summary(ref, json.loads(case_path.read_text())))
+            items.append(_case_summary(ref, record))
 
     if paths.legacy_review() and paths.AEROPATH.is_dir():
         for case_dir in sorted(paths.AEROPATH.iterdir()):
