@@ -1,3 +1,4 @@
+# Changes: empty or missing lobe masks exit as segmentation: no lungs found.
 # Changes: emit airway-model progress before mask combination.
 # Changes: invoke TotalSegmentator through the active Python for relocatable bundles.
 """Run TotalSegmentator for airway and lobe masks.
@@ -78,8 +79,8 @@ def merge_lobes(seg_dir: Path, out: Path) -> None:
             ref = img
             merged = np.zeros(data.shape, dtype=np.uint8)
         merged[data] = value
-    if merged is None:
-        sys.exit("no lobe masks produced")
+    if merged is None or not np.any(merged):
+        sys.exit("segmentation: no lungs found")
     nib.save(nib.Nifti1Image(merged, ref.affine, ref.header), out)
     counts = {n: int((merged == v).sum()) for n, v in LOBES.items()}
     print(f"  merged -> {out}")

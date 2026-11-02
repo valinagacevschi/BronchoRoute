@@ -1,3 +1,4 @@
+/* Changes: override-reason field and try-another on the import screen. */
 /* Changes: Case Library list, size warning, and outdated-Case prompt. */
 /* Changes: keep the shared Settings footer reachable on import and processing screens. */
 /* Changes: import screens share the viewer's clinical palette and typography. */
@@ -27,6 +28,11 @@
 .series-open, .series-reprocess, #library-rows button { padding: 6px 10px; margin-right: 6px; }
 #import-confirm { margin-top: 24px; }
 #clinician-initials { padding: 8px; margin-left: 12px; width: 100px; }
+#override-reason-field { display: block; margin: 16px 0; }
+#override-reason-field[hidden] { display: none; }
+#override-reason { display: block; width: min(420px, 100%); margin-top: 8px; padding: 8px; border: 1px solid #9bb2be; border-radius: 5px; font: inherit; }
+#try-another { margin-top: 12px; }
+#try-another[hidden] { display: none; }
 #processing-steps { display: flex; gap: 40px; padding: 28px; margin: 28px 0; border-block: 1px solid #c6d6de; }
 #processing-steps li { color: #718893; padding: 10px; }
 #processing-steps li[data-state="active"] { color: #174c65; background: #d9e9f0; border-radius: 5px; }

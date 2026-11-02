@@ -1,3 +1,5 @@
+# Changes: lungs failure logs reading, segmentation, then airway model before no lungs.
+# Changes: BRONCHOROUTE_FAKE_FAIL=lungs reports segmentation: no lungs found.
 # Changes: guarded synthetic segmentation for tests and the Electron smoke only.
 """Write tiny deterministic artifacts without loading model weights."""
 from __future__ import annotations
@@ -26,6 +28,13 @@ def main():
     if paths.PIPELINE.resolve() == Path(__file__).resolve().parent:
         raise SystemExit("synthetic processing requires an isolated state root")
     ref = CaseRef.parse(sys.argv[1])
+    # stdout is the stream _default_launcher captures (stderr is merged into it).
+    if os.environ.get("BRONCHOROUTE_FAKE_FAIL") == "lungs":
+        print("step: reading", flush=True)
+        print("step: segmentation", flush=True)
+        print("step: airway model", flush=True)
+        print("segmentation: no lungs found", flush=True)
+        raise SystemExit(1)
     for step in ("reading", "segmentation", "airway model", "graph"):
         print(f"step: {step}", flush=True)
         time.sleep(float(os.environ.get("BRONCHOROUTE_FAKE_STEP_SECONDS", "0.4")))

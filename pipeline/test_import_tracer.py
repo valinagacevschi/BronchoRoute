@@ -1,3 +1,4 @@
+# Changes: Series override reason, junk-file scans, and a lungs failure.
 # Changes: scan rows include the library hit field.
 # Changes: synthetic Archive safety, privacy and processing lifecycle coverage.
 from __future__ import annotations
@@ -135,15 +136,176 @@ def test_folder_and_dicomdir_scan(lifecycle, extraction, dicomdir):
     from tracer_fixture import write_series
     root = extraction / "folder"
     write_series(root, 1, "1.2.826.0.1.3680043.10.999.5")
+    (root / "notes.txt").write_text("notes")
+    (root / "setup.exe").write_bytes(b"MZ")
+    (root / "autorun.inf").write_text("[autorun]\n")
+    (root / "random.bin").write_bytes(bytes(range(256)))
     source = root
+    extra = 0
     if dicomdir:
         source = root / "DICOMDIR"
         source.write_bytes(b"directory input")
+        extra = 1
     result = lifecycle.post("/api/imports/scan", json={"path": str(source)})
-    assert result.status_code == 200
-    assert result.json()["proposed"]["status"] == "recommended"
-    lifecycle.delete(f"/api/imports/{result.json()['import_id']}")
+    assert result.status_code == 200, result.text
+    body = result.json()
+    assert body["proposed"]["status"] == "recommended"
+    assert body["unreadable_files"] == 4 + extra
+    lifecycle.delete(f"/api/imports/{body['import_id']}")
     assert root.is_dir()
+
+
+def _no_case_or_tmp():
+    import paths
+    assert list(paths.LOCAL_CASES.glob("local-*")) == []
+    if paths.TMP_DIR.exists():
+        assert list(paths.TMP_DIR.iterdir()) == []
+
+
+def test_series_override_reason(lifecycle, extraction, monkeypatch):
+    import json
+    import paths
+    from tracer_fixture import write_choice_folder, write_series
+    monkeypatch.setattr("app.jobs.start_segment_job", lambda *args, **kwargs: {"status": "queued"})
+    root = write_choice_folder(extraction / "choice")
+    lifecycle.put("/api/clinician", json={"role": "Clinician", "initials": "A.B."})
+
+    def scan():
+        response = lifecycle.post("/api/imports/scan", json={"path": str(root)})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        usable = next(row for row in body["series"] if row["status"] == "usable")
+        recommended = next(row for row in body["series"] if row["status"] == "recommended")
+        rejected = next(row for row in body["series"] if row["status"] == "not_usable")
+        return body, usable, recommended, rejected
+
+    scanned, usable, _recommended, _rejected = scan()
+    missing = lifecycle.post("/api/imports", json={
+        "import_id": scanned["import_id"], "series_key": usable["series_key"],
+    })
+    assert missing.status_code == 422
+    assert missing.json()["detail"] == "Give a reason for choosing this Series"
+    _no_case_or_tmp()
+    assert root.is_dir()
+    assert lifecycle.post("/api/imports/scan", json={"path": str(root)}).status_code == 200
+
+    scanned, usable, _recommended, _rejected = scan()
+    too_long = lifecycle.post("/api/imports", json={
+        "import_id": scanned["import_id"], "series_key": usable["series_key"],
+        "override_reason": "x" * 201,
+    })
+    assert too_long.status_code == 422
+    _no_case_or_tmp()
+
+    scanned, _usable, _recommended, rejected = scan()
+    refused = lifecycle.post("/api/imports", json={
+        "import_id": scanned["import_id"], "series_key": rejected["series_key"],
+        "override_reason": "sharper edges",
+    })
+    assert refused.status_code == 422
+    _no_case_or_tmp()
+
+    scanned, _usable, recommended, _rejected = scan()
+    kept = lifecycle.post("/api/imports", json={
+        "import_id": scanned["import_id"], "series_key": recommended["series_key"],
+        "override_reason": "ignored on the recommended Series",
+    })
+    assert kept.status_code == 200, kept.text
+    kept_body = kept.json()
+    assert kept_body["record"]["data"]["overridden"] is False
+    assert kept_body["record"]["data"]["override_reason"] == ""
+    kept_doc = json.loads((paths.LOCAL_CASES / kept_body["case_id"] / "case.json").read_text())
+    assert kept_doc["source"]["series_choice"] == {
+        "status": "recommended",
+        "status_reason": "",
+        "overridden": False,
+        "override_reason": "",
+    }
+
+    scanned, usable, _recommended, _rejected = scan()
+    accepted = lifecycle.post("/api/imports", json={
+        "import_id": scanned["import_id"], "series_key": usable["series_key"],
+        "override_reason": "sharper edges",
+    })
+    assert accepted.status_code == 200, accepted.text
+    body = accepted.json()
+    assert body["record"]["data"]["override_reason"] == "sharper edges"
+    assert body["record"]["data"]["status_reason"] == usable["reason"]
+    assert isinstance(usable["reason"], str) and usable["reason"]
+    for key in ("series_number", "description", "kernel", "overridden", "status"):
+        assert key in body["record"]["data"]
+    document = json.loads((paths.LOCAL_CASES / body["case_id"] / "case.json").read_text())
+    assert document["source"]["series_choice"] == {
+        "status": "usable",
+        "status_reason": usable["reason"],
+        "overridden": True,
+        "override_reason": "sharper edges",
+    }
+
+    plain = extraction / "ge"
+    write_series(
+        plain / "one", 1, "1.2.826.0.1.3680043.10.999.31",
+        manufacturer="GE", kernel="STANDARD",
+    )
+    write_series(
+        plain / "two", 2, "1.2.826.0.1.3680043.10.999.32",
+        manufacturer="GE", kernel="STANDARD", description="AXIAL STANDARD B",
+    )
+    ge = lifecycle.post("/api/imports/scan", json={"path": str(plain)}).json()
+    assert ge["proposed"] is None
+    assert {row["status"] for row in ge["series"]} == {"usable"}
+    first, second = ge["series"]
+    without = lifecycle.post("/api/imports", json={
+        "import_id": ge["import_id"], "series_key": first["series_key"],
+    })
+    assert without.status_code == 200, without.text
+    assert without.json()["record"]["data"]["overridden"] is False
+    assert without.json()["record"]["data"]["override_reason"] == ""
+    ge = lifecycle.post("/api/imports/scan", json={"path": str(plain)}).json()
+    second = next(row for row in ge["series"] if row["series_key"] == second["series_key"])
+    with_reason = lifecycle.post("/api/imports", json={
+        "import_id": ge["import_id"], "series_key": second["series_key"],
+        "override_reason": "local preference",
+    })
+    assert with_reason.status_code == 200, with_reason.text
+    assert with_reason.json()["record"]["data"]["overridden"] is False
+    assert with_reason.json()["record"]["data"]["override_reason"] == "local preference"
+
+
+def test_lungs_failure_leaves_no_case(lifecycle, extraction, monkeypatch):
+    import time
+    import paths
+    from tracer_fixture import write_archive
+    monkeypatch.setenv("BRONCHOROUTE_FAKE_FAIL", "lungs")
+    archive = write_archive(extraction / "input.zip")
+    scan = lifecycle.post("/api/imports/scan", json={"path": str(archive)}).json()
+    lifecycle.put("/api/clinician", json={"role": "Clinician", "initials": "A.B."})
+    response = lifecycle.post("/api/imports", json={
+        "import_id": scan["import_id"], "series_key": scan["proposed"]["series_key"],
+    })
+    assert response.status_code == 200, response.text
+    case_id = response.json()["case_id"]
+    job = {}
+    for _ in range(300):
+        current = lifecycle.get(f"/api/cases/{case_id}/jobs/latest")
+        if current.status_code == 200:
+            job = current.json()
+            if job.get("status") in {"succeeded", "failed"}:
+                break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"processing did not finish: {job}")
+    assert job["status"] == "failed"
+    assert job["error"] == "segmentation step failed: no lungs found. Try another Series"
+    for _ in range(50):
+        tmp_clear = not paths.TMP_DIR.exists() or not list(paths.TMP_DIR.iterdir())
+        if (lifecycle.get("/api/cases").json() == []
+                and not (paths.LOCAL_CASES / case_id).exists()
+                and tmp_clear):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("failed import was not cleaned up")
 
 
 def test_fake_launcher_requires_test_context(monkeypatch):
