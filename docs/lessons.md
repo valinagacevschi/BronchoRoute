@@ -44,3 +44,9 @@
 - Shared settings: merging only the new API writes is insufficient when legacy
   clinician and CT preference writers replace the same file. Keep every writer
   under the same lock, preserve unknown keys, and test cross-API writes.
+- Standalone Python packaging (#27): the frozen runtime includes source-only
+  packages such as acvl-utils. Allow uv to build those locked releases rather
+  than requiring wheels for every dependency; macOS markers still exclude CUDA.
+- Packaged Python jobs (#27): imports and wrapper --help do not exercise child
+  commands. Invoke Python CLIs with sys.executable and -m; console-script shebangs
+  retain build paths. Smoke-check the child module with only system tools on PATH.

@@ -1,3 +1,4 @@
+# Changes: invoke TotalSegmentator through the active Python for relocatable bundles.
 """Run TotalSegmentator for airway and lobe masks.
 
 The airway fallback combines the lung_vessels task's lung_airways lumen with
@@ -249,7 +250,8 @@ def main() -> None:
         airway_outputs = [airway_filename, "lung_airways_wall.nii.gz",
                           "lung_arteries.nii.gz", "lung_veins.nii.gz"]
     print(f"airways ({task} task)")
-    cmd = ["TotalSegmentator", "-i", str(args.ct), "-o", str(airway_dir),
+    cmd = [sys.executable, "-m", "totalsegmentator.bin.TotalSegmentator",
+           "-i", str(args.ct), "-o", str(airway_dir),
            "--task", task, "--device", args.device]
     if args.fast:
         cmd.append("--fast")
@@ -265,7 +267,8 @@ def main() -> None:
 
     lobe_dir = args.out / "lobes"
     print("lobes and trachea (total task, six structures only)")
-    cmd = ["TotalSegmentator", "-i", str(args.ct), "-o", str(lobe_dir),
+    cmd = [sys.executable, "-m", "totalsegmentator.bin.TotalSegmentator",
+           "-i", str(args.ct), "-o", str(lobe_dir),
            "--roi_subset", *ROIS, "--device", args.device]
     if args.fast:
         cmd.append("--fast")

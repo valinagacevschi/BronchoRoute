@@ -1,3 +1,4 @@
+// Changes: shell helpers including isolated packaged Python launch configuration.
 // Changes: shell helpers; settings persistence belongs to the Python sidecar.
 // Changes: pure helpers for the dev-mode Electron shell (port, env, origin).
 "use strict";
@@ -64,6 +65,32 @@ function buildSidecarEnv(baseEnv, options) {
   env.LUNGNAV_TMP_DIR = options.tmpDir;
   env.LUNGNAV_LOG_DIR = options.logDir;
   return env;
+}
+
+function sidecarLaunch(packaged, resourcesPath, options, baseEnv) {
+  const env = buildSidecarEnv(baseEnv, options);
+  const cwd = packaged
+    ? path.join(resourcesPath, "app", "pipeline")
+    : path.resolve(__dirname, "..", "pipeline");
+  const args = ["app_server.py", "--port", "0", "--exit-on-stdin-close"];
+  if (!packaged) {
+    return { command: "uv", args: ["run", "python", ...args], cwd, env };
+  }
+  env.PYTHONDONTWRITEBYTECODE = "1";
+  env.PYTHONNOUSERSITE = "1";
+  env.TOTALSEG_HOME_DIR = path.join(options.dataRoot, "models", "totalseg");
+  env.TOTALSEG_WEIGHTS_PATH = path.join(options.dataRoot, "models");
+  const config = path.join(env.TOTALSEG_HOME_DIR, "config.json");
+  fs.mkdirSync(env.TOTALSEG_HOME_DIR, { recursive: true });
+  if (!fs.existsSync(config)) {
+    atomicWriteJson(config, { send_usage_stats: false });
+  }
+  return {
+    command: path.join(resourcesPath, "python", "bin", "python3"),
+    args: [path.join(cwd, args[0]), ...args.slice(1)],
+    cwd,
+    env,
+  };
 }
 
 function sidecarOrigin(port) {
@@ -139,12 +166,17 @@ function atomicWriteText(file, text) {
   }
 }
 
+function atomicWriteJson(file, data) {
+  atomicWriteText(file, `${JSON.stringify(data, null, 2)}\n`);
+}
+
 module.exports = {
   DISCLAIMER,
   SPLASH,
   parsePortLine,
   splitCompleteLines,
   buildSidecarEnv,
+  sidecarLaunch,
   sidecarOrigin,
   requestFilterUrls,
   isAllowedAppUrl,
@@ -152,4 +184,5 @@ module.exports = {
   resolveDataRoot,
   newLaunchToken,
   atomicWriteText,
+  atomicWriteJson,
 };

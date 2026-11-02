@@ -16,6 +16,7 @@ const {
   requestFilterUrls,
   resolveDataRoot,
   splitCompleteLines,
+  atomicWriteJson,
 } = require("./lib");
 
 test("parsePortLine accepts a single sidecar announcement", () => {
@@ -127,4 +128,45 @@ test("viewer template vendors fonts and the research footer", () => {
   const parts = template.split(sentinel);
   const data = rendered.slice(parts[0].length, rendered.length - parts[1].length);
   assert.equal(rendered, template.replace(sentinel, data));
+});
+
+test("packaged sidecar uses the resource interpreter and isolated model state", () => {
+  const { sidecarLaunch } = require("./lib");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bronchoroute-package-"));
+  try {
+    const options = { token: "test-token", dataRoot: root, tmpDir: root, logDir: root };
+    const launch = sidecarLaunch(true, "/bundle/Resources", options, { PYTHONPATH: "/outside" });
+    assert.equal(launch.command, "/bundle/Resources/python/bin/python3");
+    assert.equal(launch.cwd, "/bundle/Resources/app/pipeline");
+    assert.equal(launch.args[0], "/bundle/Resources/app/pipeline/app_server.py");
+    assert.equal(launch.env.PYTHONPATH, undefined);
+    assert.equal(launch.env.PYTHONDONTWRITEBYTECODE, "1");
+    assert.equal(launch.env.PYTHONNOUSERSITE, "1");
+    assert.equal(launch.env.TOTALSEG_WEIGHTS_PATH, path.join(root, "models"));
+    const config = path.join(root, "models", "totalseg", "config.json");
+    assert.deepEqual(JSON.parse(fs.readFileSync(config)), { send_usage_stats: false });
+    atomicWriteJson(config, { send_usage_stats: false, retained: 42 });
+    sidecarLaunch(true, "/bundle/Resources", options, {});
+    assert.deepEqual(JSON.parse(fs.readFileSync(config)), { send_usage_stats: false, retained: 42 });
+    const dev = sidecarLaunch(false, "/unused", options, {});
+    assert.equal(dev.command, "uv");
+    assert.deepEqual(dev.args, ["run", "python", "app_server.py", "--port", "0", "--exit-on-stdin-close"]);
+    assert.equal(dev.env.PYTHONNOUSERSITE, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("builder includes only runtime resources and targets unsigned arm64 macOS", () => {
+  const { build, devDependencies } = require("./package.json");
+  assert.equal(build.mac.identity, null);
+  assert.equal(build.mac.minimumSystemVersion, "14.0");
+  assert.deepEqual(build.mac.target, [{ target: "dir", arch: ["arm64"] }]);
+  assert.match(devDependencies["electron-builder"], /^\d+\.\d+\.\d+$/);
+  const pipeline = build.extraResources.find((row) => row.to === "app/pipeline");
+  assert.ok(pipeline.filter.includes("repo_root.py"));
+  assert.ok(pipeline.filter.includes("pyproject.toml"));
+  assert.ok(pipeline.filter.every((name) => !name.startsWith("test_") && !name.includes("*")));
+  const root = build.extraResources.find((row) => row.to === "app");
+  assert.deepEqual(root.filter, ["LICENSE", "THIRD_PARTY_NOTICES.md", "sponsors.json"]);
 });

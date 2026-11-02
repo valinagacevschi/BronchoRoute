@@ -8,13 +8,88 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "build:python": "bash scripts/build-python.sh",
+    "pack": "electron-builder --mac dir --arm64 --publish never",
+    "smoke:packaged": "node scripts/smoke-packaged.js"
   },
   "build": {
     "appId": "ro.appcenter.bronchoroute",
-    "productName": "BronchoRoute"
+    "productName": "BronchoRoute",
+    "files": [
+      "main.js",
+      "lib.js",
+      "preload.js"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "minimumSystemVersion": "14.0",
+      "identity": null
+    },
+    "extraResources": [
+      {
+        "from": "build/python",
+        "to": "python",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../app",
+        "to": "app/app",
+        "filter": [
+          "*.py"
+        ]
+      },
+      {
+        "from": "../pipeline",
+        "to": "app/pipeline",
+        "filter": [
+          "app_server.py",
+          "atomic_json.py",
+          "build_graph.py",
+          "import_dicom.py",
+          "make_prototype_data.py",
+          "paths.py",
+          "repo_root.py",
+          "review_signoff.py",
+          "route_frame.py",
+          "run_totalsegmentator.py",
+          "series_rule.py",
+          "snomed.py",
+          "pyproject.toml"
+        ]
+      },
+      {
+        "from": "../prototype",
+        "to": "app/prototype",
+        "filter": [
+          "renderer.template.html",
+          "ct_panes.js",
+          "fonts/*.woff2",
+          "fonts/OFL*.txt"
+        ]
+      },
+      {
+        "from": "..",
+        "to": "app",
+        "filter": [
+          "LICENSE",
+          "THIRD_PARTY_NOTICES.md",
+          "sponsors.json"
+        ]
+      }
+    ]
   },
   "devDependencies": {
-    "electron": "45.2.1"
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0"
   }
 }
