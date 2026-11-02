@@ -1,3 +1,4 @@
+<!-- Changes: outdated-Case prompt must not cover the footer hit targets. -->
 <!-- Changes: retain Settings persistence and subprocess isolation lessons after rebase. -->
 # Lessons Learned
 
@@ -52,3 +53,7 @@
 - Packaged Python jobs (#27): imports and wrapper --help do not exercise child
   commands. Invoke Python CLIs with sys.executable and -m; console-script shebangs
   retain build paths. Smoke-check the child module with only system tools on PATH.
+- Case Library (GitLab #31): the outdated-Case prompt cannot be a modal backdrop.
+  Other viewer tests open fixtures with no pipeline_version, and a top-layer
+  backdrop makes the footer About and Settings links fail hit-testing. Keep the
+  prompt in the page, clear of the left rail and the switcher.

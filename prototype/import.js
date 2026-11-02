@@ -1,3 +1,4 @@
+// Changes: Case Library screen, library hit, and outdated-Case prompt.
 // Changes: import initials use the shared Python-owned Settings API.
 // Changes: Archive input, Study picker, clinician prompt and processing screens.
 "use strict";
@@ -6,18 +7,22 @@
   let session = null;
   let activeCase = null;
   let busy = false;
+  let viewerOnly = false;
+  let outdatedDismissed = null;
   const screen = document.createElement("section");
   screen.id = "import-screen";
   screen.hidden = true;
   screen.innerHTML = `
-    <div class="import-heading"><span>BronchoRoute</span><button id="archive-back" hidden>Back to Case</button></div>
+    <div class="import-heading"><span>BronchoRoute</span><span class="import-actions">
+      <button type="button" id="import-library">Library</button>
+      <button type="button" id="archive-back" hidden>Back to Case</button></span></div>
     <main class="import-panel">
       <p class="import-eyebrow">LOCAL CT PROCESSING</p>
       <h1>Open an Archive</h1>
       <p>Choose a reconstruction, build its airway model, then open the Case.</p>
       <div id="archive-drop" tabindex="0" aria-label="Drop an Archive">
         <strong>Drop an Archive here</strong><p>Zip, folder or DICOMDIR · processed on this Mac</p>
-        <button id="archive-choose">Choose…</button>
+        <button type="button" id="archive-choose">Choose…</button>
         <input id="archive-file" type="file" accept=".zip" hidden>
       </div>
       <p id="import-message" role="status" aria-live="polite"></p>
@@ -31,10 +36,48 @@
       <div id="processing" hidden><h2>Building the Case</h2>
         <ol id="processing-steps"><li>Reading</li><li>Segmentation</li><li>Airway model</li><li>Graph</li></ol>
         <p><span id="processing-elapsed">0 s</span> elapsed · Estimated 6–7 min</p>
-        <button id="processing-cancel">Cancel</button>
+        <button type="button" id="processing-cancel">Cancel</button>
       </div>
     </main>`;
   document.body.appendChild(screen);
+  const libraryScreen = document.createElement("section");
+  libraryScreen.id = "library-screen";
+  libraryScreen.hidden = true;
+  libraryScreen.innerHTML = `
+    <div class="import-heading"><span>BronchoRoute</span>
+      <button type="button" id="library-back">Back</button></div>
+    <main class="import-panel">
+      <p class="import-eyebrow">CASE LIBRARY</p>
+      <h1>Case Library</h1>
+      <p id="library-warn" hidden>Library is larger than 10 GB.</p>
+      <p id="library-total"></p>
+      <p id="library-empty" hidden>No Cases stored.</p>
+      <div id="library-table-wrap"><table id="library-table">
+        <thead><tr>
+          <th>Case</th><th>Study date</th><th>Series</th><th>Processed</th><th>Size</th><th>Outdated</th><th></th>
+        </tr></thead>
+        <tbody id="library-rows"></tbody>
+      </table></div>
+      <p id="library-message" role="alert"></p>
+      <button type="button" id="library-delete-all">Delete all</button>
+    </main>
+    <dialog id="library-confirm" aria-labelledby="library-confirm-text">
+      <p id="library-confirm-text"></p>
+      <button type="button" id="library-confirm-yes">Delete</button>
+      <button type="button" id="library-confirm-no">Cancel</button>
+    </dialog>`;
+  document.body.appendChild(libraryScreen);
+  const outdated = document.createElement("div");
+  outdated.id = "outdated-note";
+  outdated.hidden = true;
+  outdated.setAttribute("role", "dialog");
+  outdated.setAttribute("aria-labelledby", "outdated-text");
+  outdated.innerHTML = `
+    <p id="outdated-text">Processed with an older version — Reprocess?</p>
+    <p id="outdated-error" role="alert"></p>
+    <button type="button" id="outdated-reprocess">Reprocess</button>
+    <button type="button" id="outdated-open">Open anyway</button>`;
+  document.body.appendChild(outdated);
   const get = id => document.getElementById(id);
   const open = document.createElement("button");
   open.id = "archive-open";
@@ -55,6 +98,41 @@
 
   function message(text) {
     get("import-message").textContent = text;
+  }
+
+  function libraryMessage(text) {
+    get("library-message").textContent = text;
+  }
+
+  function formatBytes(value) {
+    const size = Number(value) || 0;
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 ** 2) return `${(size / 1024).toFixed(1)} KB`;
+    if (size < 1024 ** 3) return `${(size / 1024 ** 2).toFixed(1)} MB`;
+    return `${(size / 1024 ** 3).toFixed(1)} GB`;
+  }
+
+  function formatStudyDate(value) {
+    const text = String(value || "");
+    const match = /^(\d{4})(\d{2})(\d{2})$/.exec(text);
+    if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+    return text || "—";
+  }
+
+  function formatProcessed(value) {
+    if (!value) return "—";
+    return String(value).slice(0, 10);
+  }
+
+  function showProcessing() {
+    libraryScreen.hidden = true;
+    outdated.hidden = true;
+    screen.hidden = false;
+    get("series-picker").hidden = true;
+    get("archive-drop").hidden = true;
+    get("processing").hidden = false;
+    get("processing-cancel").disabled = true;
+    message("");
   }
 
   async function cancel() {
@@ -78,8 +156,10 @@
       await api(`/api/imports/${session.import_id}`, { method: "DELETE" });
       session = null;
     }
+    libraryScreen.hidden = true;
     screen.hidden = false;
     get("series-picker").hidden = true;
+    get("processing").hidden = true;
     get("archive-drop").hidden = false;
     get("archive-back").hidden = !new URLSearchParams(location.search).get("case");
     message("");
@@ -91,6 +171,175 @@
     td.textContent = value;
     row.appendChild(td);
     return td;
+  }
+
+  function actionButton(label, className, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      onClick().catch(error => libraryMessage(error.message));
+    });
+    return button;
+  }
+
+  function confirmLibrary(text) {
+    const dialog = get("library-confirm");
+    get("library-confirm-text").textContent = text;
+    return new Promise(resolve => {
+      const yes = get("library-confirm-yes");
+      const no = get("library-confirm-no");
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        yes.removeEventListener("click", onYes);
+        no.removeEventListener("click", onNo);
+        dialog.removeEventListener("close", onClose);
+        if (dialog.open) dialog.close();
+        resolve(value);
+      };
+      const onYes = () => finish(true);
+      const onNo = () => finish(false);
+      const onClose = () => finish(false);
+      yes.addEventListener("click", onYes);
+      no.addEventListener("click", onNo);
+      dialog.addEventListener("close", onClose);
+      dialog.showModal();
+    });
+  }
+
+  async function releaseSession() {
+    if (!session) return;
+    const importId = session.import_id;
+    session = null;
+    await api(`/api/imports/${importId}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  async function openCase(caseId) {
+    await releaseSession();
+    location.assign(`/?case=${encodeURIComponent(caseId)}`);
+  }
+
+  async function reprocess(caseId, source) {
+    if (busy) return;
+    busy = true;
+    try {
+      await releaseSession();
+      showProcessing();
+      await api(`/api/cases/${encodeURIComponent(caseId)}/reprocess`, { method: "POST" });
+      activeCase = caseId;
+      get("processing-cancel").disabled = false;
+      poll(activeCase);
+    } catch (error) {
+      const text = error.status === 412
+        ? "Set your initials in Settings, then try Reprocess again."
+        : error.message;
+      get("processing").hidden = true;
+      if (source === "library") {
+        screen.hidden = true;
+        libraryScreen.hidden = false;
+        libraryMessage(text);
+      } else if (source === "picker") {
+        screen.hidden = false;
+        get("series-picker").hidden = false;
+        get("archive-drop").hidden = true;
+        message(text);
+      } else {
+        screen.hidden = true;
+        showOutdated(caseId);
+        get("outdated-error").textContent = text;
+      }
+    } finally {
+      busy = false;
+    }
+  }
+
+  function showOutdated(caseId) {
+    outdated.hidden = false;
+    outdated.dataset.caseId = caseId;
+    get("outdated-error").textContent = "";
+    get("outdated-reprocess").hidden = viewerOnly;
+  }
+
+  async function maybeOutdated() {
+    const caseId = new URLSearchParams(location.search).get("case");
+    if (!caseId || outdatedDismissed === caseId) return;
+    try {
+      const library = await api("/api/library");
+      const row = library.cases.find(item => item.id === caseId);
+      if (row && row.outdated) showOutdated(caseId);
+    } catch (error) {
+      // Opening still works when the library cannot be read.
+    }
+  }
+
+  async function showLibrary() {
+    libraryScreen.hidden = false;
+    libraryMessage("");
+    const body = await api("/api/library");
+    get("library-warn").hidden = !body.warn;
+    get("library-total").textContent = `Total size ${formatBytes(body.total_bytes)}`;
+    const rows = get("library-rows");
+    rows.replaceChildren();
+    for (const item of body.cases) {
+      const tr = document.createElement("tr");
+      cell(tr, item.id);
+      cell(tr, formatStudyDate(item.study_date));
+      cell(tr, item.series_description || "—");
+      cell(tr, formatProcessed(item.processed_at));
+      cell(tr, formatBytes(item.size_bytes));
+      cell(tr, item.outdated ? "Yes" : "No");
+      const actions = cell(tr, "");
+      actions.appendChild(actionButton("Open", "library-open", () => openCase(item.id)));
+      if (!viewerOnly) {
+        actions.append(
+          actionButton("Reprocess", "library-reprocess", () => reprocess(item.id, "library")),
+          actionButton("Delete", "library-delete", () => removeCase(item.id)),
+        );
+      }
+      rows.appendChild(tr);
+    }
+    get("library-empty").hidden = body.cases.length > 0;
+    const all = get("library-delete-all");
+    all.hidden = viewerOnly;
+    all.disabled = body.cases.length === 0;
+    all.dataset.count = String(body.cases.length);
+  }
+
+  async function removeCase(caseId) {
+    if (busy) return;
+    const ok = await confirmLibrary(`Delete ${caseId}? This cannot be undone.`);
+    if (!ok) return;
+    busy = true;
+    try {
+      await api(`/api/cases/${encodeURIComponent(caseId)}`, { method: "DELETE" });
+      await showLibrary();
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function removeAll() {
+    if (busy) return;
+    const count = get("library-delete-all").dataset.count || "0";
+    const noun = count === "1" ? "Case" : "Cases";
+    const ok = await confirmLibrary(`Delete all ${count} ${noun}? This cannot be undone.`);
+    if (!ok) return;
+    busy = true;
+    try {
+      await api("/api/library", { method: "DELETE" });
+      await showLibrary();
+    } finally {
+      busy = false;
+    }
+  }
+
+  function syncProcessButton() {
+    const choice = screen.querySelector('input[name="series-choice"]:checked');
+    const row = session && session.series.find(item => item.series_key === (choice && choice.value));
+    get("series-confirm").disabled = !choice || Boolean(row && row.in_library);
   }
 
   async function scan(path, file) {
@@ -130,6 +379,7 @@
           radio.value = series.series_key;
           radio.checked = series.status === "recommended";
           radio.disabled = series.status === "not_usable";
+          radio.addEventListener("change", syncProcessButton);
           label.append(radio, document.createTextNode(series.description || "CT Series"));
           cell(tr, "").appendChild(label);
           cell(tr, `${series.slice_thickness_mm} / ${series.spacing_mm} mm`);
@@ -142,6 +392,24 @@
           badge.className = `series-badge ${series.status}`;
           badge.textContent = { recommended: "Recommended", usable: "Usable", not_usable: "Not usable" }[series.status];
           suitability.append(badge, document.createTextNode(` ${series.reason || ""}`));
+          if (series.in_library) {
+            const hit = document.createElement("strong");
+            hit.className = "series-badge in-library";
+            hit.textContent = "In library";
+            const openHit = document.createElement("button");
+            openHit.type = "button";
+            openHit.className = "series-open";
+            openHit.textContent = "Open";
+            openHit.addEventListener("click", () => {
+              openCase(series.in_library).catch(error => message(error.message));
+            });
+            const again = document.createElement("button");
+            again.type = "button";
+            again.className = "series-reprocess";
+            again.textContent = "Reprocess";
+            again.addEventListener("click", () => reprocess(series.in_library, "picker"));
+            suitability.append(document.createTextNode(" "), hit, openHit, again);
+          }
           tbody.appendChild(tr);
         }
         table.appendChild(tbody);
@@ -151,6 +419,7 @@
       get("clinician-prompt").hidden = Boolean(clinician.initials);
       get("series-picker").hidden = false;
       get("archive-drop").hidden = true;
+      syncProcessButton();
       message("");
     } catch (error) {
       message(error.message);
@@ -197,6 +466,11 @@
       message("Choose a usable Series.");
       return;
     }
+    const chosen = session.series.find(item => item.series_key === choice.value);
+    if (chosen && chosen.in_library) {
+      openCase(chosen.in_library).catch(error => message(error.message));
+      return;
+    }
     busy = true;
     get("series-confirm").disabled = true;
     try {
@@ -226,7 +500,7 @@
       message(error.message);
     } finally {
       busy = false;
-      get("series-confirm").disabled = false;
+      syncProcessButton();
     }
   });
   async function choose() {
@@ -240,6 +514,24 @@
   open.addEventListener("click", () => prepare().catch(error => message(error.message)));
   get("archive-choose").addEventListener("click", () => choose().catch(error => message(error.message)));
   get("archive-back").addEventListener("click", () => { screen.hidden = true; });
+  get("import-library").addEventListener("click", () => {
+    showLibrary().catch(error => message(error.message));
+  });
+  get("library-open").addEventListener("click", event => {
+    event.preventDefault();
+    showLibrary().catch(error => libraryMessage(error.message));
+  });
+  get("library-back").addEventListener("click", () => { libraryScreen.hidden = true; });
+  get("library-delete-all").addEventListener("click", () => {
+    removeAll().catch(error => libraryMessage(error.message));
+  });
+  get("outdated-open").addEventListener("click", () => {
+    outdatedDismissed = outdated.dataset.caseId || outdatedDismissed;
+    outdated.hidden = true;
+  });
+  get("outdated-reprocess").addEventListener("click", () => {
+    reprocess(outdated.dataset.caseId, "outdated");
+  });
   get("processing-cancel").addEventListener("click", () => cancel().catch(error => message(error.message)));
   get("archive-file").addEventListener("change", event => {
     const file = event.target.files[0];
@@ -256,9 +548,12 @@
   });
   if (window.bronchoroute) window.bronchoroute.onOpenArchive(path => scan(path));
   api("/api/features").then(async features => {
+    viewerOnly = Boolean(features.viewer_only);
+    get("outdated-reprocess").hidden = viewerOnly;
     if (features.viewer_only) return;
     open.hidden = false;
     const cases = await api("/api/cases");
     if (!cases.length) await prepare();
   }).catch(() => {});
+  maybeOutdated();
 })();

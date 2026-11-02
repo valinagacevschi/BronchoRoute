@@ -1,3 +1,4 @@
+// Changes: FileVault status line used by the one-time first-run note.
 // Changes: shell helpers including isolated packaged Python launch configuration.
 // Changes: shell helpers; settings persistence belongs to the Python sidecar.
 // Changes: pure helpers for the dev-mode Electron shell (port, env, origin).
@@ -8,6 +9,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DISCLAIMER = "Research and education tool. Not a medical device. Not for diagnosis or treatment decisions.";
+const FILEVAULT_NOTE = "FileVault is off. Turn it on so Cases stored on this Mac stay encrypted.";
 const SPLASH = "Starting the AI stack… (first launch can take about a minute)";
 
 function parsePortLine(line) {
@@ -138,6 +140,14 @@ function resolveDataRoot(env, userDataPath) {
   return userDataPath;
 }
 
+function fileVaultIsOff(statusText) {
+  const line = String(statusText || "")
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .find(Boolean);
+  return /^FileVault is Off\.?$/.test(line || "");
+}
+
 function newLaunchToken() {
   return crypto.randomBytes(32).toString("hex");
 }
@@ -172,7 +182,9 @@ function atomicWriteJson(file, data) {
 
 module.exports = {
   DISCLAIMER,
+  FILEVAULT_NOTE,
   SPLASH,
+  fileVaultIsOff,
   parsePortLine,
   splitCompleteLines,
   buildSidecarEnv,

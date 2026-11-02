@@ -1,3 +1,4 @@
+// Changes: one-time FileVault note when fdesetup reports FileVault is Off.
 // Changes: combine native Archive IPC with API-owned disclaimer acknowledgement.
 // Changes: launch bundled standalone Python in packaged mode; preserve dev launch.
 // Changes: Python owns disclaimer acknowledgement through the token-guarded settings API.
@@ -6,12 +7,14 @@
 "use strict";
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, session } = require("electron");
-const { spawn } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
   DISCLAIMER,
+  FILEVAULT_NOTE,
   SPLASH,
+  fileVaultIsOff,
   atomicWriteText,
   sidecarLaunch,
   firstLocalCaseId,
@@ -299,6 +302,88 @@ function disclaimerInstallScript() {
   })()`;
 }
 
+function readFileVaultStatus() {
+  return new Promise((resolve) => {
+    execFile("fdesetup", ["status"], { timeout: 5000 }, (err, stdout) => {
+      if (err) {
+        resolve("");
+        return;
+      }
+      resolve(String(stdout || ""));
+    });
+  });
+}
+
+function fileVaultInstallScript() {
+  const sentence = JSON.stringify(FILEVAULT_NOTE);
+  return `(() => {
+    const show = () => {
+      if (document.getElementById("filevault-overlay")) return;
+      const overlay = document.createElement("div");
+      overlay.id = "filevault-overlay";
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-modal", "true");
+      overlay.style.cssText = "position:fixed;inset:0;z-index:10001;background:rgba(12,18,22,.45);display:flex;align-items:center;justify-content:center;";
+      const panel = document.createElement("div");
+      panel.style.cssText = "max-width:28rem;margin:16px;padding:20px 22px;background:#fff;color:#17242B;border-radius:10px;box-shadow:0 8px 24px rgba(23,36,43,.18);font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;";
+      const text = document.createElement("p");
+      text.id = "filevault-text";
+      text.textContent = ${sentence};
+      text.style.margin = "0 0 16px";
+      const button = document.createElement("button");
+      button.id = "filevault-ack";
+      button.type = "button";
+      button.textContent = "OK";
+      button.style.cssText = "font:600 14px/1 -apple-system,BlinkMacSystemFont,sans-serif;padding:8px 14px;border-radius:6px;border:0;background:#2E6E88;color:#fff;cursor:pointer;";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          const response = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filevault_note_shown: true }),
+          });
+          if (!response.ok) throw new Error("settings");
+          overlay.remove();
+        } catch (error) {
+          button.textContent = "Could not save. Try again";
+          button.disabled = false;
+        }
+      });
+      panel.appendChild(text);
+      panel.appendChild(button);
+      overlay.appendChild(panel);
+      overlay.setAttribute("aria-labelledby", "filevault-text");
+      document.body.appendChild(overlay);
+      button.focus();
+    };
+    // Wait until the disclaimer click is done so this note does not steal it.
+    if (document.getElementById("disclaimer-overlay")) {
+      const observer = new MutationObserver(() => {
+        if (!document.getElementById("disclaimer-overlay")) {
+          observer.disconnect();
+          show();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      return;
+    }
+    show();
+  })()`;
+}
+
+async function showFileVaultNote(win, port, token) {
+  const status = await readFileVaultStatus();
+  if (!fileVaultIsOff(status)) return;
+  const response = await fetch(`${sidecarOrigin(port)}/api/settings`, {
+    headers: { "X-BronchoRoute-Token": token },
+  });
+  if (!response.ok) throw new Error("Could not load Settings");
+  const settings = await response.json();
+  if (settings.filevault_note_shown) return;
+  await win.webContents.executeJavaScript(fileVaultInstallScript());
+}
+
 async function showDisclaimer(win, port, token) {
   const response = await fetch(`${sidecarOrigin(port)}/api/settings`, {
     headers: { "X-BronchoRoute-Token": token },
@@ -396,6 +481,7 @@ async function launch() {
   const url = await chooseStartUrl(port, token);
   await mainWindow.loadURL(url);
   await showDisclaimer(mainWindow, port, token);
+  await showFileVaultNote(mainWindow, port, token);
   return {
     window: mainWindow,
     port,

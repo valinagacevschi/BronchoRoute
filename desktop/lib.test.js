@@ -1,3 +1,4 @@
+// Changes: FileVault Off is the only status that asks for the one-time note.
 // Changes: shell helper coverage excludes Python-owned settings persistence.
 "use strict";
 
@@ -9,6 +10,7 @@ const test = require("node:test");
 const {
   DISCLAIMER,
   buildSidecarEnv,
+  fileVaultIsOff,
   firstLocalCaseId,
   isAllowedAppUrl,
   newLaunchToken,
@@ -116,6 +118,15 @@ test("launch token is 32 bytes of hex", () => {
   assert.match(token, /^[0-9a-f]{64}$/);
 });
 
+test("fileVaultIsOff matches only the Off status line", () => {
+  assert.equal(fileVaultIsOff("FileVault is Off."), true);
+  assert.equal(fileVaultIsOff("FileVault is Off.\n"), true);
+  assert.equal(fileVaultIsOff("FileVault is On."), false);
+  assert.equal(fileVaultIsOff("FileVault is On.\nSomething else"), false);
+  assert.equal(fileVaultIsOff(""), false);
+  assert.equal(fileVaultIsOff("error: fdesetup"), false);
+});
+
 test("viewer template vendors fonts and the research footer", () => {
   const root = path.join(__dirname, "..", "prototype");
   const template = fs.readFileSync(path.join(root, "renderer.template.html"), "utf8");
@@ -123,6 +134,7 @@ test("viewer template vendors fonts and the research footer", () => {
   const sentinel = "/*__AIRWAY_EMBED__*/";
   assert.equal(template.split(sentinel).length, 2);
   assert.equal(template.includes(DISCLAIMER), true);
+  assert.equal(template.includes('id="library-open"'), true);
   assert.equal(template.includes("fonts.googleapis.com"), false);
   assert.equal(template.includes("fonts/IBMPlexSans-Regular.woff2"), true);
   const parts = template.split(sentinel);

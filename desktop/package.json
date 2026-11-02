@@ -73,6 +73,8 @@
         "filter": [
           "renderer.template.html",
           "ct_panes.js",
+          "import.js",
+          "import.css",
           "fonts/*.woff2",
           "fonts/OFL*.txt"
         ]
