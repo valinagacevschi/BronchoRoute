@@ -1,3 +1,4 @@
+<!-- Changes: anatomical lesion sphere, topology marker beside the nearest CT-seen branch. -->
 <!-- Changes: preserve Settings alongside Archive import after rebasing #28 onto #32. -->
 <!-- Changes: Settings and About dialogs in the fixed footer; shared Python settings. -->
 <!-- Changes: keep About reachable in the fixed footer and name the viewer BronchoRoute. -->
@@ -842,7 +843,7 @@ const VARIANTS = [
   { key: "ct-panes", name: "CT panes",
     hint: VIEWER_MODE
       ? "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L"
-      : "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L · Mark Lesion in axial" },
+      : "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L · Mark Lesion in any pane" },
   { key: "walkthrough", name: "Walk-through",
     hint: "Endoluminal + CT panes linked · <kbd>←</kbd><kbd>→</kbd> roll · <kbd>↑</kbd><kbd>↓</kbd> fly · pauses at forks" },
 ];
@@ -1061,6 +1062,44 @@ function project(p, c) {
 }
 
 /* ------------------------------------------------------- variant A: tree */
+let lastAnatomicalLesion = null;
+
+function lesionRadiusMm(lesion) {
+  const d = lesion && Number(lesion.diameter_mm);
+  if (Number.isFinite(d) && d >= 2 && d <= 60) return d / 2;
+  return 5;
+}
+
+function drawAnatomicalLesion() {
+  lastAnatomicalLesion = null;
+  if (!A.lesion || !A.lesion.ras_mm) return;
+  const origin = A.origin_mm || [0, 0, 0];
+  const ras = A.lesion.ras_mm;
+  const rel = [ras[0] - origin[0], ras[1] - origin[1], ras[2] - origin[2]];
+  const p = project(rel, cam);
+  if (!p) return;
+  // p.f is px per mm at this depth, the same scale as branch radius.
+  const radiusMm = lesionRadiusMm(A.lesion);
+  const radiusPx = Math.max(2, radiusMm * p.f);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, radiusPx, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(180, 82, 47, 0.35)";
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = "rgba(180, 82, 47, 0.95)";
+  ctx.stroke();
+  ctx.font = "10px IBM Plex Mono, monospace";
+  ctx.fillStyle = "#B4522F";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Lesion", p.x + radiusPx + 6, p.y);
+  ctx.restore();
+  lastAnatomicalLesion = {
+    x: p.x, y: p.y, radiusPx, diameterMm: radiusMm * 2, label: "Lesion",
+  };
+}
+
 function drawAnatomical() {
   const segs = [];
   for (const e of A.edges) {
@@ -1150,12 +1189,15 @@ function drawAnatomical() {
         ctx.fillStyle = "#59656c"; ctx.font = "11px system-ui";
         ctx.fillText(`${A.target_gap_mm.toFixed(1)} mm · no airway shown`, (end.x + p.x) / 2, (end.y + p.y) / 2 - 5);
       }
-      ctx.fillStyle = "#fff"; ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = tok("--mucosa"); ctx.font = "10px IBM Plex Mono, monospace";
-      ctx.fillText("Lesion", p.x + 10, p.y + 12);
+      if (!A.lesion) {
+        ctx.fillStyle = "#fff"; ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = tok("--mucosa"); ctx.font = "10px IBM Plex Mono, monospace";
+        ctx.fillText("Lesion", p.x + 10, p.y + 12);
+      }
     }
   }
+  drawAnatomicalLesion();
   drawOrientationGizmo();
   drawPatientEdgeLabels();
   drawSharedPositionMarker3d();
@@ -2185,6 +2227,54 @@ function mucosa(d) {
 
 /* --------------------------------------------------- variant C: topology */
 let topoLayout = null;
+let lastTopologyLesion = null;
+
+// #34: when a RouteTarget exists, return {edge, frac, distMm} on that branch.
+// Until then the marker stays beside the nearest CT-seen centreline sample.
+function routeTargetLesionAnchor(_lesionRas) {
+  return null;
+}
+
+function drawTopologyLesion() {
+  lastTopologyLesion = null;
+  if (!A.lesion || !A.lesion.ras_mm || !topoLayout) return;
+  if (!window.CtPanes || typeof window.CtPanes.nearestCtSeenSample !== "function") return;
+  const anchored = routeTargetLesionAnchor(A.lesion.ras_mm)
+    || window.CtPanes.nearestCtSeenSample(A.edges, A.origin_mm, A.lesion.ras_mm);
+  if (!anchored || !anchored.edge) return;
+  const edge = anchored.edge;
+  const a = topoLayout.get(edge.f);
+  const b = topoLayout.get(edge.t);
+  if (!a || !b) return;
+  const frac = anchored.frac;
+  const local = {
+    x: a.x + (b.x - a.x) * frac,
+    y: a.y + (b.y - a.y) * frac,
+  };
+  const pa = topoToScreen(a);
+  const pb = topoToScreen(b);
+  const pt = topoToScreen(local);
+  let ox = pb.x - pa.x;
+  let oy = pb.y - pa.y;
+  const len = Math.hypot(ox, oy) || 1;
+  const x = pt.x + (-oy / len) * 14;
+  const y = pt.y + (ox / len) * 14;
+  const label = `Lesion · ${anchored.distMm.toFixed(1)} mm from airway`;
+  ctx.save();
+  ctx.fillStyle = "#e85d4c";
+  ctx.beginPath();
+  ctx.arc(x, y, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.font = '500 11px "IBM Plex Sans", sans-serif';
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, x + 8, y);
+  ctx.restore();
+  lastTopologyLesion = {
+    x, y, label, distMm: anchored.distMm, from: edge.f, to: edge.t, frac,
+  };
+}
+
 let topoRot = 0;
 let topoSpin = false;
 let topoSpinTime = null;
@@ -2326,6 +2416,7 @@ function drawTopology() {
   ctx.fillStyle = tok("--muted");
   ctx.font = '500 11px "IBM Plex Sans", sans-serif';
   ctx.textAlign = "left";
+  drawTopologyLesion();
   ctx.fillText("Radial map: angle and distance are not anatomy", railRight + 16, H - 18);
   if (nearestHighlight && nearestHighlight.dist <= 5) {
     // Highlight nearest centreline-associated node when linked from CT.
@@ -2690,7 +2781,8 @@ window.addEventListener("message", (ev) => {
 SharedPos.subscribe((pos, source) => {
   if (!pos) return;
   if (source === "ct" || source === "ct-wheel" || source === "ct-key"
-      || source === "ct-axial-place" || source === "ct-init" || source === "debug") {
+      || source === "ct-lesion-place" || source === "ct-axial-place"
+      || source === "ct-init" || source === "debug") {
     if (window.CtPanes && window.CtPanes.nearestCentrelineWorld) {
       nearestHighlight = window.CtPanes.nearestCentrelineWorld(A, originMm, pos);
     } else {
@@ -2969,6 +3061,16 @@ if (DEBUG) {
   // Headless verify hook (?debug=1): main-bronchus L/R, radiologist front,
   // endoluminal anterior tick + fork orifice labels.
   window.__p2_debug = {
+    lesionViews: () => ({
+      anatomical: lastAnatomicalLesion,
+      topology: lastTopologyLesion,
+    }),
+    nearestCtSeenSample: (edges, origin, ras) => (
+      window.CtPanes && window.CtPanes.nearestCtSeenSample
+        ? window.CtPanes.nearestCtSeenSample(edges, origin, ras)
+        : null
+    ),
+    routeTargetLesionAnchor: () => routeTargetLesionAnchor(null),
     topology: () => ({
       pan: [cam.panX, cam.panY],
       pickedEdge: A.edges.find(e => toWorld(A.nodes[String(e.t)].p)

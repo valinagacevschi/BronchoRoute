@@ -1,3 +1,4 @@
+# Changes: PUT lesion accepts an optional diameter_mm.
 # Changes: preserve Archive import and the shared Settings API after rebase.
 # Changes: shared settings API alongside the compatible clinician endpoints.
 # Changes: serve About (name, version, licence), LICENSE, notices, and sponsors.
@@ -53,6 +54,7 @@ from app.cases import (
     qualifying_route_start_terminals,
     set_lesion,
     set_route_start,
+    validate_lesion_diameter,
     validate_record_data,
 )
 from app.ct_crop import build_ct_crop, read_ct_bytes
@@ -232,6 +234,16 @@ class RecordBody(BaseModel):
 
 class LesionBody(BaseModel):
     ras_mm: list[float] = Field(min_length=3, max_length=3)
+    diameter_mm: float | None = None
+
+    @field_validator("diameter_mm")
+    @classmethod
+    def diameter_range(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        # Reject before set_lesion so a bad diameter is a 422, not a stored default.
+        validate_lesion_diameter(value)
+        return float(value)
 
     @field_validator("ras_mm")
     @classmethod
@@ -746,7 +758,9 @@ async def api_put_lesion(case_id: str, request: Request):
             msgs.append(msg)
         raise HTTPException(status_code=422, detail=msgs[0] if len(msgs) == 1 else msgs) from exc
     try:
-        return set_lesion(case_id, parsed.ras_mm, clinician["clinician"])
+        return set_lesion(
+            case_id, parsed.ras_mm, clinician["clinician"], parsed.diameter_mm
+        )
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
 

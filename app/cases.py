@@ -1,3 +1,4 @@
+# Changes: lesion record stores diameter_mm (default 10 mm, allowed 2–60).
 # Changes: keep unfinished imported Cases out of the library.
 # Changes: recheck saved header facts before confirming an imported Series.
 # Changes: hide legacy review behind the default-off feature flag.
@@ -401,6 +402,21 @@ def _ras_inside_crop(ras_mm: list[float], meta: dict) -> bool:
     return True
 
 
+def validate_lesion_diameter(diameter_mm: object) -> float:
+    """Default 10 mm. Allowed range is 2–60 inclusive."""
+    if diameter_mm is None:
+        return 10.0
+    if isinstance(diameter_mm, bool):
+        raise ValueError("diameter_mm must be a number")
+    try:
+        value = float(diameter_mm)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("diameter_mm must be a number") from exc
+    if not math.isfinite(value) or value < 2 or value > 60:
+        raise ValueError("diameter_mm must be between 2 and 60")
+    return value
+
+
 def validate_lesion_ras(case_id: str, ras_mm: object) -> list[float]:
     if not isinstance(ras_mm, (list, tuple)) or len(ras_mm) != 3:
         raise ValueError("ras_mm must be a length-3 list")
@@ -434,11 +450,17 @@ def _load_or_init_record(ref: CaseRef, path: Path) -> dict:
     raise FileNotFoundError(f"case.json not found for {ref.case_id}")
 
 
-def set_lesion(case_id: str, ras_mm: list[float], clinician: str) -> dict:
-    """Store lesion and append lesion_confirmed under one case lock."""
+def set_lesion(
+    case_id: str,
+    ras_mm: list[float],
+    clinician: str,
+    diameter_mm: float | None = None,
+) -> dict:
+    """Store one lesion (replace) and append lesion_confirmed under one case lock."""
     from app.workflow import WorkflowStep
 
     coords = validate_lesion_ras(case_id, ras_mm)
+    diameter = validate_lesion_diameter(diameter_mm)
     ref = CaseRef.parse(case_id)
     path = ref.case_json
     at = _utc_now()
@@ -449,6 +471,7 @@ def set_lesion(case_id: str, ras_mm: list[float], clinician: str) -> dict:
         note_change(record, "lesion")
         lesion = {
             "ras_mm": coords,
+            "diameter_mm": diameter,
             "confirmed_by": clinician,
             "at": at,
         }
@@ -456,7 +479,7 @@ def set_lesion(case_id: str, ras_mm: list[float], clinician: str) -> dict:
         entry = {
             "step": int(WorkflowStep.LESION),
             "kind": "lesion_confirmed",
-            "data": {"ras_mm": coords},
+            "data": {"ras_mm": coords, "diameter_mm": diameter},
             "clinician": clinician,
             "at": at,
         }
@@ -597,6 +620,7 @@ __all__ = [
     "read_case_json",
     "route_start_info",
     "set_lesion",
+    "validate_lesion_diameter",
     "set_route_start",
     "validate_lesion_ras",
     "validate_record_data",
