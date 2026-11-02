@@ -25,6 +25,11 @@
   Hiding legacy review endpoints alone still lets Lesion and route edits create
   versions. Guard the shared version hooks and test both empty and frozen state
   with the flag off.
+- Third-party notices (GitLab #46): PyPI `License` metadata is often `UNKNOWN`,
+  a bare `BSD`, or the full licence text. The original 4-clause BSD is not
+  GPL-compatible. Prefer `License-Expression`, then a known classifier, then the
+  installed licence file, and leave a bare `BSD` with no clause count in the
+  review section.
 - Sidecar recovery must resolve saved job paths even if Case metadata is gone.
   Validate the saved Case key without requiring the Case to exist. Read the stdin
   watchdog with `os.read` so a blocked daemon cannot hold a buffered-reader lock

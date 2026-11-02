@@ -1,3 +1,4 @@
+# Changes: serve About (name, version, licence), LICENSE, notices, and sponsors.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: blank BRONCHOROUTE_TOKEN counts as unset so the launch guard stays off.
 # Changes: guarded sidecar token, socket handoff, stdin lifecycle and recovery.
@@ -23,6 +24,7 @@ import os
 import socket
 import sys
 import threading
+import tomllib
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -101,6 +103,8 @@ import paths
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROTOTYPE = REPO_ROOT / "prototype"
+PRODUCT_NAME = "BronchoRoute"
+PRODUCT_LICENCE = "GPL-3.0-or-later"
 _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _DEFAULT_ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 
@@ -826,6 +830,48 @@ def api_version_report(case_id: str, version_n: int):
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
+
+
+def _project_version() -> str:
+    """Single version source: pipeline/pyproject.toml."""
+    pyproject = REPO_ROOT / "pipeline" / "pyproject.toml"
+    with pyproject.open("rb") as handle:
+        return tomllib.load(handle)["project"]["version"]
+
+
+@app.get("/api/about")
+def api_about():
+    return {
+        "name": PRODUCT_NAME,
+        "version": _project_version(),
+        "licence": PRODUCT_LICENCE,
+    }
+
+
+@app.get("/LICENSE")
+def licence_file():
+    return FileResponse(
+        REPO_ROOT / "LICENSE",
+        media_type="text/plain; charset=utf-8",
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/THIRD_PARTY_NOTICES.md")
+def third_party_notices():
+    return FileResponse(
+        REPO_ROOT / "THIRD_PARTY_NOTICES.md",
+        media_type="text/plain; charset=utf-8",
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/sponsors.json")
+def sponsors_file():
+    path = REPO_ROOT / "sponsors.json"
+    if not path.is_file():
+        return JSONResponse([])
+    return FileResponse(path, media_type="application/json")
 
 
 @app.get("/")

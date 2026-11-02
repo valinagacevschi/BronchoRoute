@@ -1,3 +1,4 @@
+# Changes: About, bundled LICENSE, notices, and sponsors are same-origin.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: mark as server for CI selection (no TS / Playwright / real data).
 """Synthetic tiny volumes only — no patient data, no TotalSegmentator.
@@ -10,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -664,3 +666,32 @@ def test_payload_origin_and_lesion_roundtrip(client, harness):
     assert "lesion" not in on_disk2
     assert on_disk2["records"][-1]["kind"] == "lesion_cleared"
     assert client.get("/api/cases/local-001/payload?allow_review=true").json()["lesion"] is None
+
+
+def test_about_licence_notices_and_sponsors(client):
+    pyproject = Path(__file__).resolve().parents[1] / "pipeline" / "pyproject.toml"
+    version = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+    about = client.get("/api/about")
+    assert about.status_code == 200
+    assert about.json() == {
+        "name": "BronchoRoute",
+        "version": version,
+        "licence": "GPL-3.0-or-later",
+    }
+    licence = client.get("/LICENSE")
+    assert licence.status_code == 200
+    assert "text/plain" in licence.headers["content-type"]
+    assert "GNU GENERAL PUBLIC LICENSE" in licence.text
+    assert "Version 3, 29 June 2007" in licence.text
+    notices = client.get("/THIRD_PARTY_NOTICES.md")
+    assert notices.status_code == 200
+    assert "kimimaro" in notices.text
+    assert "doi.org/10.5281/zenodo.23190857" in notices.text
+    assert "\n- playwright " not in notices.text
+    sponsors = client.get("/sponsors.json")
+    assert sponsors.status_code == 200
+    assert sponsors.json() == []
+    page = client.get("/")
+    assert page.status_code == 200
+    assert 'id="about-open"' in page.text
+    assert "Not for diagnosis or treatment decisions." in page.text
