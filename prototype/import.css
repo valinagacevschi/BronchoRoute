@@ -1,3 +1,4 @@
+/* Changes: #archive-open top/right are set in import.js clear of Limitations. */
 /* Changes: first-run model download screen. */
 /* Changes: override-reason field and try-another on the import screen. */
 /* Changes: Case Library list, size warning, and outdated-Case prompt. */
@@ -15,7 +16,9 @@
 .import-actions { display: flex; gap: 8px; }
 #archive-drop { margin-top: 32px; border: 2px dashed #9bb2be; border-radius: 12px; background: #f9fbfc; padding: 56px 24px; text-align: center; }
 #archive-drop strong { font-size: 24px; font-weight: 500; }
-#archive-open { position: fixed; top: 14px; right: 18px; z-index: 8500; font-size: 12px; }
+#archive-open {
+  position: fixed; top: 14px; right: 18px; z-index: 8500; font-size: 12px;
+}
 #import-message { color: #8b3d2c; min-height: 24px; }
 #study-groups { overflow-x: auto; }
 #study-groups table { width: 100%; border-collapse: collapse; background: #fafcfd; font-size: 13px; }

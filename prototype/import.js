@@ -1,3 +1,4 @@
+// Changes: park #archive-open below/above Limitations so it clears fixed chrome.
 // Changes: download models before processing; existing Cases stay open.
 // Changes: Series override reason and one processing-failure sentence.
 // Changes: Case Library screen, library hit, and outdated-Case prompt.
@@ -105,6 +106,36 @@
   open.textContent = "Open Archive…";
   open.hidden = true;
   document.body.appendChild(open);
+
+  function overlayOpen() {
+    return !screen.hidden || !libraryScreen.hidden || !weightsScreen.hidden;
+  }
+
+  function placeArchiveOpen() {
+    if (open.hidden) return;
+    let top = 14;
+    let right = 18;
+    if (!overlayOpen()) {
+      const panel = document.getElementById("limitations-panel");
+      if (panel) {
+        const box = panel.getBoundingClientRect();
+        if (box.width > 0 && box.height > 0) {
+          const gap = 8;
+          right = Math.max(18, Math.round(window.innerWidth - box.right));
+          const btnH = open.offsetHeight || 40;
+          if (box.top < window.innerHeight * 0.5) {
+            top = Math.ceil(box.bottom + gap);
+          } else {
+            top = Math.max(14, Math.floor(box.top - gap - btnH));
+          }
+          const maxTop = Math.max(14, window.innerHeight - btnH - gap);
+          if (top > maxTop) top = maxTop;
+        }
+      }
+    }
+    open.style.top = `${top}px`;
+    open.style.right = `${right}px`;
+  }
 
   async function api(url, options) {
     const response = await fetch(url, options);
@@ -714,13 +745,34 @@
     scan(path, file);
   });
   if (window.bronchoroute) window.bronchoroute.onOpenArchive(path => scan(path));
+  window.addEventListener("resize", placeArchiveOpen);
+  const placeWhenChromeMoves = new MutationObserver(placeArchiveOpen);
+  placeWhenChromeMoves.observe(document.body, {
+    attributes: true, attributeFilter: ["class"],
+  });
+  for (const el of [screen, libraryScreen, weightsScreen]) {
+    placeWhenChromeMoves.observe(el, {
+      attributes: true, attributeFilter: ["hidden"],
+    });
+  }
+  const limitations = document.getElementById("limitations-panel");
+  if (limitations) {
+    placeWhenChromeMoves.observe(limitations, {
+      attributes: true, attributeFilter: ["class"],
+    });
+    if (typeof ResizeObserver === "function") {
+      new ResizeObserver(placeArchiveOpen).observe(limitations);
+    }
+  }
   api("/api/features").then(async features => {
     viewerOnly = Boolean(features.viewer_only);
     get("outdated-reprocess").hidden = viewerOnly;
     if (features.viewer_only) return;
     open.hidden = false;
+    placeArchiveOpen();
     const cases = await api("/api/cases");
     if (!cases.length) await prepare();
+    placeArchiveOpen();
   }).catch(() => {});
   maybeOutdated();
 })();
