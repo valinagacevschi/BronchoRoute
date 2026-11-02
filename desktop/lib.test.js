@@ -1,3 +1,4 @@
+// Changes: Save image name, PNG signature, and injected Pictures directory.
 // Changes: FileVault Off is the only status that asks for the one-time note.
 // Changes: cover the arm64 gate, the 16 GB warning, and sign scripts.
 // Changes: shell helper coverage excludes Python-owned settings persistence.
@@ -23,6 +24,13 @@ const {
   resolveDataRoot,
   splitCompleteLines,
   atomicWriteJson,
+  PNG_SIGNATURE,
+  SAVE_IMAGE_MAX_BYTES,
+  isSaveImageName,
+  pngFitsLimit,
+  isPngBytes,
+  resolveSaveImageBaseDir,
+  saveImageDefaultPath,
 } = require("./lib");
 
 test("parsePortLine accepts a single sidecar announcement", () => {
@@ -207,4 +215,78 @@ test("builder includes only runtime resources and targets unsigned arm64 macOS",
   assert.ok(pipeline.filter.every((name) => !name.startsWith("test_") && !name.includes("*")));
   const root = build.extraResources.find((row) => row.to === "app");
   assert.deepEqual(root.filter, ["LICENSE", "THIRD_PARTY_NOTICES.md", "sponsors.json"]);
+});
+
+test("save image names accept only local-NNN view stills", () => {
+  const ok = [
+    "local-007_anatomical_20261101-2350.png",
+    "local-001_topology_20261102-0000.png",
+    "local-999_endoluminal_19990101-0000.png",
+    "local-001_anatomical_00000000-0000.png",
+  ];
+  for (const name of ok) assert.equal(isSaveImageName(name), true, name);
+  const bad = [
+    "local-07_anatomical_20261101-2350.png",
+    "local-0001_anatomical_20261101-2350.png",
+    "local-001_ct-panes_20261101-2350.png",
+    "local-001_walkthrough_20261101-2350.png",
+    "local-001_Anatomical_20261101-2350.png",
+    "local-001_anatomical_2026111-2350.png",
+    "local-001_anatomical_20261101-235.png",
+    "local-001_anatomical_20261101-23500.png",
+    "local-001_anatomical_20261101-2350.PNG",
+    "local-001_anatomical_20261101-2350.png.exe",
+    "../local-001_anatomical_20261101-2350.png",
+    "local-001/anatomical_20261101-2350.png",
+    " local-001_anatomical_20261101-2350.png",
+    "local-001_anatomical_20261101-2350.png ",
+    "",
+    null,
+    12,
+  ];
+  for (const name of bad) assert.equal(isSaveImageName(name), false, String(name));
+});
+
+test("png bytes require the signature and stay under 50 MB", () => {
+  const sig = Buffer.from(PNG_SIGNATURE);
+  assert.equal(isPngBytes(sig), true);
+  assert.equal(isPngBytes(Buffer.concat([sig, Buffer.from([0, 1, 2])])), true);
+  assert.equal(isPngBytes(new Uint8Array(sig)), true);
+  assert.equal(isPngBytes(Uint8Array.from(sig).buffer), true);
+  const padded = Buffer.concat([Buffer.from([9, 9]), sig, Buffer.from([3])]);
+  const view = new Uint8Array(padded.buffer, padded.byteOffset + 2, 8);
+  assert.equal(isPngBytes(view), true);
+  assert.equal(isPngBytes(sig.subarray(0, 7)), false);
+  assert.equal(isPngBytes(Buffer.concat([Buffer.from([0]), sig])), false);
+  assert.equal(isPngBytes(Buffer.from("not a png")), false);
+  assert.equal(isPngBytes("\x89PNG\r\n\x1a\n"), false);
+  assert.equal(isPngBytes(null), false);
+  assert.equal(SAVE_IMAGE_MAX_BYTES, 50 * 1024 * 1024);
+  assert.equal(pngFitsLimit(8), true);
+  assert.equal(pngFitsLimit(7), false);
+  assert.equal(pngFitsLimit(SAVE_IMAGE_MAX_BYTES - 1), true);
+  assert.equal(pngFitsLimit(SAVE_IMAGE_MAX_BYTES), false);
+  assert.equal(pngFitsLimit(1.5), false);
+});
+
+test("save image default path uses an injected pictures directory", () => {
+  const name = "local-007_anatomical_20261101-2350.png";
+  const injected = path.join(os.tmpdir(), "bronchoroute-42-pics");
+  const base = resolveSaveImageBaseDir(`  ${injected}  `, "/unused/Pictures");
+  assert.equal(base, path.resolve(injected));
+  assert.equal(
+    saveImageDefaultPath(base, name),
+    path.join(path.resolve(injected), "BronchoRoute", name),
+  );
+  assert.equal(
+    resolveSaveImageBaseDir("   ", "/Users/someone/Pictures"),
+    "/Users/someone/Pictures",
+  );
+  assert.equal(
+    saveImageDefaultPath("/Users/someone/Pictures", "local-001_endoluminal_20261102-0001.png"),
+    path.join("/Users/someone/Pictures", "BronchoRoute", "local-001_endoluminal_20261102-0001.png"),
+  );
+  assert.throws(() => saveImageDefaultPath(base, "local-001_ct_20261101-2350.png"), /invalid save image name/);
+  assert.throws(() => saveImageDefaultPath("  ", name), /base directory/);
+  assert.throws(() => resolveSaveImageBaseDir("", "  "), /pictures directory/);
 });

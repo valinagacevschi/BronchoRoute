@@ -1,3 +1,4 @@
+<!-- Changes: PNG stills at 2× CSS size with burn-in, HUD and Lesion toggles, and Save image. -->
 <!-- Changes: show stored RouteTarget staleness as status and clear it after bridge reconfirmation. -->
 <!-- Changes: refresh Case views and RouteTarget proposals after CT bridge decisions. -->
 <!-- Changes: RouteTarget proposals in the rail; trachea RouteStart; target-gap anchor. -->
@@ -475,6 +476,29 @@ body.walkthrough-active .walk-sim-label { display: block; }
 #settings-form .settings-toggle { display: flex; align-items: center; gap: 8px; }
 #settings-error { color: #a32b24; margin: 0; min-height: 1.5em; }
 #settings-form .about-close { margin-top: 0; }
+#save-image[hidden] { display: none; }
+.save-image-row { display: flex; gap: 6px; flex-wrap: wrap; }
+#save-image-btn, #save-image-options {
+  font: 500 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
+  letter-spacing: .03em;
+  border: 1px solid var(--edge); border-radius: 6px;
+  padding: 7px 10px; background: var(--ground); color: var(--ink); cursor: pointer;
+}
+#save-image-btn { background: var(--steel); border-color: var(--steel); color: #fff; }
+#save-image-btn:disabled { opacity: .55; cursor: progress; }
+#save-image-btn:focus-visible, #save-image-options:focus-visible {
+  outline: 2px solid var(--steel); outline-offset: 2px;
+}
+.save-image-popover {
+  margin: 8px 0 0; width: max-content; height: max-content;
+  padding: 8px 10px; border: 1px solid var(--edge); border-radius: 8px;
+  background: var(--surface); color: var(--ink); box-shadow: var(--shadow);
+}
+.save-image-popover:popover-open { margin: 0; inset: auto; }
+.save-image-popover label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12.5px; margin: 4px 0;
+}
 </style>
 
 <div class="stage"><canvas id="c"></canvas><div class="shared-marker-3d" id="shared-marker-3d"></div></div>
@@ -541,6 +565,19 @@ body.walkthrough-active .walk-sim-label { display: block; }
   <div class="group group-controls">
     <h2>Controls</h2>
     <p class="hint" id="hint"></p>
+  </div>
+
+  <div class="group" id="save-image" hidden>
+    <h2>Export</h2>
+    <div class="save-image-row">
+      <button type="button" id="save-image-btn">Save image</button>
+      <button type="button" id="save-image-options" popovertarget="save-image-popover"
+        aria-controls="save-image-popover">Options</button>
+    </div>
+    <div id="save-image-popover" class="save-image-popover" popover>
+      <label><input type="checkbox" id="save-image-hud" checked> Include HUD</label>
+      <label><input type="checkbox" id="save-image-lesion" checked> Show Lesion</label>
+    </div>
   </div>
 
   <div class="group group-question">
@@ -870,7 +907,9 @@ if (A.signoff && A.signoff.length) {
   note.hidden = false;
 }
 const cv = document.getElementById("c");
-const ctx = cv.getContext("2d");
+let ctx = cv.getContext("2d");
+let exportFrame = { active: false, hud: true, lesion: true };
+let lastBurnIn = null;
 const css = getComputedStyle(document.documentElement);
 const tok = n => css.getPropertyValue(n).trim();
 
@@ -1114,8 +1153,13 @@ function lesionRadiusMm(lesion) {
   return 5;
 }
 
+function exportSkipsLesion() {
+  return !!(exportFrame.active && !exportFrame.lesion);
+}
+
 function drawAnatomicalLesion() {
   lastAnatomicalLesion = null;
+  if (exportSkipsLesion()) return;
   if (!A.lesion || !A.lesion.ras_mm) return;
   const origin = A.origin_mm || [0, 0, 0];
   const ras = A.lesion.ras_mm;
@@ -1248,7 +1292,7 @@ function drawAnatomical() {
           ctx.fillText(`${A.target_gap_mm.toFixed(1)} mm · no airway shown`, (end.x + p.x) / 2, (end.y + p.y) / 2 - 5);
         }
       }
-      if (!A.lesion) {
+      if (!A.lesion && !exportSkipsLesion()) {
         ctx.fillStyle = "#fff"; ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill(); ctx.stroke();
         ctx.fillStyle = tok("--mucosa"); ctx.font = "10px IBM Plex Mono, monospace";
@@ -2382,20 +2426,22 @@ function drawTopologyLesion() {
       x: pt.x, y: pt.y, label: "RouteTarget", gapDashed: true,
     };
   }
-  ctx.save();
-  ctx.fillStyle = "#e85d4c";
-  ctx.beginPath();
-  ctx.arc(x, y, 4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.font = '500 11px "IBM Plex Sans", sans-serif';
-  ctx.textAlign = "left";
-  ctx.textBaseline = "middle";
-  ctx.fillText(label, x + 8, y);
-  ctx.restore();
-  lastTopologyLesion = {
-    x, y, label, distMm: anchored.distMm, from: edge.f, to: edge.t, frac,
-    onRouteTarget: !!anchored.onRouteTarget,
-  };
+  if (!exportSkipsLesion()) {
+    ctx.save();
+    ctx.fillStyle = "#e85d4c";
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = '500 11px "IBM Plex Sans", sans-serif';
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, x + 8, y);
+    ctx.restore();
+    lastTopologyLesion = {
+      x, y, label, distMm: anchored.distMm, from: edge.f, to: edge.t, frac,
+      onRouteTarget: !!anchored.onRouteTarget,
+    };
+  }
 }
 
 let topoRot = 0;
@@ -3176,6 +3222,7 @@ function render() {
   }
   if (ctActive) ensureCtPanes();
   resize();
+  syncSaveImageControl();
 }
 
 function setupRouteTargetPanel() {
@@ -3397,6 +3444,379 @@ function setupRouteTargetPanel() {
   refreshRouteTargetPanel();
 }
 
+/* --------------------------------------------------------- export stills */
+const EXPORT_VIEW_NAMES = {
+  anatomical: "Anatomical 3D",
+  topology: "Topology map",
+  endoluminal: "Endoluminal",
+};
+const PNG_KEEP_CHUNKS = new Set(["IHDR", "IDAT", "IEND", "sRGB", "pHYs", "gAMA"]);
+const PNG_SIGNATURE_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+function exportViewKey() {
+  const key = VARIANTS[variant] && VARIANTS[variant].key;
+  if (Object.prototype.hasOwnProperty.call(EXPORT_VIEW_NAMES, key)) return key;
+  return null;
+}
+
+function exportCaseId() {
+  const candidates = [typeof CASE_ID === "string" ? CASE_ID : "", A && A.case];
+  for (const value of candidates) {
+    if (typeof value === "string" && /^local-\d{3}$/.test(value)) return value;
+  }
+  return "local-000";
+}
+
+function exportStamp(when) {
+  const date = when instanceof Date && !Number.isNaN(when.getTime()) ? when : new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return {
+    file: `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`,
+    label: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`,
+  };
+}
+
+function exportImageFileName(when) {
+  const key = exportViewKey();
+  if (!key) return null;
+  return `${exportCaseId()}_${key}_${exportStamp(when).file}.png`;
+}
+
+function syncSaveImageControl() {
+  const box = document.getElementById("save-image");
+  if (!box) return;
+  const on = exportViewKey() != null;
+  box.hidden = !on;
+  if (!on) {
+    const pop = document.getElementById("save-image-popover");
+    if (pop && typeof pop.hidePopover === "function" && pop.matches(":popover-open")) {
+      pop.hidePopover();
+    }
+  }
+}
+
+function gateHud(fn) {
+  return function gatedHud(...args) {
+    if (exportFrame.active && exportFrame.hud === false) return undefined;
+    return fn.apply(this, args);
+  };
+}
+
+const drawAnatomicalLive = drawAnatomical;
+drawAnatomical = function () {
+  if (!(exportFrame.active && exportFrame.hud === false)) return drawAnatomicalLive();
+  const fill = ctx.fillText;
+  ctx.fillText = function (text, ...args) {
+    if (typeof text === "string" && text.includes("Lesion")) return fill.call(ctx, text, ...args);
+    return undefined;
+  };
+  try {
+    return drawAnatomicalLive();
+  } finally {
+    ctx.fillText = fill;
+  }
+};
+
+const drawTopologyLive = drawTopology;
+drawTopology = function () {
+  if (!(exportFrame.active && exportFrame.hud === false)) return drawTopologyLive();
+  const fill = ctx.fillText;
+  ctx.fillText = function (text, ...args) {
+    if (typeof text === "string" && text.startsWith("Radial map:")) return undefined;
+    return fill.call(ctx, text, ...args);
+  };
+  try {
+    return drawTopologyLive();
+  } finally {
+    ctx.fillText = fill;
+  }
+};
+
+const drawForkOrificesLive = drawForkOrifices;
+drawForkOrifices = function (toView, projectFn, hud) {
+  if (!(exportFrame.active && exportFrame.hud === false)) {
+    return drawForkOrificesLive(toView, projectFn, hud);
+  }
+  const fill = ctx.fillText;
+  const stroke = ctx.strokeText;
+  ctx.fillText = function () { return undefined; };
+  ctx.strokeText = function () { return undefined; };
+  try {
+    return drawForkOrificesLive(toView, projectFn, hud);
+  } finally {
+    ctx.fillText = fill;
+    ctx.strokeText = stroke;
+  }
+};
+
+paintEndoHud = gateHud(paintEndoHud);
+drawAnteriorTick = gateHud(drawAnteriorTick);
+drawPatientEdgeLabels = gateHud(drawPatientEdgeLabels);
+drawOrientationGizmo = gateHud(drawOrientationGizmo);
+
+function anatomicalMmPerCssPixel() {
+  const span = Math.min(W, H) * 0.9;
+  if (!(span > 0) || !(cam.dist > 0)) return null;
+  return cam.dist / span;
+}
+
+function chooseScaleBar(mmPerPx) {
+  const choices = [10, 20, 50];
+  const targetPx = 120;
+  const maxPx = Math.max(48, Math.min(W * 0.4, 320));
+  let best = null;
+  for (const mm of choices) {
+    const px = mm / mmPerPx;
+    if (px < 28 || px > maxPx) continue;
+    const score = Math.abs(px - targetPx);
+    if (!best || score < best.score) best = { mm, px, score };
+  }
+  if (!best) return { mm: 10, px: 10 / mmPerPx };
+  return { mm: best.mm, px: best.px };
+}
+
+function drawScaleBar(mm, px) {
+  const label = `${mm} mm`;
+  const x = 18;
+  const y = H - 78;
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  ctx.shadowBlur = 0;
+  ctx.font = '600 14px "IBM Plex Sans", sans-serif';
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  const textW = ctx.measureText(label).width;
+  const barW = Math.max(px, textW);
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.fillRect(x - 8, y - 22, barW + 16, 46);
+  ctx.strokeStyle = "#17242B";
+  ctx.fillStyle = "#17242B";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y + 10);
+  ctx.lineTo(x + px, y + 10);
+  ctx.moveTo(x, y + 4);
+  ctx.lineTo(x, y + 16);
+  ctx.moveTo(x + px, y + 4);
+  ctx.lineTo(x + px, y + 16);
+  ctx.stroke();
+  ctx.fillText(label, x, y);
+  ctx.restore();
+  return label;
+}
+
+function drawBurnIn(viewKey, when) {
+  const stamp = exportStamp(when);
+  const caseId = exportCaseId();
+  const viewName = EXPORT_VIEW_NAMES[viewKey];
+  const header = `${viewName} \u00b7 ${caseId} \u00b7 ${stamp.label}`;
+  const review = reviewWarningLines(A);
+  const footer = "Simulated \u00b7 CT-derived \u00b7 research use";
+  const lines = [header, ...review];
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  ctx.shadowBlur = 0;
+  ctx.font = '600 15px "IBM Plex Sans", sans-serif';
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const padX = 8;
+  const padY = 7;
+  const row = 20;
+  let maxW = 0;
+  for (const line of lines) maxW = Math.max(maxW, ctx.measureText(line).width);
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.fillRect(12, 12, maxW + padX * 2, lines.length * row + padY * 2);
+  ctx.fillStyle = "#17242B";
+  for (let i = 0; i < lines.length; i += 1) {
+    ctx.fillText(lines[i], 12 + padX, 12 + padY + i * row);
+  }
+  let scale = null;
+  if (viewKey === "anatomical") {
+    const mmPerPx = anatomicalMmPerCssPixel();
+    if (mmPerPx > 0 && Number.isFinite(mmPerPx)) {
+      const bar = chooseScaleBar(mmPerPx);
+      scale = drawScaleBar(bar.mm, bar.px);
+      lines.push(scale);
+    }
+  }
+  ctx.font = '600 14px "IBM Plex Sans", sans-serif';
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const footerW = ctx.measureText(footer).width;
+  const footerX = Math.max(12, (W - (footerW + 20)) / 2);
+  const footerY = H - 36;
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.fillRect(footerX, footerY, footerW + 20, 24);
+  ctx.fillStyle = "#17242B";
+  ctx.fillText(footer, footerX + 10, footerY + 4);
+  lines.push(footer);
+  ctx.restore();
+  lastBurnIn = {
+    lines,
+    viewName,
+    caseId,
+    date: stamp.label,
+    footer,
+    scaleBar: scale,
+    review: review.slice(),
+  };
+}
+
+function renderStillCanvas(options) {
+  const opts = options && typeof options === "object" ? options : {};
+  const hud = opts.hud !== false;
+  const lesion = opts.lesion !== false;
+  const when = opts.when instanceof Date && !Number.isNaN(opts.when.getTime()) ? opts.when : new Date();
+  const viewKey = exportViewKey();
+  if (!viewKey) throw new Error("Save image is not available for this view");
+  const cssW = cv.clientWidth;
+  const cssH = cv.clientHeight;
+  if (!(cssW > 0) || !(cssH > 0)) throw new Error("Canvas has no CSS size");
+  const off = document.createElement("canvas");
+  off.width = Math.round(cssW * 2);
+  off.height = Math.round(cssH * 2);
+  const offCtx = off.getContext("2d", { alpha: false }) || off.getContext("2d");
+  if (!offCtx) throw new Error("Could not encode PNG");
+  const screenCtx = ctx;
+  const screenW = W;
+  const screenH = H;
+  try {
+    exportFrame.active = true;
+    exportFrame.hud = hud;
+    exportFrame.lesion = lesion;
+    ctx = offCtx;
+    W = cssW;
+    H = cssH;
+    ctx.setTransform(2, 0, 0, 2, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = tok("--ground");
+    ctx.fillRect(0, 0, W, H);
+    if (viewKey === "anatomical") drawAnatomical();
+    else if (viewKey === "endoluminal") drawEndoluminal();
+    else drawTopology();
+    drawBurnIn(viewKey, when);
+  } finally {
+    exportFrame.active = false;
+    exportFrame.hud = true;
+    exportFrame.lesion = true;
+    ctx = screenCtx;
+    W = screenW;
+    H = screenH;
+  }
+  return off;
+}
+
+function stripPngMetadata(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 8) throw new Error("Could not encode PNG");
+  for (let i = 0; i < 8; i += 1) {
+    if (bytes[i] !== PNG_SIGNATURE_BYTES[i]) throw new Error("Could not encode PNG");
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const parts = [bytes.subarray(0, 8)];
+  let offset = 8;
+  let sawIend = false;
+  while (offset + 12 <= bytes.length) {
+    const length = view.getUint32(offset);
+    const type = String.fromCharCode(
+      bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7],
+    );
+    if (offset + 12 + length > bytes.length) throw new Error("Could not encode PNG");
+    const next = offset + 12 + length;
+    if (PNG_KEEP_CHUNKS.has(type)) parts.push(bytes.subarray(offset, next));
+    offset = next;
+    if (type === "IEND") {
+      sawIend = true;
+      break;
+    }
+  }
+  if (!sawIend) throw new Error("Could not encode PNG");
+  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let pos = 0;
+  for (const part of parts) {
+    out.set(part, pos);
+    pos += part.length;
+  }
+  return out;
+}
+
+function dataUrlToBytes(url) {
+  const marker = "base64,";
+  const at = String(url).indexOf(marker);
+  if (at < 0) throw new Error("Could not encode PNG");
+  const bin = atob(url.slice(at + marker.length));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i) & 255;
+  return bytes;
+}
+
+function downloadPngBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2500);
+}
+
+async function exportStill(options) {
+  if (document.fonts && document.fonts.ready) {
+    try { await document.fonts.ready; } catch (err) { /* draw with the fallback face */ }
+  }
+  const canvas = renderStillCanvas(options);
+  const raw = await new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) reject(new Error("Could not encode PNG"));
+      else resolve(blob);
+    }, "image/png");
+  });
+  const stripped = stripPngMetadata(new Uint8Array(await raw.arrayBuffer()));
+  return new Blob([stripped], { type: "image/png" });
+}
+
+let saveImageBusy = false;
+document.getElementById("save-image-options").addEventListener("click", () => {
+  const pop = document.getElementById("save-image-popover");
+  const btn = document.getElementById("save-image-options");
+  if (!pop || typeof pop.showPopover !== "function") return;
+  const rect = btn.getBoundingClientRect();
+  pop.style.left = `${Math.round(rect.left)}px`;
+  pop.style.top = `${Math.round(rect.bottom + 6)}px`;
+});
+document.getElementById("save-image-btn").addEventListener("click", () => {
+  if (saveImageBusy) return;
+  const when = new Date();
+  const name = exportImageFileName(when);
+  if (!name) return;
+  const hud = document.getElementById("save-image-hud").checked;
+  const lesion = document.getElementById("save-image-lesion").checked;
+  const options = { hud, lesion, when };
+  if (window.bronchoroute && typeof window.bronchoroute.saveImage === "function") {
+    saveImageBusy = true;
+    const btn = document.getElementById("save-image-btn");
+    btn.disabled = true;
+    exportStill(options).then((blob) => blob.arrayBuffer()).then((buf) => (
+      window.bronchoroute.saveImage({ defaultName: name, bytes: new Uint8Array(buf) })
+    )).catch((err) => {
+      console.error(err);
+    }).finally(() => {
+      saveImageBusy = false;
+      btn.disabled = false;
+    });
+    return;
+  }
+  try {
+    const canvas = renderStillCanvas(options);
+    const stripped = stripPngMetadata(dataUrlToBytes(canvas.toDataURL("image/png")));
+    downloadPngBlob(new Blob([stripped], { type: "image/png" }), name);
+  } catch (err) {
+    console.error(err);
+  }
+});
+
 if (DEBUG) {
   function mainBronchusNodes() {
     const carina = carinaNodeId();
@@ -3563,6 +3983,19 @@ if (DEBUG) {
     forkSurvey,
     aheadFraction: AHEAD_FRACTION,
     apDegeneracy: AP_DEGENERACY,
+    exportStill,
+    burnIn() {
+      if (!lastBurnIn) return null;
+      return {
+        lines: lastBurnIn.lines.slice(),
+        viewName: lastBurnIn.viewName,
+        caseId: lastBurnIn.caseId,
+        date: lastBurnIn.date,
+        footer: lastBurnIn.footer,
+        scaleBar: lastBurnIn.scaleBar,
+        review: lastBurnIn.review.slice(),
+      };
+    },
   };
   window.__p3_debug = {
     setVariant,

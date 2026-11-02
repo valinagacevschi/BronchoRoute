@@ -1,3 +1,4 @@
+// Changes: native Save image dialog under Pictures/BronchoRoute; never log the path.
 // Changes: one-time FileVault note when fdesetup reports FileVault is Off.
 // Changes: refuse non-arm64 launch and warn once when memory is below 16 GB.
 // Changes: combine native Archive IPC with API-owned disclaimer acknowledgement.
@@ -29,6 +30,10 @@ const {
   shouldWarnLowRam,
   sidecarOrigin,
   splitCompleteLines,
+  isSaveImageName,
+  isPngBytes,
+  resolveSaveImageBaseDir,
+  saveImageDefaultPath,
 } = require("./lib");
 
 app.setName("BronchoRoute");
@@ -46,6 +51,11 @@ let sidecar = null;
 let mainWindow = null;
 let allowedPort = null;
 let shutdownStarted = false;
+let saveImageBaseDir = null;
+
+function setSaveImageBaseDir(dir) {
+  saveImageBaseDir = typeof dir === "string" && dir.trim() !== "" ? dir : null;
+}
 
 function delay(ms) {
   return new Promise((resolve) => {
@@ -478,6 +488,47 @@ async function openArchive(event, selectedPath) {
   mainWindow.webContents.send("bronchoroute:archive", archivePath);
 }
 
+async function saveImage(event, payload) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error("Save image request from an unknown window");
+  }
+  const defaultName = payload && payload.defaultName;
+  const bytes = payload && payload.bytes;
+  if (!isSaveImageName(defaultName) || !isPngBytes(bytes)) {
+    throw new Error("Invalid save image");
+  }
+  let defaultPath;
+  try {
+    const base = resolveSaveImageBaseDir(saveImageBaseDir, app.getPath("pictures"));
+    defaultPath = saveImageDefaultPath(base, defaultName);
+    fs.mkdirSync(path.dirname(defaultPath), { recursive: true });
+  } catch (err) {
+    throw new Error("Could not prepare the save folder");
+  }
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Save image",
+    defaultPath,
+    filters: [{ name: "PNG", extensions: ["png"] }],
+  });
+  if (result.canceled || typeof result.filePath !== "string" || result.filePath === "") {
+    return { saved: false };
+  }
+  try {
+    fs.mkdirSync(path.dirname(result.filePath), { recursive: true });
+    const body = Buffer.isBuffer(bytes) || ArrayBuffer.isView(bytes)
+      ? bytes
+      : Buffer.from(bytes);
+    fs.writeFileSync(result.filePath, body);
+  } catch (err) {
+    throw new Error("Could not save image");
+  }
+  return { saved: true };
+}
+
+function installSaveImage() {
+  ipcMain.handle("bronchoroute:save-image", (event, payload) => saveImage(event, payload));
+}
+
 function installArchiveMenu() {
   ipcMain.handle("bronchoroute:open-archive", event => openArchive(event));
   Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -502,6 +553,7 @@ async function launch() {
   const token = newLaunchToken();
   mainWindow = createWindow();
   installArchiveMenu();
+  installSaveImage();
   installNavigationGuards(mainWindow);
   await loadInline(mainWindow, splashHtml());
   mainWindow.show();
@@ -596,4 +648,4 @@ if (isDirectLaunch()) {
   });
 }
 
-module.exports = { start, openArchive };
+module.exports = { start, openArchive, saveImage, setSaveImageBaseDir };
