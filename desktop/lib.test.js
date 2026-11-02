@@ -1,4 +1,4 @@
-// Changes: node:test coverage for the Electron shell helpers.
+// Changes: shell helper coverage excludes Python-owned settings persistence.
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -8,16 +8,13 @@ const path = require("node:path");
 const test = require("node:test");
 const {
   DISCLAIMER,
-  atomicWriteJson,
   buildSidecarEnv,
   firstLocalCaseId,
   isAllowedAppUrl,
   newLaunchToken,
   parsePortLine,
-  readSettings,
   requestFilterUrls,
   resolveDataRoot,
-  settingsWithDisclaimerAck,
   splitCompleteLines,
 } = require("./lib");
 
@@ -111,28 +108,6 @@ test("data root honors BRONCHOROUTE_DATA_ROOT", () => {
     resolveDataRoot({ BRONCHOROUTE_DATA_ROOT: "   " }, "/user/data"),
     "/user/data",
   );
-});
-
-test("disclaimer acknowledgement keeps other settings keys", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bronchoroute-settings-"));
-  const file = path.join(dir, "settings.json");
-  try {
-    atomicWriteJson(file, { initials: "AB", update_checks: false });
-    const next = settingsWithDisclaimerAck(readSettings(file));
-    assert.deepEqual(next, {
-      initials: "AB",
-      update_checks: false,
-      disclaimer_ack: true,
-    });
-    atomicWriteJson(file, next);
-    const saved = readSettings(file);
-    assert.equal(saved.disclaimer_ack, true);
-    assert.equal(saved.initials, "AB");
-    assert.equal(saved.update_checks, false);
-    assert.equal(readSettings(path.join(dir, "missing.json")).disclaimer_ack, undefined);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test("launch token is 32 bytes of hex", () => {

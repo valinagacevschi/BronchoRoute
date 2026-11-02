@@ -1,3 +1,4 @@
+# Changes: shared settings API alongside the compatible clinician endpoints.
 # Changes: serve About (name, version, licence), LICENSE, notices, and sponsors.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: blank BRONCHOROUTE_TOKEN counts as unset so the launch guard stays off.
@@ -67,7 +68,9 @@ from app.settings import (
     DEFAULT_CT_VIEW,
     ClinicianNotSet,
     get_clinician,
+    get_settings,
     put_clinician,
+    put_settings,
     put_ct_view,
     validate_ct_view,
 )
@@ -719,6 +722,19 @@ def api_delete_lesion(case_id: str):
         return clear_lesion(case_id, clinician["clinician"])
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
+
+
+@app.get("/api/settings")
+def api_get_settings():
+    return get_settings()
+
+
+@app.put("/api/settings")
+async def api_put_settings(request: Request):
+    try:
+        return put_settings(await request.json())
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/clinician")

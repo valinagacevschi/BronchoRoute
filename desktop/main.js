@@ -1,3 +1,4 @@
+// Changes: Python owns disclaimer acknowledgement through the token-guarded settings API.
 // Changes: dev-mode Electron shell — sidecar lifecycle, token, disclaimer.
 "use strict";
 
@@ -8,18 +9,14 @@ const path = require("node:path");
 const {
   DISCLAIMER,
   SPLASH,
-  atomicWriteJson,
   atomicWriteText,
   buildSidecarEnv,
-  disclaimerAcknowledged,
   firstLocalCaseId,
   isAllowedAppUrl,
   newLaunchToken,
   parsePortLine,
-  readSettings,
   requestFilterUrls,
   resolveDataRoot,
-  settingsWithDisclaimerAck,
   sidecarOrigin,
   splitCompleteLines,
 } = require("./lib");
@@ -278,9 +275,20 @@ function disclaimerInstallScript() {
     button.type = "button";
     button.textContent = "Acknowledge";
     button.style.cssText = "font:600 14px/1 -apple-system,BlinkMacSystemFont,sans-serif;padding:8px 14px;border-radius:6px;border:0;background:#2E6E88;color:#fff;cursor:pointer;";
-    button.addEventListener("click", () => {
-      document.documentElement.dataset.bronchorouteDisclaimer = "acked";
-      overlay.remove();
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ disclaimer_ack: true }),
+        });
+        if (!response.ok) throw new Error("settings");
+        overlay.remove();
+      } catch (error) {
+        button.textContent = "Could not save. Try again";
+        button.disabled = false;
+      }
     });
     panel.appendChild(text);
     panel.appendChild(button);
@@ -292,41 +300,15 @@ function disclaimerInstallScript() {
   })()`;
 }
 
-function watchDisclaimer(win, settingsPath) {
-  const current = readSettings(settingsPath);
-  if (current && disclaimerAcknowledged(current)) {
-    return;
+async function showDisclaimer(win, port, token) {
+  const response = await fetch(`${sidecarOrigin(port)}/api/settings`, {
+    headers: { "X-BronchoRoute-Token": token },
+  });
+  if (!response.ok) throw new Error("Could not load Settings");
+  const settings = await response.json();
+  if (!settings.disclaimer_ack) {
+    await win.webContents.executeJavaScript(disclaimerInstallScript());
   }
-  let checking = false;
-  const timer = setInterval(() => {
-    if (checking || win.isDestroyed()) {
-      return;
-    }
-    checking = true;
-    win.webContents.executeJavaScript(
-      "document.documentElement.dataset.bronchorouteDisclaimer === 'acked'",
-    ).then((acked) => {
-      checking = false;
-      if (!acked) {
-        return;
-      }
-      clearInterval(timer);
-      const fresh = readSettings(settingsPath);
-      if (!fresh) {
-        process.stderr.write("settings.json could not be updated\n");
-        return;
-      }
-      atomicWriteJson(settingsPath, settingsWithDisclaimerAck(fresh));
-    }).catch(() => {
-      checking = false;
-    });
-  }, 200);
-  win.once("closed", () => {
-    clearInterval(timer);
-  });
-  win.webContents.executeJavaScript(disclaimerInstallScript()).catch(() => {
-    process.stderr.write("disclaimer dialog failed\n");
-  });
 }
 
 async function showFatal(message) {
@@ -377,7 +359,7 @@ async function launch() {
   await waitForHealth(port, token, HEALTH_TIMEOUT_MS);
   const url = await chooseStartUrl(port, token);
   await mainWindow.loadURL(url);
-  watchDisclaimer(mainWindow, path.join(dataRoot, "settings.json"));
+  await showDisclaimer(mainWindow, port, token);
   return {
     window: mainWindow,
     port,

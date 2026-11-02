@@ -1,3 +1,4 @@
+// Changes: shell helpers; settings persistence belongs to the Python sidecar.
 // Changes: pure helpers for the dev-mode Electron shell (port, env, origin).
 "use strict";
 
@@ -138,39 +139,6 @@ function atomicWriteText(file, text) {
   }
 }
 
-function atomicWriteJson(file, data) {
-  atomicWriteText(file, `${JSON.stringify(data, null, 2)}\n`);
-}
-
-function readSettings(file) {
-  let text;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (err) {
-    if (err && err.code === "ENOENT") {
-      return {};
-    }
-    return null;
-  }
-  try {
-    const data = JSON.parse(text);
-    if (!data || typeof data !== "object" || Array.isArray(data)) {
-      return null;
-    }
-    return data;
-  } catch (err) {
-    return null;
-  }
-}
-
-function disclaimerAcknowledged(settings) {
-  return Boolean(settings && settings.disclaimer_ack);
-}
-
-function settingsWithDisclaimerAck(settings) {
-  return { ...settings, disclaimer_ack: true };
-}
-
 module.exports = {
   DISCLAIMER,
   SPLASH,
@@ -184,8 +152,4 @@ module.exports = {
   resolveDataRoot,
   newLaunchToken,
   atomicWriteText,
-  atomicWriteJson,
-  readSettings,
-  disclaimerAcknowledged,
-  settingsWithDisclaimerAck,
 };

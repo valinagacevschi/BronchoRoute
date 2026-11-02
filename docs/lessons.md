@@ -41,3 +41,6 @@
   fraction under 0.15, the same cut as `clock_of`) has no stable hour. That
   residual is the direction of a small miss, so call it straight ahead. The
   bronchus intermedius at the right-upper takeoff is that case; the carina is not.
+- Shared settings: merging only the new API writes is insufficient when legacy
+  clinician and CT preference writers replace the same file. Keep every writer
+  under the same lock, preserve unknown keys, and test cross-API writes.

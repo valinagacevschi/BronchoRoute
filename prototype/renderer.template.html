@@ -1,3 +1,4 @@
+<!-- Changes: Settings and About dialogs in the fixed footer; shared Python settings. -->
 <!-- Changes: keep About reachable in the fixed footer and name the viewer BronchoRoute. -->
 <!-- # Changes: review flags render as a collapsible amber warning panel. -->
 <!-- # Changes: About dialog with licence, notices, and sponsors. -->
@@ -403,13 +404,13 @@ body.walkthrough-active .walk-sim-label { display: block; }
   color: var(--steel);
   text-decoration: underline; text-underline-offset: 2px;
 }
-#about-dialog {
+#about-dialog, #settings-dialog {
   border: 1px solid var(--edge); border-radius: 8px;
   background: var(--surface); color: var(--ink); box-shadow: var(--shadow);
   width: min(28rem, calc(100vw - 32px)); padding: 18px 20px 16px;
 }
-#about-dialog::backdrop { background: rgba(12, 18, 22, .45); }
-#about-dialog h2 {
+#about-dialog::backdrop, #settings-dialog::backdrop { background: rgba(12, 18, 22, .45); }
+#about-dialog h2, #settings-dialog h2 {
   margin: 0; font-family: "IBM Plex Sans Condensed", sans-serif;
   font-weight: 600; font-size: 22px;
 }
@@ -428,6 +429,15 @@ body.walkthrough-active .walk-sim-label { display: block; }
   padding: 7px 12px; background: var(--ground); color: var(--ink); cursor: pointer;
 }
 .about-close:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+#settings-form { display: grid; gap: 14px; margin-top: 16px; font-size: 14px; }
+#settings-form label { display: grid; gap: 5px; }
+#settings-form input[type="text"] {
+  padding: 8px; border: 1px solid var(--edge); border-radius: 5px;
+  background: var(--ground); color: var(--ink); font: inherit;
+}
+#settings-form .settings-toggle { display: flex; align-items: center; gap: 8px; }
+#settings-error { color: #a32b24; margin: 0; min-height: 1.5em; }
+#settings-form .about-close { margin-top: 0; }
 </style>
 
 <div class="stage"><canvas id="c"></canvas><div class="shared-marker-3d" id="shared-marker-3d"></div></div>
@@ -497,7 +507,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
   </div>
 </aside>
 
-<p class="research-footer" role="contentinfo">Research and education tool. Not a medical device. Not for diagnosis or treatment decisions. · <a href="#about" class="about-link" id="about-open">About</a></p>
+<p class="research-footer" role="contentinfo">Research and education tool. Not a medical device. Not for diagnosis or treatment decisions. · <a href="#about" class="about-link" id="about-open">About</a> · <a href="#settings" class="about-link" id="settings-open">Settings</a></p>
 
 <div class="proto">Prototype</div>
 
@@ -532,6 +542,24 @@ body.walkthrough-active .walk-sim-label { display: block; }
   <button type="button" class="about-close" id="about-close">Close</button>
 </dialog>
 
+<dialog id="settings-dialog" aria-labelledby="settings-title">
+  <h2 id="settings-title">Settings</h2>
+  <form id="settings-form" novalidate>
+    <label for="settings-initials">Initials
+      <input type="text" id="settings-initials" maxlength="8" autocomplete="off" aria-describedby="settings-error">
+    </label>
+    <label for="settings-role">Role (optional)
+      <input type="text" id="settings-role" maxlength="40" autocomplete="off" aria-describedby="settings-error">
+    </label>
+    <label class="settings-toggle"><input type="checkbox" id="settings-updates">Check for updates at launch</label>
+    <p id="settings-error" role="alert"></p>
+    <div>
+      <button type="submit" class="about-close" id="settings-save">Save</button>
+      <button type="button" class="about-close" id="settings-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
 <script id="airway-data">
 /*__AIRWAY_EMBED__*/
 </script>
@@ -556,7 +584,9 @@ if (VIEWER_MODE) {
   const _fetch = window.fetch.bind(window);
   window.fetch = (input, init = {}) => {
     const method = String((init && init.method) || "GET").toUpperCase();
-    if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    const url = new URL(typeof input === "string" ? input : input.url, location.href);
+    const settingsWrite = method === "PUT" && url.origin === location.origin && url.pathname === "/api/settings";
+    if (!settingsWrite && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
       console.warn("viewer mode: blocked write", method, String(input));
       return Promise.resolve(new Response(
         JSON.stringify({ detail: "viewer mode is read-only" }),
@@ -597,6 +627,66 @@ document.getElementById("about-open").addEventListener("click", (event) => {
 });
 document.getElementById("about-close").addEventListener("click", () => {
   document.getElementById("about-dialog").close();
+});
+
+const settingsDialog = document.getElementById("settings-dialog");
+const settingsInitials = document.getElementById("settings-initials");
+const settingsRole = document.getElementById("settings-role");
+const settingsUpdates = document.getElementById("settings-updates");
+const settingsError = document.getElementById("settings-error");
+const settingsSave = document.getElementById("settings-save");
+document.getElementById("settings-open").addEventListener("click", async (event) => {
+  event.preventDefault();
+  settingsError.textContent = "";
+  settingsSave.disabled = true;
+  settingsDialog.showModal();
+  try {
+    const response = await fetch("/api/settings");
+    if (!response.ok) throw new Error("Could not load Settings.");
+    const data = await response.json();
+    settingsInitials.value = data.initials;
+    settingsRole.value = data.role;
+    settingsUpdates.checked = data.updates_enabled;
+    settingsSave.disabled = false;
+  } catch (error) {
+    settingsError.textContent = error.message;
+  }
+});
+document.getElementById("settings-cancel").addEventListener("click", () => settingsDialog.close());
+document.getElementById("settings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  settingsError.textContent = "";
+  if (!/^(?:[A-Za-z]\.?){1,4}$/.test(settingsInitials.value)) {
+    settingsError.textContent = "Initials must be 1–4 letters with optional dots.";
+    settingsInitials.focus();
+    return;
+  }
+  if (settingsRole.value.length > 40 || /[<>'"]/.test(settingsRole.value)) {
+    settingsError.textContent = "Role must be at most 40 characters without < > ' or double quotes.";
+    settingsRole.focus();
+    return;
+  }
+  settingsSave.disabled = true;
+  try {
+    const response = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        initials: settingsInitials.value,
+        role: settingsRole.value,
+        updates_enabled: settingsUpdates.checked,
+      }),
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(typeof data.detail === "string" ? data.detail : "Could not save Settings.");
+    }
+    settingsDialog.close();
+  } catch (error) {
+    settingsError.textContent = error.message;
+  } finally {
+    settingsSave.disabled = false;
+  }
 });
 
 async function resolveCaseId() {
@@ -2631,6 +2721,7 @@ document.getElementById("presets").addEventListener("click", e => {
 
 const held = new Set();
 addEventListener("keydown", e => {
+  if (document.querySelector("dialog[open]")) return;
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
   if (e.key >= "1" && e.key <= String(SWITCHER_VARIANTS.length)) {
