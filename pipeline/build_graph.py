@@ -1,3 +1,4 @@
+# Changes: optional artery mask adds estimated airway beside the graph, never into it.
 # Changes: disable soma cuts, repair only mask-contained skeleton holes, root in RAS,
 # and reject empty lung trees before exporting.
 """AeroPath airway mask -> navigable airway graph.
@@ -15,6 +16,7 @@ game space is the renderer's job, not this pipeline's.
 
 import argparse
 import json
+import time
 from collections import deque
 from pathlib import Path
 
@@ -486,7 +488,9 @@ def export(branches: list[dict], case: str, spacing, affine: np.ndarray,
            out: Path, review: list[dict] | None = None,
            bridge_mask: np.ndarray | None = None,
            bridge_source: str = "no bridge mask",
-           source: str = "AeroPath (MIT), expert airway mask") -> dict:
+           source: str = "AeroPath (MIT), expert airway mask",
+           lobes: np.ndarray | None = None,
+           arteries: Path | None = None) -> dict:
     node_ids: dict[int, int] = {}
 
     for b in branches:
@@ -525,6 +529,17 @@ def export(branches: list[dict], case: str, spacing, affine: np.ndarray,
     _, interp_count, interp_total, downstream_count = add_edge_provenance(
         edges, bridge_mask, affine
     )
+    started = time.perf_counter()
+    from estimated_airway import estimate_airway, load_artery_mask
+    artery_mask = load_artery_mask(arteries)
+    if (artery_mask is not None and lobes is not None
+            and tuple(artery_mask.shape) != tuple(np.shape(lobes))):
+        print("  warning: artery mask grid does not match the lobe mask; no estimates")
+        artery_mask = None
+    estimated, estimated_summary = estimate_airway(
+        edges, artery_mask, lobes, spacing, affine
+    )
+    elapsed = time.perf_counter() - started
     graph = {
         "case": case,
         "coordinate_system": "patient_physical_mm",
@@ -538,10 +553,16 @@ def export(branches: list[dict], case: str, spacing, affine: np.ndarray,
         "review": review or [],
         "nodes": sorted(nodes.values(), key=lambda n: n["id"]),
         "edges": edges,
+        "estimated": estimated,
+        "estimated_summary": estimated_summary,
     }
     out.write_text(json.dumps(graph, separators=(",", ":")))
     print(f"  provenance {interp_count} interpolated edges, {interp_total:.1f} mm, "
           f"{downstream_count} downstream edges")
+    print(f"  estimated {estimated_summary['estimated']} of "
+          f"{estimated_summary['terminals']} terminals, "
+          f"{estimated_summary['total_mm']:.1f} mm, "
+          f"max {estimated_summary['max_mm']:.1f} mm ({elapsed:.2f} s)")
     return graph
 
 
@@ -556,6 +577,9 @@ def main() -> None:
     ap.add_argument("--airways", type=Path,
                     help="override the airway mask, e.g. a predicted one")
     ap.add_argument("--bridges", type=Path, help="mask of interpolated bridge voxels")
+    ap.add_argument("--arteries", type=Path,
+                    help="pulmonary artery mask from the same TotalSegmentator run; "
+                         "a missing file leaves estimated airway empty")
     args = ap.parse_args()
 
     airway_path = args.airways or next(args.case_dir.glob("*label_airways.nii.gz"))
@@ -628,7 +652,7 @@ def main() -> None:
                    else "AeroPath (MIT), expert airway mask")
     graph = export(kept, case, spacing, affine, path, review, bridge_mask,
                    bridge_path.name if bridge_mask is not None else "no bridge mask",
-                   graph_source)
+                   graph_source, lobes=lungs, arteries=args.arteries)
 
     depth = max(e["generation"] for e in graph["edges"])
     size_kb = path.stat().st_size / 1024

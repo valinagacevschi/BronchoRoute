@@ -1,4 +1,6 @@
 <!-- Changes: PNG stills at 2× CSS size with burn-in, HUD and Lesion toggles, and Save image. -->
+<!-- Changes: estimated strokes follow the terminal radius; Layers stays above the footer. -->
+<!-- Changes: anatomical estimated-airway layer, dashed and fading, toggled in the session. -->
 <!-- Changes: show stored RouteTarget staleness as status and clear it after bridge reconfirmation. -->
 <!-- Changes: refresh Case views and RouteTarget proposals after CT bridge decisions. -->
 <!-- Changes: endoluminal Lesion label stays inside the visible view and off the arrow. -->
@@ -83,6 +85,7 @@
   --axis-a:  #3a3;
   --axis-s:  #36c;
   --axis-f:  #888;
+  --estimated: #6E4B9E;
   --shadow:  0 1px 2px rgba(23,36,43,.10), 0 8px 24px rgba(23,36,43,.08);
 }
 @media (prefers-color-scheme: dark) {
@@ -99,6 +102,7 @@
     --axis-a:  #6c6;
     --axis-s:  #6af;
     --axis-f:  #999;
+    --estimated: #D2B4F0;
     --shadow:  0 1px 2px rgba(0,0,0,.5), 0 10px 30px rgba(0,0,0,.45);
   }
 }
@@ -115,6 +119,7 @@
   --axis-a:  #6c6;
   --axis-s:  #6af;
   --axis-f:  #999;
+  --estimated: #D2B4F0;
   --shadow:  0 1px 2px rgba(0,0,0,.5), 0 10px 30px rgba(0,0,0,.45);
 }
 
@@ -138,9 +143,19 @@ canvas.dragging { cursor: grabbing; }
   background: color-mix(in srgb, var(--surface) 88%, transparent);
   backdrop-filter: blur(12px);
   border-right: 1px solid var(--edge);
-  padding: 20px 18px 72px;
+  padding: 20px 18px 84px;
+  display: flex; flex-direction: column; gap: 12px;
+  overflow: hidden;
+}
+.rail-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
   display: flex; flex-direction: column; gap: 22px;
-  overflow-y: auto;
+}
+#g-layers {
+  flex: 0 0 auto;
+  background: var(--surface);
+  border-top: 1px solid var(--edge);
+  padding-top: 10px;
 }
 /* Sits in the rail so it never covers the switcher or the right-hand panels. */
 .research-footer {
@@ -173,6 +188,11 @@ canvas.dragging { cursor: grabbing; }
   text-transform: uppercase; color: var(--muted);
   font-family: "IBM Plex Sans Condensed", sans-serif;
 }
+.layer-toggle {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--ink); cursor: pointer;
+}
+.layer-toggle input { margin: 0; accent-color: var(--estimated); }
 .readout { display: flex; justify-content: space-between; gap: 10px;
   font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px;
   font-variant-numeric: tabular-nums; }
@@ -352,7 +372,9 @@ body.ct-panes-active .limitations-panel.collapsed h2::after { content: " ▸"; }
 @media (max-width: 720px) {
   .rail { width: 100%; height: auto; bottom: auto; flex-direction: row;
     flex-wrap: wrap; gap: 14px; padding: 12px 14px; border-right: 0;
-    border-bottom: 1px solid var(--edge); }
+    border-bottom: 1px solid var(--edge); overflow: visible; }
+  .rail-body { overflow: visible; flex: none; min-height: 0;
+    flex-direction: row; flex-wrap: wrap; gap: 14px; }
   .rail .group-depth,
   .rail .group-question { display: none; }
   .switcher { left: 50%; bottom: 40px; }
@@ -508,6 +530,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 <div class="walk-sim-label" id="walk-sim-label">Simulated steering — not measured scope orientation</div>
 
 <aside class="rail">
+  <div class="rail-body">
   <div class="brand"><span>BronchoRoute</span>Airway route viewer</div>
 
   <section class="review-warnings" id="review-warnings" hidden aria-label="Review warnings">
@@ -587,6 +610,14 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <p class="hint">Does a navigable airway tree read as anatomy? Compare a
     truthful 3D tree against a legible 2D map, and fly the lumen to judge
     whether moving through it teaches anything.</p>
+  </div>
+  </div>
+  <div class="group" id="g-layers">
+    <h2>Layers</h2>
+    <label class="layer-toggle">
+      <input type="checkbox" id="estimated-airway-toggle" checked>
+      Estimated airway
+    </label>
   </div>
 </aside>
 
@@ -1148,6 +1179,15 @@ let lastAnatomicalLesion = null;
 let lastAnatomicalRouteTarget = null;
 let lastAnatomicalGap = null;
 let anatomicalHighlightDraws = 0;
+let showEstimatedAirway = true;
+let estimatedDrawnPoints = 0;
+const estimatedAirwayToggle = document.getElementById("estimated-airway-toggle");
+if (estimatedAirwayToggle) {
+  showEstimatedAirway = estimatedAirwayToggle.checked;
+  estimatedAirwayToggle.addEventListener("change", () => {
+    showEstimatedAirway = estimatedAirwayToggle.checked;
+  });
+}
 
 function lesionRadiusMm(lesion) {
   const d = lesion && Number(lesion.diameter_mm);
@@ -1188,6 +1228,56 @@ function drawAnatomicalLesion() {
   lastAnatomicalLesion = {
     x: p.x, y: p.y, radiusPx, diameterMm: radiusMm * 2, label: "Lesion",
   };
+}
+
+function estimatedColour(alpha) {
+  const raw = tok("--estimated") || "#6E4B9E";
+  const match = String(raw).match(/#([0-9a-fA-F]{6})/);
+  if (!match) return raw;
+  const n = parseInt(match[1], 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
+function estimatedLineWidth(segment, p, q) {
+  const edge = (A.edges || [])[segment.from_edge];
+  const radius = edge ? Number(edge.r) : NaN;
+  const scale = (Number(p.f) + Number(q.f)) / 2;
+  const px = (Number.isFinite(radius) ? radius : 1) * scale;
+  return Math.max(1.5, px);
+}
+
+function drawEstimatedAirway() {
+  estimatedDrawnPoints = 0;
+  const segs = (A && A.estimated) || [];
+  if (!showEstimatedAirway) return;
+  // Canvas user space is already CSS pixels (ctx scaled by DPR), so a 4/3
+  // dash is 4×3 CSS px and 4·DPR device px.
+  ctx.save();
+  ctx.lineCap = "butt";
+  ctx.lineJoin = "round";
+  ctx.setLineDash([4, 3]);
+  for (const seg of segs) {
+    const c = seg.c || [];
+    const d = seg.d || [];
+    let dashAlong = 0;
+    for (let i = 1; i < c.length; i++) {
+      const p = project(c[i - 1], cam);
+      const q = project(c[i], cam);
+      if (!p || !q) continue;
+      const dist = Number(d[i] != null ? d[i] : d[i - 1]);
+      const t = Number.isFinite(dist) ? Math.max(0, Math.min(1, dist / 15)) : 0;
+      ctx.lineWidth = estimatedLineWidth(seg, p, q);
+      ctx.strokeStyle = estimatedColour(1 - 0.75 * t);
+      ctx.lineDashOffset = -dashAlong;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(q.x, q.y);
+      ctx.stroke();
+      dashAlong += Math.hypot(q.x - p.x, q.y - p.y);
+      estimatedDrawnPoints += 2;
+    }
+  }
+  ctx.restore();
 }
 
 function drawAnatomical() {
@@ -1302,6 +1392,7 @@ function drawAnatomical() {
       }
     }
   }
+  drawEstimatedAirway();
   drawAnatomicalLesion();
   drawOrientationGizmo();
   drawPatientEdgeLabels();
@@ -3672,6 +3763,8 @@ function render() {
   const endoActive = variant === 1 || walkActive;
   document.getElementById("g-nav").style.opacity = endoActive ? "1" : ".45";
   document.getElementById("g-cam").hidden = variant !== 0;
+  const estimatedLayers = document.getElementById("g-layers");
+  if (estimatedLayers) estimatedLayers.hidden = variant !== 0;
   syncPresetButtons();
   const ctOnly = variant === 3;
   const ctActive = ctOnly || walkActive;
@@ -4303,6 +4396,26 @@ if (DEBUG) {
   // Headless verify hook (?debug=1): main-bronchus L/R, radiologist front,
   // endoluminal anterior tick + fork orifice labels.
   window.__p2_debug = {
+    estimatedLayer: () => ({
+      visible: showEstimatedAirway,
+      segments: ((A && A.estimated) || []).length,
+      drawnPoints: estimatedDrawnPoints,
+    }),
+    focusPoint(point, dist = 90) {
+      cam.dist = dist;
+      cam.preset = "free";
+      syncBasis();
+      const rel = sub(point, LOOK_AT);
+      const depth = Math.max(1, dot(rel, cam.forward) + cam.dist);
+      const f = (Math.min(W, H) * 0.9) / depth;
+      const x0 = W / 2 + dot(rel, cam.right) * f;
+      const y0 = H / 2 - dot(rel, cam.up) * f;
+      const rail = document.querySelector(".rail");
+      const railW = rail ? rail.getBoundingClientRect().width : 0;
+      cam.panX = (W + railW) / 2 - x0;
+      cam.panY = H / 2 - y0;
+      syncPresetButtons();
+    },
     lesionViews: () => ({
       anatomical: lastAnatomicalLesion,
       topology: lastTopologyLesion,

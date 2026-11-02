@@ -1,4 +1,5 @@
 <!-- Changes: PNG stills redraw at 2× CSS size; strip text chunks; do not log the save path. -->
+<!-- Changes: estimated airway is shifted into patient RAS and stored off the graph. -->
 <!-- Changes: verify default viewer routes as well as selectable RouteTarget routes. -->
 <!-- Changes: endoluminal Lesion label must clear the arrow and the visible edge. -->
 <!-- Changes: endoluminal Lesion radius is the on-axis silhouette. -->
@@ -14,6 +15,11 @@
   chunks; keep only IHDR, IDAT, IEND, and optional sRGB/pHYs/gAMA. Never log
   the save path.
 
+- Estimated airway (phase 5): the artery skeleton is kimimaro space. Apply the
+  airway affine before pairing, shift the polyline by tip − artery start, and
+  cut arc length at 15 mm — the walk can overshoot the cap by one skeleton
+  step. Keep those polylines under `estimated`. Putting them in `edges` or
+  `nodes` makes routing follow them.
 - Bridge selectability does not protect the default viewer route: it can still
   follow a blocked branch before a RouteTarget exists. Stop that payload route at
   the first bridge boundary and test actual route geometry for every decision state.
