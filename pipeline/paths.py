@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: LUNGNAV_DATA_ROOT (alias of pipeline root), LUNGNAV_CACHE_DIR,
 # LUNGNAV_CASES allowlist helpers for the lung-nav.appcenter.ro deploy.
 """Paths for data and outputs owned by the pipeline directory.
@@ -32,6 +33,12 @@ def allowed_case_ids() -> frozenset[str] | None:
     if not raw:
         return None
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def legacy_review() -> bool:
+    return os.environ.get("BRONCHOROUTE_LEGACY_REVIEW", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def viewer_only() -> bool:

@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: deploy env — LUNGNAV_VIEWER_ONLY / CASES / HOST / PORT / ALLOWED_HOSTS;
 # GET /healthz; TrustedHost from env; bind 0.0.0.0 when LUNGNAV_HOST set.
 # Phase 4d review fixes — CSP on report; VersionAlreadyFrozen /
@@ -113,8 +114,19 @@ class _DeployGuards(BaseHTTPMiddleware):
         allowed = _allowed_hosts()
         if "*" not in allowed and host not in allowed:
             return Response("Invalid host header", status_code=400)
+        path = request.url.path
+        parts = path.strip("/").split("/")
+        if (
+            not paths.legacy_review()
+            and len(parts) >= 4
+            and parts[:2] == ["api", "cases"]
+            and parts[3] in {
+                "review", "corrections", "review-signoff", "versions",
+                "walkthrough", "tracing", "uncertainty", "signoff",
+            }
+        ):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
         if paths.viewer_only():
-            path = request.url.path
             if path == "/workflow" or path.startswith("/workflow/"):
                 return JSONResponse({"detail": "Not Found"}, status_code=404)
             if path.startswith("/api/") and request.method not in {
@@ -345,6 +357,14 @@ def _clinician_response(data: dict | None) -> dict:
 def healthz():
     """Liveness/readiness: no data access."""
     return Response(content="ok", media_type="text/plain")
+
+
+@app.get("/api/features")
+def api_features():
+    return {
+        "legacy_review": paths.legacy_review(),
+        "viewer_only": paths.viewer_only(),
+    }
 
 
 @app.get("/api/cases")
@@ -797,12 +817,6 @@ def api_version_report(case_id: str, version_n: int):
 def viewer_page():
     """Main page: left-rail renderer in read-only viewer mode."""
     return FileResponse(PROTOTYPE / "renderer.template.html")
-
-
-@app.get("/workflow")
-def app_shell():
-    """Clinician workflow shell (iframe embeds /renderer.template.html)."""
-    return FileResponse(PROTOTYPE / "app.html")
 
 
 app.mount(

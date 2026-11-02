@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: Phase 4d review fixes — note_change opens N+1 inheriting hashes;
 # freeze writes version-scoped snapshot under out/<case>/versions/v<n>/;
 # report renders only from snapshot.json; clinician-text checks at submit;
@@ -98,6 +99,8 @@ def note_change(case: dict, what: str) -> dict:
     If the last version is frozen, open N+1 inheriting N's artifact hashes.
     Records ``what`` on the open version's ``changes`` list.
     """
+    if not paths.legacy_review():
+        return {}
     versions = case.setdefault("versions", [])
     label = str(what or "change")
     if not versions:
@@ -131,6 +134,8 @@ def register_artifact(
     case: dict, name: str, path: Path | str, *, what: str | None = None
 ) -> dict:
     """Append/update artifact on the open version (opens N+1 after freeze)."""
+    if not paths.legacy_review():
+        return case
     note_change(case, what or f"artifact:{name}")
     artifact_path = Path(path)
     versions = case.setdefault("versions", [])

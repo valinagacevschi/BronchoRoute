@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: Phase 4d review fixes — note_change on lesion/route_start/records;
 # clinician-text checks on note records.
 """Case inventory and locked record writes for the local app server.
@@ -63,7 +64,7 @@ def list_cases() -> list[dict]:
             seen.add(case_id)
             items.append(_case_summary(ref, json.loads(case_path.read_text())))
 
-    if paths.AEROPATH.is_dir():
+    if paths.legacy_review() and paths.AEROPATH.is_dir():
         for case_dir in sorted(paths.AEROPATH.iterdir()):
             if not case_dir.is_dir():
                 continue

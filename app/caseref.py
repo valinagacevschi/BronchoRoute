@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: crop_cache_dir / bridge_labels honour LUNGNAV_CACHE_DIR; CaseRef.parse
 # respects LUNGNAV_CASES allowlist (unknown → 404).
 """Typed case id reference: local-NNN or AeroPath n, with resolved artifact paths.
@@ -36,6 +37,8 @@ class CaseRef:
         if allowed is not None and case_id not in allowed:
             raise UnknownCase(f"unknown case: {case_id}")
         kind: CaseKind = "local" if case_id.startswith("local-") else "aeropath"
+        if kind == "aeropath" and not paths.legacy_review():
+            raise UnknownCase(f"unknown case: {case_id}")
         ref = cls(case_id=case_id, kind=kind)
         if not ref.exists():
             raise UnknownCase(f"unknown case: {case_id}")

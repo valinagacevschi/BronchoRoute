@@ -1,3 +1,4 @@
+<!-- Changes: hide legacy review behind the default-off feature flag. -->
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
      Deploy: clamp orifice labels inside canvas clear of the left rail; keep
      endoluminal step caption compact above the variant switcher (never over lumen).
@@ -487,6 +488,9 @@ function loadCtPanesScript() {
 }
 
 ensureAirway().then(async (A) => {
+const features = await fetch("/api/features").then(res => res.json()).catch(() => ({
+  legacy_review: false, viewer_only: false,
+}));
 await loadCtPanesScript().catch(err => console.warn(err));
 document.getElementById("r-source").textContent = A.source || "unknown";
 if (A.review && A.review.length) {
@@ -536,7 +540,7 @@ const VARIANTS = [
 ];
 
 // Switcher number order (1–4); URL variant= keys and VARIANTS indices unchanged.
-const SWITCHER_ORDER = VIEWER_MODE
+const SWITCHER_ORDER = VIEWER_MODE || !features.legacy_review || features.viewer_only
   ? ["ct-panes", "anatomical", "topology", "endoluminal"]
   : ["ct-panes", "anatomical", "topology", "endoluminal", "walkthrough"];
 const SWITCHER_VARIANTS = SWITCHER_ORDER
@@ -550,7 +554,7 @@ const SERVER_MODE = !!CASE_ID;
 const CT_PANES_IDX = VARIANTS.findIndex(v => v.key === "ct-panes");
 let variant = VARIANTS.findIndex(v => v.key === params.get("variant"));
 if (variant < 0) variant = VIEWER_MODE ? CT_PANES_IDX : 0;
-if (VIEWER_MODE && VARIANTS[variant] && VARIANTS[variant].key === "walkthrough") {
+if ((VIEWER_MODE || !features.legacy_review || features.viewer_only) && VARIANTS[variant] && VARIANTS[variant].key === "walkthrough") {
   variant = CT_PANES_IDX;
 }
 

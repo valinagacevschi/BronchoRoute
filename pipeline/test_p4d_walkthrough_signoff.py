@@ -1,3 +1,4 @@
+# Changes: hide legacy review behind the default-off feature flag.
 # Changes: Phase 4d review fixes — node-keyed walk; No leaves route_target;
 # snapshot freeze; XSS/UID 422; duplicate sign-off 409; report from snapshot;
 # rename freeze-immutability test; review change invalidates walk.
@@ -24,6 +25,7 @@ from test_p4c_route_target import _place_lesion, _rt_graph  # noqa: E402
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRONCHOROUTE_LEGACY_REVIEW", "1")
     cprint(f"p4d harness at {tmp_path}", "cyan")
     assert not str(tmp_path).startswith("/tmp"), "tests must not use /tmp"
     paths = _write_case_tree(tmp_path)
