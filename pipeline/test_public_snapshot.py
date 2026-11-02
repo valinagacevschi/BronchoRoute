@@ -1,3 +1,4 @@
+# Changes: the snapshot omits the builder and its test; paths.py host comment is line 6.
 # Changes: public snapshot allow-list, scanner failures, and the unpushed commit.
 """The public snapshot drops internal paths and refuses leaked identifiers."""
 
@@ -32,6 +33,7 @@ DENIED = (
     "scripts/container-smoke.sh",
     "scripts/stage-case-data.sh",
     "scripts/public-snapshot.py",
+    "pipeline/test_public_snapshot.py",
 )
 
 
@@ -98,6 +100,14 @@ def test_snapshot_contents(built):
     out, stdout, _stderr = built
     for rel in DENIED:
         assert not (out / rel).exists(), rel
+    shipped = {
+        path.relative_to(out).as_posix()
+        for path in out.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(out).parts
+    }
+    assert not any(Path(rel).name == "test_public_snapshot.py" for rel in shipped)
+    assert "scripts/public-snapshot.py" not in shipped
+    assert "pipeline/test_public_snapshot.py — private snapshot tooling test" in stdout
     assert not (out / "desktop" / "node_modules").exists()
     assert not (out / "desktop" / "build").exists()
     assert not (out / "desktop" / "dist").exists()
@@ -118,7 +128,7 @@ def test_snapshot_contents(built):
     snapshot_paths = (out / "pipeline" / "paths.py").read_text(encoding="utf-8")
     assert "lung-nav.appcenter.ro" in source_paths
     assert "lung-nav.appcenter.ro" not in snapshot_paths
-    assert "rewrite pipeline/paths.py:5:" in stdout
+    assert "rewrite pipeline/paths.py:6:" in stdout
     assert ".codex-briefs/" in stdout
     assert "docs/" in stdout
     assert "scanner: clean" in stdout
