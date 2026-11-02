@@ -1,3 +1,4 @@
+# Changes: stamp the synthetic Case with the current pipeline version.
 # Changes: Settings persist through real clicks in every view on a tmp state root.
 from __future__ import annotations
 
@@ -12,14 +13,15 @@ from pathlib import Path
 import pytest
 from termcolor import cprint
 
-from test_app_server import _write_case_tree
+from test_app_server import _stamp_pipeline_version, _write_case_tree
 from test_viewer_v2_playwright import _playwright_or_skip
 
 
 @pytest.fixture(scope="module")
 def tmp_pipeline(tmp_path_factory):
     root = tmp_path_factory.mktemp("settings_pipeline")
-    _write_case_tree(root)
+    written = _write_case_tree(root)
+    _stamp_pipeline_version(written["case"])
     return root
 
 

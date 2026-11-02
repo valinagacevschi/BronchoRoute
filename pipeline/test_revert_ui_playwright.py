@@ -1,3 +1,4 @@
+# Changes: stamp the synthetic Case with the current pipeline version.
 # Changes: hide legacy review behind the default-off feature flag.
 # Revert UI: GET / is the read-only renderer; /workflow is the app shell.
 # Radial topology orientation/laterality; viewer mode issues no writes.
@@ -260,9 +261,10 @@ def test_viewer_mode_no_writes_and_topology_layout(server, tmp_path):
 def synthetic_server(tmp_path):
     import urllib.request
 
-    from test_app_server import _write_case_tree
+    from test_app_server import _stamp_pipeline_version, _write_case_tree
 
-    _write_case_tree(tmp_path)
+    written = _write_case_tree(tmp_path)
+    _stamp_pipeline_version(written["case"])
     home = tmp_path / "home"
     home.mkdir()
     env = {

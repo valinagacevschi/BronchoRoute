@@ -1,3 +1,4 @@
+# Changes: stamp a freshly built synthetic Case as the current pipeline version.
 # Changes: About, bundled LICENSE, notices, and sponsors are same-origin.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: mark as server for CI selection (no TS / Playwright / real data).
@@ -125,6 +126,14 @@ def _write_case_tree(
         "graph": graph_path, "ct": ct_path, "root": root,
         "bridges": bridges_path if with_bridges else None,
     }
+
+
+def _stamp_pipeline_version(case_file: Path) -> None:
+    import paths
+
+    document = json.loads(case_file.read_text())
+    document["pipeline_version"] = paths.PIPELINE_VERSION
+    case_file.write_text(json.dumps(document, indent=2) + "\n")
 
 
 def _write_aeropath_case(root: Path, case_id: str = "3") -> dict[str, Path]:

@@ -1,3 +1,4 @@
+# Changes: stamp synthetic Cases with the current pipeline version.
 # Changes: review-warning panel lists plain-language flags in every view.
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from pathlib import Path
 import pytest
 from termcolor import cprint
 
-from test_app_server import _write_case_tree
+from test_app_server import _stamp_pipeline_version, _write_case_tree
 from test_viewer_v2_playwright import VIEWPORT, _playwright_or_skip
 
 AIRWAY_LINE = "Left upper lobe: no airways found in this lobe"
@@ -50,6 +51,7 @@ def _write_reviewed_case(root: Path, case_id: str, review: list[dict]) -> None:
     _extend_graph(graph)
     graph["review"] = review
     paths["graph"].write_text(json.dumps(graph))
+    _stamp_pipeline_version(paths["case"])
 
 
 @pytest.fixture(scope="module")

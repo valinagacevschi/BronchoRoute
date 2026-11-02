@@ -1,3 +1,4 @@
+# Changes: stamp the synthetic Case with the current pipeline version.
 # Changes: exercise topology rotation through real pointer and keyboard input.
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ import pytest
 from test_viewer_v2_playwright import (
     VIEWPORT, _playwright_or_skip,
 )
-from test_app_server import _write_case_tree
+from test_app_server import _stamp_pipeline_version, _write_case_tree
 
 
 @pytest.fixture(scope="module")
@@ -33,6 +34,7 @@ def tmp_pipeline(tmp_path_factory):
             "provenance": "ct", "centreline_mm": [start, end],
         })
     paths["graph"].write_text(json.dumps(graph))
+    _stamp_pipeline_version(paths["case"])
     return root
 
 
