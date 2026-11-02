@@ -1,4 +1,5 @@
 # Changes: expose Series eligibility, kernel class and coverage in scan responses.
+# Changes: log import lifecycle without Archive paths or Series selections.
 """Step 1 — DICOM series scan and import from the app (Phase 4a).
 
 Scan uses import_dicom dry-run semantics (grouping + pick). Confirm writes the
@@ -8,11 +9,11 @@ Shares case-document builder and duplicate message with pipeline/import_dicom.py
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
 import numpy as np
-from termcolor import cprint
 
 import paths
 from atomic_json import atomic_write_json
@@ -80,6 +81,7 @@ def _public_row(row: dict, *, skip: str | None, proposed: bool) -> dict:
 def scan_series(src_dir: str | Path) -> dict:
     """Group + pick with dry-run semantics; allowed facts only (no UIDs/paths)."""
     root = validate_src_dir(src_dir)
+    logging.getLogger(__name__).info("import scan started")
     series, unreadable = read_series(root)
     if not series:
         raise ValueError("no CT Series found")
@@ -128,7 +130,7 @@ def confirm_import(
         raise ValueError("confirm must be true to import")
     root = validate_src_dir(src_dir)
     override = str(series)
-    cprint("import confirm", "cyan")
+    logging.getLogger(__name__).info("import confirmation started")
     series_map, _unreadable = read_series(root)
     try:
         _uid, chosen, reasons = pick_series(series_map, override)
@@ -187,7 +189,7 @@ def confirm_import(
             shutil.rmtree(output_dir, ignore_errors=True)
         raise
 
-    cprint(f"imported {case_id}", "green")
+    logging.getLogger(__name__).info("import completed")
     return {
         "case_id": case_id,
         "source": document["source"],

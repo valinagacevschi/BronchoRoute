@@ -1,7 +1,9 @@
 # Changes: surface empty airway failures as a plain graph-step error.
+# Changes: viewer-only startup skips recovery, tmp, and file logs; redact Archive paths only.
+# Changes: persistent process registry, global job guard and redacted rotating logs.
 """Background pipeline jobs (Phase 4a — segmentation).
 
-One job per case at a time. Launcher uses a new session, clean env, and arg
+One job across all Cases at a time. Launcher uses a new session, clean env, and arg
 lists only. Job state persists to ts_out/<id>/job.json so restart detects a
 live pid (409) or marks a dead one failed. Default 45 min timeout kills the
 process group; shutdown terminates remaining groups.
@@ -14,23 +16,26 @@ monkeypatch teardown.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import signal
+import shlex
+import shutil
+import sys
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Callable
-
-from termcolor import cprint
 
 import paths
 import repo_root
 from atomic_json import atomic_write_json, json_file_lock
-from app.caseref import CaseRef
+from app.caseref import CASE_ID_RE, CaseRef
 from app.cases import load_case_record
 from app.versions import register_artifact
 from app.workflow import (
@@ -46,6 +51,10 @@ _DATA_PATH_RE = re.compile(
     r"(?P<prefix>(?:^|[\s\"'=(])(?:--[\w-]+[= ])?)"
     r"(?P<path>(?:/|\.\.?/)?(?:[^\s\"')]*?/)?data/[^\s\"')]+)"
 )
+# Home and system prefixes only, so API routes and script names stay in the log.
+_FS_PATH_RE = re.compile(
+    r"(?<!\w)/(?:Users|Volumes|private|var|tmp|home)/[^\s\"']+"
+)
 
 DEFAULT_JOB_TIMEOUT_S = 45 * 60
 
@@ -55,6 +64,7 @@ LaunchFn = Callable[[list[str], Path], subprocess.Popen]
 def _clean_env() -> dict[str, str]:
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
+    env.pop("BRONCHOROUTE_TOKEN", None)
     return env
 
 
@@ -87,15 +97,32 @@ def set_job_timeout_s(seconds: float | None) -> None:
     _job_timeout_s = DEFAULT_JOB_TIMEOUT_S if seconds is None else float(seconds)
 
 
+def _redact_data_root(line: str) -> str:
+    """Hide paths.PIPELINE when the data root is outside the home prefixes."""
+    root = str(paths.PIPELINE).rstrip("/")
+    if not root.startswith("/") or root == "/":
+        return line
+    pattern = r"(?<!\w)" + re.escape(root) + r"(?:/[^\s\"']*)?(?![\w.-])"
+    return re.sub(pattern, "[path]", line)
+
+
 def redact_log_line(line: str) -> str:
-    """Replace any path under data/ with its basename; keep flag/quote prefix."""
+    """Drop identifier lines; keep routes while hiding Archive paths."""
+    if re.search(
+        r"patient[ _]?(?:name|id|birth)|birth[ _]?date|\bdob\b|archive|\.zip\b",
+        line, re.IGNORECASE,
+    ):
+        return "[redacted]"
 
     def _repl(match: re.Match[str]) -> str:
         prefix = match.group("prefix") or ""
         path = match.group("path") or ""
         return prefix + Path(path).name
 
-    return _DATA_PATH_RE.sub(_repl, line)
+    line = _DATA_PATH_RE.sub(_repl, line)
+    line = re.sub(r"\b[0-9]+(?:\.[0-9]+){3,}\b", "[redacted]", line)
+    line = _FS_PATH_RE.sub("[path]", line)
+    return _redact_data_root(line)
 
 
 def _utc_now() -> str:
@@ -117,9 +144,12 @@ class JobState:
     # Pinned at first persist so background threads keep writing the tmp-tree
     # path even after tests restore real paths.TS_OUT.
     _json_path: Path | None = field(default=None, repr=False)
+    _pid_path: Path | None = field(default=None, repr=False)
+    _cancelled: threading.Event = field(default_factory=threading.Event, repr=False)
 
     def append_log(self, line: str) -> None:
         cleaned = redact_log_line(line.rstrip("\n"))
+        logging.getLogger("bronchoroute.jobs").info(cleaned)
         with self._lock:
             self.log_lines.append(cleaned)
             if len(self.log_lines) > 500:
@@ -156,10 +186,10 @@ _worker_threads_lock = threading.Lock()
 
 
 class JobConflict(Exception):
-    """A job is already running for this case → HTTP 409."""
+    """Keep concurrent pipelines from exhausting local memory."""
 
     def __init__(self, case_id: str):
-        super().__init__(f"job already running for {case_id}")
+        super().__init__("another pipeline job is already running; wait for it to finish")
         self.case_id = case_id
 
 
@@ -293,11 +323,11 @@ def _segment_commands(ref: CaseRef) -> list[list[str]]:
     )
     return [
         [
-            "uv", "run", "python", "run_totalsegmentator.py",
+            sys.executable, "run_totalsegmentator.py",
             str(ref.ct), "-o", str(ts_out), "--device", "mps",
         ],
         [
-            "uv", "run", "python", "build_graph.py",
+            sys.executable, "build_graph.py",
             str(case_dir),
             "--airways", str(ref.airways),
             "--lobes", str(ref.lobes),
@@ -350,18 +380,22 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
     job.status = "running"
     job.started_at = time.monotonic()
     _persist_job(job)
-    cprint(f"job {job.kind} start {job.case_id}", "cyan")
+    logging.getLogger(__name__).info("pipeline job started")
     deadline = time.monotonic() + _job_timeout_s
     try:
         for cmd in cmds:
-            job.append_log("$ " + redact_log_line(" ".join(cmd)))
-            proc = _launcher(cmd, cwd)
-            job.pid = proc.pid
-            try:
-                job._pgid = os.getpgid(proc.pid)
-            except (ProcessLookupError, OSError):
-                job._pgid = proc.pid
-            _persist_job(job)
+            job.append_log("pipeline step started")
+            with job._lock:
+                if job._cancelled.is_set():
+                    raise RuntimeError("server shutdown")
+                proc = _launcher(cmd, cwd)
+                job.pid = proc.pid
+                try:
+                    job._pgid = os.getpgid(proc.pid)
+                except (ProcessLookupError, OSError):
+                    job._pgid = proc.pid
+                _record_pid(job)
+                _persist_job(job)
             assert proc.stdout is not None
 
             def _pump_stdout() -> None:
@@ -390,6 +424,7 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
                             f"job timed out after {_job_timeout_s:.0f}s"
                         )
             reader.join(timeout=2.0)
+            _clear_pid(job)
             if time.monotonic() > deadline and code is None:
                 _kill_process_group(job._pgid, proc.pid)
                 raise TimeoutError(f"job timed out after {_job_timeout_s:.0f}s")
@@ -397,22 +432,23 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
                 if "build_graph.py" in cmd:
                     reason = ("no airway tree in lung" if any(
                         "graph: no airway tree in lung" in line for line in job.log_lines
-                    ) else f"command exited {code}")
+                    ) else f"pipeline step exited {code}")
                     raise RuntimeError(f"graph step failed: {reason}. Try another Series")
-                raise RuntimeError(f"command exited {code}: {redact_log_line(' '.join(cmd))}")
+                raise RuntimeError(f"pipeline step exited {code}")
         register_segment_artifacts(job.case_id, clinician)
         job.status = "succeeded"
         job.pid = None
         job.append_log("segmentation_done")
-        cprint(f"job {job.kind} ok {job.case_id}", "green")
+        logging.getLogger(__name__).info("pipeline job succeeded")
     except Exception as exc:  # noqa: BLE001
         job.status = "failed"
         job.set_error(str(exc))
         job.append_log(f"ERROR: {redact_log_line(str(exc))}")
-        cprint(f"job {job.kind} failed {job.case_id}: {job.error}", "red")
+        logging.getLogger(__name__).error("pipeline job failed: %s", job.error)
         if job._pgid is not None or job.pid is not None:
             _kill_process_group(job._pgid, job.pid)
     finally:
+        _clear_pid(job)
         job.finished_at = time.monotonic()
         job.pid = None
         _persist_job(job)
@@ -431,17 +467,14 @@ def start_segment_job(case_id: str, clinician: str) -> dict:
 
     job = JobState(case_id=case_id, kind="segment")
     with _jobs_lock:
-        existing = _running.get(case_id)
-        if existing is not None and existing.status in {"queued", "running"}:
-            raise JobConflict(case_id)
-        # Disk restore may have left a running entry for a live foreign pid.
-        if case_id in _running:
+        if _running:
             raise JobConflict(case_id)
         _running[case_id] = job
         _latest[case_id] = job
 
     # Pin path while caller still has paths.* patched (tests / request).
     job._json_path = _job_json_path(case_id)
+    job._pid_path = paths.PIPELINE / "app_state" / "jobs.pids"
     cmds = _segment_commands(ref)
     thread = threading.Thread(
         target=_run_job,
@@ -460,8 +493,10 @@ def terminate_all_jobs() -> None:
     with _jobs_lock:
         jobs = list(_running.values())
     for job in jobs:
-        cprint(f"shutdown: terminate job {job.case_id} pid={job.pid}", "yellow")
-        _kill_process_group(job._pgid, job.pid)
+        job._cancelled.set()
+        with job._lock:
+            _kill_process_group(job._pgid, job.pid)
+            _clear_pid(job)
         job.status = "failed"
         job.set_error("server shutdown")
         job.finished_at = time.monotonic()
@@ -504,3 +539,101 @@ __all__ = [
     "start_segment_job",
     "terminate_all_jobs",
 ]
+
+
+_registry_lock = threading.Lock()
+
+
+def _record_pid(job: JobState) -> None:
+    path = job._pid_path
+    if path is None:
+        return
+    with _registry_lock:
+        atomic_write_json(path, [{"pid": job.pid, "pgid": job._pgid, "case_id": job.case_id}])
+
+
+def _clear_pid(job: JobState) -> None:
+    if job._pid_path is not None:
+        with _registry_lock:
+            job._pid_path.unlink(missing_ok=True)
+
+
+class _RedactedFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_log_line(super().format(record))
+
+
+def initialize_sidecar() -> RotatingFileHandler | None:
+    """Recover owned processes and open the rotating log.
+
+    A viewer-only deploy mounts the data root read-only, so skip every write.
+    """
+    if paths.viewer_only():
+        return None
+    path = paths.PIPELINE / "app_state" / "jobs.pids"
+    if path.is_file():
+        entries = json.loads(path.read_text())
+        for entry in entries:
+            pid = entry["pid"]
+            pgid = entry["pgid"]
+            if _pid_alive(pid):
+                result = subprocess.run(
+                    ["ps", "-o", "command=", "-p", str(pid)],
+                    capture_output=True, text=True, check=False,
+                )
+                command = result.stdout.strip()
+                if command.startswith(sys.executable + " "):
+                    words = shlex.split(command[len(sys.executable):])
+                else:
+                    words = shlex.split(command)[1:]
+                scripts = {"run_totalsegmentator.py", "build_graph.py"}
+                if not words or Path(words[0]).name not in scripts:
+                    continue
+                try:
+                    actual_pgid = os.getpgid(pid)
+                except ProcessLookupError:
+                    actual_pgid = None
+                if actual_pgid is not None:
+                    if actual_pgid != pgid or pgid != pid:
+                        continue
+                    _kill_process_group(pgid, pid)
+            case_id = entry["case_id"]
+            if not CASE_ID_RE.fullmatch(case_id):
+                continue
+            kind = "local" if case_id.startswith("local-") else "aeropath"
+            job_path = CaseRef(case_id, kind).ts_out / "job.json"
+            if job_path.is_file():
+                data = json.loads(job_path.read_text())
+                if data.get("pid") == pid and data.get("status") in {"queued", "running"}:
+                    data.update(status="failed", error="app restarted", pid=None)
+                    atomic_write_json(job_path, data)
+        path.unlink(missing_ok=True)
+    paths.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    for child in paths.TMP_DIR.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    paths.LOG_DIR.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        paths.LOG_DIR / "app.log", maxBytes=5 * 1024 * 1024, backupCount=5,
+    )
+    handler.setFormatter(_RedactedFormatter("%(levelname)s %(message)s"))
+    logger = logging.getLogger()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    for name in ("uvicorn", "uvicorn.error"):
+        owner = logging.getLogger(name)
+        if not owner.propagate:
+            owner.addHandler(handler)
+    logger.info("sidecar started")
+    return handler
+
+
+def close_sidecar_log(handler: RotatingFileHandler | None) -> None:
+    """Release handlers when lifespan ends, including embedded test servers."""
+    if handler is None:
+        return
+    for name in ("", "uvicorn", "uvicorn.error"):
+        logging.getLogger(name).removeHandler(handler)
+    handler.close()

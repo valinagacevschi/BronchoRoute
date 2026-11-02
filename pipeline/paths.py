@@ -1,4 +1,5 @@
 # Changes: hide legacy review behind the default-off feature flag.
+# Changes: sidecar temporary and rotating log directories.
 # Changes: LUNGNAV_DATA_ROOT (alias of pipeline root), LUNGNAV_CACHE_DIR,
 # LUNGNAV_CASES allowlist helpers for the lung-nav.appcenter.ro deploy.
 """Paths for data and outputs owned by the pipeline directory.
@@ -22,6 +23,11 @@ LOCAL_CASES = PIPELINE / "data/extracted/local"
 AEROPATH = PIPELINE / "data/extracted/AeroPath"
 TS_OUT = PIPELINE / "ts_out"
 OUT = PIPELINE / "out"
+
+_tmp = os.environ.get("LUNGNAV_TMP_DIR", "").strip()
+TMP_DIR = Path(_tmp).resolve() if _tmp else PIPELINE / "tmp"
+_log = os.environ.get("LUNGNAV_LOG_DIR", "").strip()
+LOG_DIR = Path(_log).resolve() if _log else PIPELINE / "logs"
 
 _cache = os.environ.get("LUNGNAV_CACHE_DIR", "").strip()
 CACHE_DIR: Path | None = Path(_cache).resolve() if _cache else None
