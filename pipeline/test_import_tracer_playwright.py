@@ -1,3 +1,4 @@
+# Changes: wait until processing-cancel is enabled before Archive-open during an import.
 # Changes: override-reason and lungs-failure browser flows.
 # Changes: settings assertion includes the FileVault note flag.
 # Changes: settings payload includes ram_warning_shown.
@@ -114,6 +115,7 @@ def test_archive_import(tracer_server, cancel):
                 dialogs.append(dialog.message)
                 dialog.dismiss()
             page.once("dialog", keep_processing)
+            page.wait_for_function("() => !document.querySelector('#processing-cancel').disabled")
             page.locator("#archive-open").click()
             assert dialogs == ["Cancel current processing?"]
             assert page.locator("#processing").is_visible()

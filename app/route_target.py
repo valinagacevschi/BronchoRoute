@@ -1,3 +1,4 @@
+# Changes: stored RouteTargets resolve blocked or missing samples as stale, without lookup errors.
 # Changes: RouteTarget needs a Lesion only; RouteStart defaults to the trachea.
 # Changes: Phase 4d review fixes — note_change on RouteTarget; clear pending_return.
 # Phase 4c review fixes — RouteStart-rooted route helper, reachability
@@ -409,8 +410,8 @@ def stale_reason_for_route_target(
             int(route_target["edge_id"]),
             int(route_target.get("sample_index") or 0),
         )
-    except (ValueError, TypeError) as exc:
-        return str(exc) or "route target no longer valid"
+    except (ValueError, TypeError):
+        return NOT_REACHABLE
     start = _route_start_node(graph, case)
     route = route_edges_from_start(
         list(graph.get("edges") or []), start, int(resolved["edge_index"])
@@ -436,8 +437,8 @@ def plan_route_target_for_payload(
             int(route_target["edge_id"]),
             int(route_target.get("sample_index") or 0),
         )
-    except ValueError as exc:
-        return {"active": False, "stale": True, "reason": str(exc)}
+    except (ValueError, TypeError):
+        return {"active": False, "stale": True, "reason": NOT_REACHABLE}
     start = _route_start_node(effective_graph, case)
     route = route_edges_from_start(edges, start, int(resolved["edge_index"]))
     if route is None:
@@ -586,13 +587,19 @@ def resolve_route_end_for_payload(
                 effective_graph, int(edge_id), int(route_target.get("sample_index") or 0)
             )
         except ValueError:
+            if route_target.get("sample_index") is not None:
+                return None
             ci = route_target.get("centreline_index")
             if ci is None:
                 return None
             n = len(edge.get("centreline_mm") or [])
             if n == 0:
                 return None
-            return i, max(0, min(int(ci), n - 1))
+            ci = max(0, min(int(ci), n - 1))
+            points = np.asarray(edge["centreline_mm"], dtype=float)
+            if not _sample_allowed(edge, _arc_length_to_index(points, ci)):
+                return None
+            return i, ci
         return i, last_original_index_at_or_before_arc(edge, float(resolved["arc_mm"]))
     return None
 

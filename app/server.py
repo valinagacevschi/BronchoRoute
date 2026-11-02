@@ -1,3 +1,4 @@
+# Changes: expose bridge controls outside legacy review with optional evidence notes.
 # Changes: accept an optional Series override reason on import confirm.
 # Changes: route candidates and RouteTarget require a Lesion, not workflow steps.
 # Changes: PUT lesion accepts an optional diameter_mm.
@@ -86,6 +87,7 @@ from app.settings import (
 )
 from app.review import (
     add_correction,
+    bridge_state,
     apply_review_signoff,
     review_state,
     set_bridge_decision,
@@ -343,7 +345,7 @@ class SeriesConfirmBody(BaseModel):
 
 class BridgeDecisionBody(BaseModel):
     decision: Literal["confirmed", "rejected"]
-    note: str
+    note: str | None = None
 
 
 class CorrectionBody(BaseModel):
@@ -660,12 +662,21 @@ def api_review(case_id: str):
         raise _http_for_review(exc) from exc
 
 
+@app.get("/api/cases/{case_id}/bridges")
+def api_bridges(case_id: str):
+    try:
+        return bridge_state(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_review(exc) from exc
+
+
 @app.put("/api/cases/{case_id}/bridges/{bridge_id}")
 def api_bridge_decision(case_id: str, bridge_id: str, body: BridgeDecisionBody):
     clinician = _require_clinician()
     try:
         return set_bridge_decision(
-            case_id, bridge_id, body.decision, body.note, clinician["clinician"]
+            case_id, bridge_id, body.decision, body.note,
+            clinician["clinician"] if paths.legacy_review() else clinician["initials"],
         )
     except (WorkflowBlocked, UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_review(exc) from exc

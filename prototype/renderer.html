@@ -1,3 +1,5 @@
+<!-- Changes: show stored RouteTarget staleness as status and clear it after bridge reconfirmation. -->
+<!-- Changes: refresh Case views and RouteTarget proposals after CT bridge decisions. -->
 <!-- Changes: RouteTarget proposals in the rail; trachea RouteStart; target-gap anchor. -->
 <!-- Changes: anatomical lesion sphere, topology marker beside the nearest CT-seen branch. -->
 <!-- Changes: Case Library link in the viewer footer. -->
@@ -295,6 +297,9 @@ body.ct-panes-active .proto {
 #route-target-pick:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
 #route-target-status { margin: 0; min-height: 1.2em; font-size: 12px; color: var(--muted); }
 #route-target-status.is-error { color: #a32b24; }
+#bridge-list { padding: 6px 10px; font-size: 12px; border-bottom: 1px solid var(--muted); }
+.bridge-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.bridge-row > span { margin-right: auto; }
 .limitations-panel {
   position: fixed; top: 14px; right: 16px; z-index: 6;
   width: min(320px, calc(100vw - 272px)); padding: 10px 12px;
@@ -2647,6 +2652,7 @@ let highlightRouteOis = new Set();
 let routeTargetPickArmed = false;
 let chooseRouteTargetFromPick = async () => {};
 let refreshRouteTargetPanel = async () => {};
+let refreshCasePayload = async () => {};
 
 function hideReviewPanels() {
   const rp = document.getElementById("remove-branch-panel");
@@ -3063,7 +3069,11 @@ async function ensureCtPanes() {
       caseId: CASE_ID,
       airway: A,
       sharedPos: SharedPos,
-      readOnly: VIEWER_MODE,
+      readOnly: VIEWER_MODE || features.viewer_only,
+      onBridgeChange: async () => {
+        await refreshCasePayload();
+        await refreshRouteTargetPanel();
+      },
       getCtView: () => ctViewPref,
       setCtView: async (view) => {
         ctViewPref = view;
@@ -3090,7 +3100,7 @@ async function ensureCtPanes() {
         if (VIEWER_MODE) return false;
         try {
           const clin = await fetch("/api/clinician").then(r => r.json());
-          if (clin && clin.role && clin.initials) return true;
+          if (clin && clin.initials && (!features.legacy_review || clin.role)) return true;
           alert("Set a clinician (role + initials) in the app shell first.");
           return false;
         } catch (err) {
@@ -3277,8 +3287,22 @@ function setupRouteTargetPanel() {
       if (!Object.prototype.hasOwnProperty.call(body, key)) delete A[key];
     }
     Object.assign(A, body);
+    CHILDREN.clear();
+    for (const edge of A.edges) {
+      if (!CHILDREN.has(edge.f)) CHILDREN.set(edge.f, []);
+      CHILDREN.get(edge.f).push(edge);
+    }
+    topoLayout = null;
+    highlightRouteOis.clear();
+    fly.s = 0;
+    if (A.route_target && A.route_target.stale) {
+      setRouteTargetStatus(A.route_target.reason, false);
+    } else {
+      setRouteTargetStatus("", false);
+    }
     if (ctPanesApi && typeof ctPanesApi.drawAll === "function") ctPanesApi.drawAll();
   }
+  refreshCasePayload = reloadCasePayload;
 
   async function putRouteTarget(payload) {
     if (VIEWER_MODE || routeTargetBusy || !CASE_ID) return;
@@ -3315,6 +3339,7 @@ function setupRouteTargetPanel() {
     }
     panel.hidden = false;
     const gen = ++routeTargetFetchGen;
+    cards.replaceChildren();
     let res;
     try {
       res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/route-candidates`);
@@ -3347,7 +3372,9 @@ function setupRouteTargetPanel() {
       });
       cards.appendChild(button);
     }
-    if (!routeTargetPickArmed) {
+    if (A.route_target && A.route_target.stale) {
+      setRouteTargetStatus(A.route_target.reason, false);
+    } else if (!routeTargetPickArmed) {
       const status = document.getElementById("route-target-status");
       if (status && !status.classList.contains("is-error")) setRouteTargetStatus("", false);
     }
