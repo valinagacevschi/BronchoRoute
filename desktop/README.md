@@ -1,3 +1,4 @@
+<!-- Changes: document npm run build:ffmpeg and the packaged LGPL binary path. -->
 # BronchoRoute desktop shell
 
 Dev run, from this directory:
@@ -13,7 +14,15 @@ Set `BRONCHOROUTE_DATA_ROOT` to use a data root other than
 
 ## Video
 
-Live Record writes MP4 H.264 with ffmpeg's `h264_videotoolbox` encoder. An LGPL ffmpeg build has no `libx264`, so the encoder name stays `h264_videotoolbox`. In development, `BRONCHOROUTE_FFMPEG` selects the binary when it is set to an existing path; otherwise the shell uses `ffmpeg` on `PATH`. A packaged app uses `process.resourcesPath/ffmpeg/ffmpeg` (`Contents/Resources/ffmpeg/ffmpeg`). Bundling that LGPL binary is a later packaging step. `encoder.js` has to be added to the electron-builder file list at the same time.
+Live Record writes MP4 H.264 with ffmpeg's `h264_videotoolbox` encoder. An LGPL ffmpeg build has no `libx264`, so the encoder name stays `h264_videotoolbox`. In development, `BRONCHOROUTE_FFMPEG` selects the binary when it is set to an existing path; otherwise the shell uses `ffmpeg` on `PATH`. A packaged app uses `process.resourcesPath/ffmpeg/ffmpeg` (`Contents/Resources/ffmpeg/ffmpeg`).
+
+Build the bundled binary on an Apple Silicon Mac (no Homebrew libs linked into it):
+
+```sh
+npm run build:ffmpeg
+```
+
+That writes `build/ffmpeg/ffmpeg` and `build/ffmpeg/BUILD_INFO.txt` (pinned source SHA-256 and configure line). `npm run pack` copies `build/ffmpeg` into `Contents/Resources/ffmpeg`. Sign/notarize covers that binary with hardened runtime and no entitlements.
 
 ## Model weights
 
@@ -38,7 +47,7 @@ Create a notarytool keychain profile yourself. The command prompts for an app-sp
 xcrun notarytool store-credentials <profile> --apple-id <email> --team-id 488B4W32U2
 ```
 
-From this directory, after `npm run build:python` and `npm run pack`:
+From this directory, after `npm run build:python`, `npm run build:ffmpeg`, and `npm run pack`:
 
 ```sh
 NOTARY_PROFILE=<profile> npm run sign

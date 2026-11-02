@@ -154,6 +154,7 @@ script. Do not edit by hand.
 - TotalSegmentator model weights — Apache-2.0 — tasks lung_vessels and total — https://github.com/wasserth/TotalSegmentator
 - BBT 3D Slicer workflow (T. Toma) — Apache-2.0 — https://doi.org/10.5281/zenodo.23190857
 - IBM Plex — OFL-1.1 — https://github.com/IBM/plex
+- FFmpeg 8.1.3 (LGPL build) — LGPL-2.1-or-later — Bundled at Contents/Resources/ffmpeg/ffmpeg. Source tarball https://ffmpeg.org/releases/ffmpeg-8.1.3.tar.xz (sha256 7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3). Written offer: that tarball is the complete corresponding source for this binary. Configure: --disable-everything --disable-network --disable-autodetect --disable-doc --disable-ffplay --disable-ffprobe --disable-gpl --disable-nonfree --disable-shared --enable-static --enable-videotoolbox --enable-decoder=mjpeg --enable-parser=mjpeg --enable-demuxer=image2pipe --enable-demuxer=mov --enable-muxer=mp4 --enable-encoder=h264_videotoolbox --enable-filter=scale --enable-filter=format --enable-protocol=file --enable-protocol=pipe --enable-protocol=fd (see desktop/scripts/build-ffmpeg.sh).
 
 ## Needs human review
 
