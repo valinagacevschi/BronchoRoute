@@ -1,3 +1,4 @@
+# Changes: stamp the synthetic Case with the current pipeline version.
 # Changes: RouteTarget cards, hover highlight, selection, point pick, and target gap.
 """Place a Lesion, then choose a RouteTarget from the rail and from the CT."""
 
@@ -15,7 +16,7 @@ import numpy as np
 import pytest
 from termcolor import cprint
 
-from test_app_server import _write_case_tree
+from test_app_server import _stamp_pipeline_version, _write_case_tree
 from test_viewer_v2_playwright import _playwright_or_skip
 
 
@@ -117,6 +118,7 @@ def _seed(root: Path) -> None:
         },
     }
     paths["case"].write_text(json.dumps(case, indent=2) + "\n")
+    _stamp_pipeline_version(paths["case"])
 
 
 @pytest.fixture(scope="module")
