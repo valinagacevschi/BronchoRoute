@@ -1,4 +1,6 @@
-# Lung Navigator
+# BronchoRoute
+
+_Formerly Lung Navigator._
 
 Planning bronchoscopic routes to peripheral lung lesions from a patient's chest CT, run locally on the clinician's Mac.
 

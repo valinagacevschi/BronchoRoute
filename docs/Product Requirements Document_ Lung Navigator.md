@@ -1,6 +1,8 @@
 # Product Requirements Document: Lung Navigator
 ## CT-derived airway route planning and bronchial branch tracing
 
+> **Desktop app:** `docs/Desktop App Spec.md` (BronchoRoute) supersedes this document where they conflict: EN-02 auto-roll, GR-05 export gate, Lesion-first gating, sign-off/frozen versions, and the no-extension rule (Estimated airway exception). See its §13.
+
 | Document field | Value |
 |---|---|
 | **Version** | 2.0 (2026-10-25). Replaces v1.0, which described a cloud learning platform built on DICOMweb. |

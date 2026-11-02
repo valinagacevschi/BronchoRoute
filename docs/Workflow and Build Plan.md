@@ -1,5 +1,7 @@
 # Lung Navigator — Clinical Workflow and Build Plan
 
+> **Desktop app:** `docs/Desktop App Spec.md` (BronchoRoute) supersedes this document where they conflict: EN-02 auto-roll, GR-05 export gate, Lesion-first gating, sign-off/frozen versions, and the no-extension rule (Estimated airway exception). See its §13.
+
 Agreed in the 2026-10-25 grilling session (decisions Q1–Q57). This file is the spec that
 code reviews check against. No 3D Slicer: every step happens in our app.
 
