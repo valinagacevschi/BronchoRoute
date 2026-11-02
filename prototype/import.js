@@ -1,3 +1,4 @@
+// Changes: Series override reason and one processing-failure sentence.
 // Changes: Case Library screen, library hit, and outdated-Case prompt.
 // Changes: import initials use the shared Python-owned Settings API.
 // Changes: Archive input, Study picker, clinician prompt and processing screens.
@@ -5,6 +6,7 @@
 
 (() => {
   let session = null;
+  let archiveSource = null;
   let activeCase = null;
   let busy = false;
   let viewerOnly = false;
@@ -26,10 +28,13 @@
         <input id="archive-file" type="file" accept=".zip" hidden>
       </div>
       <p id="import-message" role="status" aria-live="polite"></p>
+      <button type="button" id="try-another" hidden>Try another Series</button>
       <div id="series-picker" hidden><h2>Choose a Series</h2><div id="study-groups"></div>
         <form id="import-confirm"><div id="clinician-prompt" hidden>
           <label>Your initials <input id="clinician-initials" maxlength="12" autocomplete="off"></label>
           <p>Saved locally for Case records.</p></div>
+          <label id="override-reason-field" hidden>Reason for choosing this Series
+            <input id="override-reason" maxlength="200" autocomplete="off"></label>
           <button id="series-confirm" type="submit">Process Series</button>
         </form>
       </div>
@@ -131,6 +136,7 @@
     get("series-picker").hidden = true;
     get("archive-drop").hidden = true;
     get("processing").hidden = false;
+    get("try-another").hidden = true;
     get("processing-cancel").disabled = true;
     message("");
   }
@@ -142,6 +148,7 @@
     activeCase = null;
     get("processing").hidden = true;
     get("archive-drop").hidden = false;
+    get("try-another").hidden = true;
     get("processing-cancel").disabled = false;
     message("Processing cancelled. Open an Archive to try again.");
   }
@@ -161,6 +168,7 @@
     get("series-picker").hidden = true;
     get("processing").hidden = true;
     get("archive-drop").hidden = false;
+    get("try-another").hidden = true;
     get("archive-back").hidden = !new URLSearchParams(location.search).get("case");
     message("");
     return true;
@@ -336,14 +344,38 @@
     }
   }
 
-  function syncProcessButton() {
+  function selectedSeries() {
     const choice = screen.querySelector('input[name="series-choice"]:checked');
-    const row = session && session.series.find(item => item.series_key === (choice && choice.value));
-    get("series-confirm").disabled = !choice || Boolean(row && row.in_library);
+    if (!session || !choice) return null;
+    return session.series.find(item => item.series_key === choice.value) || null;
+  }
+
+  function overrideNeeded() {
+    const row = selectedSeries();
+    const recommended = Boolean(session && session.series.some(item => item.status === "recommended"));
+    return Boolean(row && row.status === "usable" && recommended);
+  }
+
+  function syncProcessButton() {
+    const input = get("override-reason");
+    const needed = overrideNeeded();
+    const field = get("override-reason-field");
+    if (!needed) {
+      field.hidden = true;
+      input.value = "";
+    } else {
+      field.hidden = false;
+    }
+    const choice = screen.querySelector('input[name="series-choice"]:checked');
+    const row = selectedSeries();
+    const blank = needed && !input.value.trim();
+    get("series-confirm").disabled = !choice || Boolean(row && row.in_library) || blank;
   }
 
   async function scan(path, file) {
     if (!await prepare()) return;
+    if (path) archiveSource = { path, file: null };
+    else if (file) archiveSource = { path: null, file };
     busy = true;
     get("archive-choose").disabled = true;
     message("Reading Archive…");
@@ -448,7 +480,13 @@
           activeCase = null;
           get("processing").hidden = true;
           get("archive-drop").hidden = false;
-          message(`${job.step}: ${job.error || "Processing failed"}. Try another Series.`);
+          if (job.error === "cancelled") {
+            get("try-another").hidden = true;
+            message("Processing cancelled. Open an Archive to try again.");
+            return;
+          }
+          get("try-another").hidden = false;
+          message(`${job.error}.`);
           return;
         }
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -486,7 +524,11 @@
       message("Reading Series…");
       const result = await api("/api/imports", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ import_id: session.import_id, series_key: choice.value }),
+        body: JSON.stringify({
+          import_id: session.import_id,
+          series_key: choice.value,
+          override_reason: get("override-reason").value.trim(),
+        }),
       });
       session = null;
       activeCase = result.case_id;
@@ -503,6 +545,16 @@
       syncProcessButton();
     }
   });
+  async function tryAnother() {
+    const source = archiveSource;
+    get("try-another").hidden = true;
+    if (!source || (!source.path && !source.file)) {
+      await prepare();
+      return;
+    }
+    if (source.path) await scan(source.path);
+    else await scan(null, source.file);
+  }
   async function choose() {
     if (!await prepare()) return;
     if (window.bronchoroute) {
@@ -533,6 +585,8 @@
     reprocess(outdated.dataset.caseId, "outdated");
   });
   get("processing-cancel").addEventListener("click", () => cancel().catch(error => message(error.message)));
+  get("try-another").addEventListener("click", () => tryAnother().catch(error => message(error.message)));
+  get("override-reason").addEventListener("input", syncProcessButton);
   get("archive-file").addEventListener("change", event => {
     const file = event.target.files[0];
     event.target.value = "";

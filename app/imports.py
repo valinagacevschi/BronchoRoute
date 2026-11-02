@@ -1,3 +1,4 @@
+# Changes: save the clinician's Series override reason, not the classifier note.
 # Changes: scan marks a Series already in the Case Library.
 # Changes: bounded Archive extraction, opaque sessions and identifier-free import results.
 # Changes: expose Series eligibility, kernel class and coverage in scan responses.
@@ -44,6 +45,7 @@ class ImportDuplicate(Exception):
 
 MAX_ARCHIVE_BYTES = 4 * 1024 ** 3
 MAX_ARCHIVE_FILES = 20_000
+MAX_OVERRIDE_REASON = 200
 _sessions: dict[str, tuple[Path, bool]] = {}
 _sessions_lock = threading.Lock()
 _confirm_lock = threading.Lock()
@@ -110,9 +112,19 @@ def release_import(import_id: str) -> None:
         shutil.rmtree(session[0], ignore_errors=True)
 
 
-def import_and_process(import_id: str, series_key: str, clinician: str) -> dict:
+def _clean_override_reason(value: str) -> str:
+    text = value.strip()
+    if len(text) > MAX_OVERRIDE_REASON:
+        raise ValueError("override reason must be at most 200 characters")
+    return text
+
+
+def import_and_process(
+    import_id: str, series_key: str, clinician: str, override_reason: str = "",
+) -> dict:
     from app.jobs import start_segment_job
 
+    reason = _clean_override_reason(override_reason)
     with _confirm_lock:
         with _sessions_lock:
             session = _sessions.get(import_id)
@@ -120,7 +132,9 @@ def import_and_process(import_id: str, series_key: str, clinician: str) -> dict:
             raise ValueError("Archive session expired; open the Archive again")
         case_id = None
         try:
-            result = confirm_import(session[0], series_key, clinician=clinician)
+            result = confirm_import(
+                session[0], series_key, clinician=clinician, override_reason=reason,
+            )
             case_id = result["case_id"]
             case_path = paths.LOCAL_CASES / case_id / "case.json"
             import json
@@ -228,6 +242,7 @@ def confirm_import(
     clinician: str,
     confirm: bool = True,
     force: bool = False,
+    override_reason: str = "",
 ) -> dict:
     """Import the chosen series and append series_confirmed."""
     if not confirm:
@@ -245,15 +260,25 @@ def confirm_import(
     if dup:
         raise ImportDuplicate(dup)
 
-    # Detect override vs auto-pick.
-    try:
-        _auto_uid, auto_row, _ = pick_series(series_map, None)
-        overridden = (
-            auto_row["folder"] != chosen["folder"]
-            or auto_row["number"] != chosen["number"]
-        )
-    except SystemExit:
+    # Reason rules run before next_case_id so a refusal leaves no Case directory.
+    text = _clean_override_reason(override_reason)
+    recommended = next(
+        (row for row in classify_series(list(series_map.values()))
+         if row["status"] == "recommended"),
+        None,
+    )
+    if chosen["status"] == "recommended":
+        overridden = False
+        stored_reason = ""
+    elif recommended is not None:
         overridden = True
+        if not text:
+            raise ValueError("Give a reason for choosing this Series")
+        stored_reason = text
+    else:
+        overridden = False
+        stored_reason = text
+    status_reason = chosen.get("reason") or ""
 
     output_dir: Path | None = None
     try:
@@ -274,6 +299,12 @@ def confirm_import(
         document["source"].pop("folder", None)
         for skipped in document["skipped_series"]:
             skipped.pop("folder", None)
+        document["source"]["series_choice"] = {
+            "status": chosen["status"],
+            "status_reason": status_reason,
+            "overridden": bool(overridden),
+            "override_reason": stored_reason,
+        }
         case_path = output_dir / "case.json"
         atomic_write_json(case_path, document)
 
@@ -286,7 +317,8 @@ def confirm_import(
                 "description": chosen["description"],
                 "kernel": chosen["kernel"],
                 "overridden": bool(overridden),
-                "override_reason": chosen["reason"] if overridden else "",
+                "override_reason": stored_reason,
+                "status_reason": status_reason,
                 "status": chosen["status"],
             },
             clinician,

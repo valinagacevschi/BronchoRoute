@@ -1,3 +1,4 @@
+# Changes: sharp Usable Series helper for override-reason tests.
 # Changes: synthetic Archive builder shared by browser and Electron smoke tests.
 from __future__ import annotations
 
@@ -10,7 +11,12 @@ import numpy as np
 from pydicom.dataset import Dataset, FileDataset
 
 
-def write_series(folder: Path, series_number: int, uid: str, n: int = 251):
+def write_series(
+    folder: Path, series_number: int, uid: str, n: int = 251, *,
+    kernel: str | tuple[str, ...] = ("Bf37f", "3"),
+    description: str = "AXIAL STANDARD",
+    manufacturer: str = "SIEMENS",
+):
     folder.mkdir(parents=True, exist_ok=True)
     for i in range(n):
         path = folder / f"IM{i:04d}.dcm"
@@ -27,9 +33,9 @@ def write_series(folder: Path, series_number: int, uid: str, n: int = 251):
         ds.StudyDescription = "Synthetic thorax"
         ds.Modality = "CT"
         ds.SeriesNumber = series_number
-        ds.SeriesDescription = "AXIAL STANDARD"
-        ds.ConvolutionKernel = ["Bf37f", "3"]
-        ds.Manufacturer = "SIEMENS"
+        ds.SeriesDescription = description
+        ds.ConvolutionKernel = list(kernel) if isinstance(kernel, tuple) else [kernel]
+        ds.Manufacturer = manufacturer
         ds.SliceThickness = 1.0
         ds.PixelSpacing = [1.0, 1.0]
         ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
@@ -46,6 +52,27 @@ def write_series(folder: Path, series_number: int, uid: str, n: int = 251):
         ds.RescaleIntercept = -1024
         ds.PixelData = (np.zeros((8, 8), dtype=np.int16)).tobytes()
         ds.save_as(path)
+
+
+def write_choice_folder(root: Path) -> Path:
+    """Recommended soft Series, a sharp Usable Series, and one Not usable Series."""
+    write_series(root / "soft", 1, "1.2.826.0.1.3680043.10.999.21")
+    write_series(
+        root / "sharp", 2, "1.2.826.0.1.3680043.10.999.22",
+        kernel="Br60f", description="AXIAL SHARP",
+    )
+    write_series(root / "short", 3, "1.2.826.0.1.3680043.10.999.23", n=4)
+    return root
+
+
+def write_choice_archive(target: Path) -> Path:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_choice_folder(root)
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as output:
+            for path in root.rglob("*.dcm"):
+                output.write(path, path.relative_to(root))
+    return target
 
 
 def write_archive(target: Path):

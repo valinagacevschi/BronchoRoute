@@ -1,3 +1,4 @@
+# Changes: the override import sends a clinician reason.
 # Changes: migrate import coverage to opaque sessions and automatic processing.
 # Changes: use eligible full-thorax Series in import override coverage.
 # Changes: hide legacy review behind the default-off feature flag.
@@ -467,6 +468,7 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
     # Override with the opaque Series key.
     res = client.post("/api/imports", json={
         "import_id": scan.json()["import_id"], "series_key": selected,
+        "override_reason": "thicker slices",
     })
     assert res.status_code == 200, res.text
     assert res.json()["record"]["data"]["overridden"] is True

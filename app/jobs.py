@@ -1,3 +1,5 @@
+# Changes: no-lungs and empty-graph reasons keep their own step names.
+# Changes: one plain failure sentence naming the step that stopped.
 # Changes: stamp pipeline_version when processing finishes; reprocess skips the import gate.
 # Changes: import lifecycle cleanup, cancellable jobs, step progress and guarded smoke launcher.
 # Changes: surface empty airway failures as a plain graph-step error.
@@ -112,6 +114,39 @@ def _redact_data_root(line: str) -> str:
     return re.sub(pattern, "[path]", line)
 
 
+_STEP_NAMES = ("graph", "airway model", "segmentation", "reading")
+
+
+def _step_in_log(lines: list[str]) -> str:
+    return next((step for step in _STEP_NAMES if f"step: {step}" in lines), "reading")
+
+
+def _last_logged_step(lines: list[str]) -> str:
+    """Latest step line. Timeout and unexpected exits follow this, not a known reason."""
+    step = "reading"
+    for line in lines:
+        for name in ("reading", "segmentation", "airway model", "graph"):
+            if line == f"step: {name}":
+                step = name
+                break
+    return step
+
+
+def _failure_message(job: "JobState", *, timed_out: bool = False) -> str:
+    """One sentence for every failed import or reprocess. Cancellation is separate."""
+    with job._lock:
+        lines = list(job.log_lines)
+    if timed_out:
+        step, reason = _last_logged_step(lines), "timed out"
+    elif any("segmentation: no lungs found" in line for line in lines):
+        step, reason = "segmentation", "no lungs found"
+    elif any("graph: no airway tree in lung" in line for line in lines):
+        step, reason = "graph", "no airway tree in lung"
+    else:
+        step, reason = _last_logged_step(lines), "the step stopped unexpectedly"
+    return f"{step} step failed: {reason}. Try another Series"
+
+
 def redact_log_line(line: str) -> str:
     """Drop identifier lines; keep routes while hiding Archive paths."""
     if re.search(
@@ -181,8 +216,7 @@ class JobState:
                 "status": "running" if self.import_id and not self._done.is_set() else self.status,
                 "elapsed_s": round(elapsed, 2),
                 "estimate_s": 390,
-                "step": next((step for step in ("graph", "airway model", "segmentation", "reading")
-                              if f"step: {step}" in self.log_lines), "reading"),
+                "step": _step_in_log(self.log_lines),
                 "error": self.error,
                 "pid": self.pid,
                 "log_tail": self.log_lines[-50:],
@@ -450,13 +484,10 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
             if time.monotonic() > deadline and code is None:
                 _kill_process_group(job._pgid, proc.pid)
                 raise TimeoutError(f"job timed out after {_job_timeout_s:.0f}s")
+            if job._cancelled.is_set():
+                raise RuntimeError("cancelled")
             if code != 0:
-                if "build_graph.py" in cmd:
-                    reason = ("no airway tree in lung" if any(
-                        "graph: no airway tree in lung" in line for line in job.log_lines
-                    ) else f"pipeline step exited {code}")
-                    raise RuntimeError(f"graph step failed: {reason}. Try another Series")
-                raise RuntimeError(f"pipeline step exited {code}")
+                raise RuntimeError("pipeline step failed")
         if job._cancelled.is_set():
             raise RuntimeError("cancelled")
         register_segment_artifacts(job.case_id, clinician)
@@ -466,8 +497,13 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
         logging.getLogger(__name__).info("pipeline job succeeded")
     except Exception as exc:  # noqa: BLE001
         job.status = "failed"
-        job.set_error("cancelled" if job._cancelled.is_set() else str(exc))
-        job.append_log(f"ERROR: {redact_log_line(str(exc))}")
+        if job._cancelled.is_set():
+            job.set_error("cancelled")
+        elif isinstance(exc, TimeoutError):
+            job.set_error(_failure_message(job, timed_out=True))
+        else:
+            job.set_error(_failure_message(job))
+        job.append_log("ERROR: " + redact_log_line(job.error or ""))
         logging.getLogger(__name__).error("pipeline job failed: %s", job.error)
         if job._pgid is not None or job.pid is not None:
             _kill_process_group(job._pgid, job.pid)

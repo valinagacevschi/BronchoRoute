@@ -1,3 +1,4 @@
+# Changes: accept an optional Series override reason on import confirm.
 # Changes: route candidates and RouteTarget require a Lesion, not workflow steps.
 # Changes: PUT lesion accepts an optional diameter_mm.
 # Changes: Case Library list, delete, and reprocess routes.
@@ -273,6 +274,7 @@ class ImportScanBody(BaseModel):
 class ImportConfirmBody(BaseModel):
     import_id: str
     series_key: str
+    override_reason: str = ""
 
 
 class RouteStartBody(BaseModel):
@@ -504,7 +506,10 @@ def api_job_cancel(case_id: str):
 def api_import_confirm(body: ImportConfirmBody):
     clinician = _require_clinician()
     try:
-        return import_and_process(body.import_id, body.series_key, clinician["clinician"])
+        return import_and_process(
+            body.import_id, body.series_key, clinician["clinician"],
+            override_reason=body.override_reason,
+        )
     except JobConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ImportDuplicate as exc:
