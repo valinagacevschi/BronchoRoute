@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Changes: deny pipeline/test_public_snapshot.py (private snapshot tooling test).
 # Changes: history-free public snapshot — allow-list, host-comment strip, privacy scanner.
 """Build a BronchoRoute public snapshot from a git ref.
 
@@ -205,6 +206,8 @@ def refuse_destination(out: Path, repo: Path) -> None:
 def exclusion_reason(rel: str, text: str | None = None) -> str | None:
     """None means the path stays. A string is why it was dropped."""
     parts = rel.split("/")
+    if rel == "pipeline/test_public_snapshot.py":
+        return "private snapshot tooling test"
     if parts[0] in KEEP_DIRS or rel in KEEP_FILES:
         if parts[0] == "desktop" and set(parts[1:]) & {"node_modules", "build", "dist"}:
             return "desktop dependency or build output (node_modules, build, or dist)"
