@@ -1,4 +1,5 @@
 <!-- Changes: public snapshot keeps renderer.html for the splice tests; scanner waives registry UIDs, the .999 test branch, path-redaction lines, the pygltflib URL, and "Patient Protocol". -->
+<!-- Changes: TotalSegmentator weights path is nnUNet results; roi_subset still prefetches unused parts. -->
 <!-- Changes: Record at a fixed 30 Hz and encode with h264_videotoolbox, not libx264. -->
 <!-- Changes: PNG stills redraw at 2× CSS size; strip text chunks; do not log the save path. -->
 <!-- Changes: estimated airway is shifted into patient RAS and stored off the graph. -->
@@ -19,6 +20,13 @@
   lines that reject or redact absolute paths, the pygltflib `gitlab.com` URL,
   and the header-inventory description "Patient Protocol". A private host in
   code aborts; the only host comment is stripped from `pipeline/paths.py`.
+- Weights mirror (#47): `TOTALSEG_WEIGHTS_PATH` is nnUNet's results directory
+  (`models/nnunet/results`), not the models parent. TotalSegmentator 2.18.0
+  `lung_vessels` loads Dataset117 and, because `robust_crop` is set, the 3 mm
+  crop Dataset297. `total` with the five lobes plus trachea loads only organs
+  part Dataset291; that roi crop uses the 6 mm Dataset298. `python_api.py`
+  still downloads parts 292–295 before `nnunet.py` filters them, so those
+  folders are fetched from upstream if they are absent.
 - Live Record (#43): draw the still's CSS-sized view into a 1920×1080 or 1280×720
   frame and letterbox it, so the burn-in strings stay the same. Tick at 30 Hz on
   the wall clock and repeat the last JPEG when a draw is late; do not emit extra

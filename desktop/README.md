@@ -15,6 +15,17 @@ Set `BRONCHOROUTE_DATA_ROOT` to use a data root other than
 
 Live Record writes MP4 H.264 with ffmpeg's `h264_videotoolbox` encoder. An LGPL ffmpeg build has no `libx264`, so the encoder name stays `h264_videotoolbox`. In development, `BRONCHOROUTE_FFMPEG` selects the binary when it is set to an existing path; otherwise the shell uses `ffmpeg` on `PATH`. A packaged app uses `process.resourcesPath/ffmpeg/ffmpeg` (`Contents/Resources/ffmpeg/ffmpeg`). Bundling that LGPL binary is a later packaging step. `encoder.js` has to be added to the electron-builder file list at the same time.
 
+## Model weights
+
+Dev mode uses the TotalSegmentator weights already on this Mac and does not download them.
+A packaged app downloads the manifest in `weights-manifest.json` into
+`<data root>/models/nnunet/results` before an Archive can be processed. Cases already stored
+still open. Set `BRONCHOROUTE_FORCE_WEIGHTS=1` to show that download in dev, and
+`BRONCHOROUTE_WEIGHTS_BASE_URL` to point it at a mirror other than the GitHub Release.
+
+`scripts/mirror-weights.py --pack --dry-run` lists the datasets. `--pack` writes stored zips
+and updates the manifest. `--upload` prints `gh release` commands and does not run them.
+
 ## Signing and notarization
 
 `npm run pack` leaves the app unsigned (`identity` is null). Sign that build on this Mac.

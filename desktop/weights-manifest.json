@@ -1,0 +1,31 @@
+{
+  "repo": "valinagacevschi/BronchoRoute",
+  "tag": "weights-v1",
+  "totalsegmentator_version": "2.18.0",
+  "files": [
+    {
+      "dataset": "Dataset117_lung_airways_arteries_veins_282subj",
+      "asset": "Dataset117_lung_airways_arteries_veins_282subj.zip",
+      "bytes": 247610520,
+      "sha256": "8a4c09250155a615946cec005e874cebbdeecbe292e854471265a11492509575"
+    },
+    {
+      "dataset": "Dataset291_TotalSegmentator_part1_organs_1559subj",
+      "asset": "Dataset291_TotalSegmentator_part1_organs_1559subj.zip",
+      "bytes": 252719787,
+      "sha256": "82cb309600967b1cf76a83a15db7a48838ab1c61c119c2065df54ca2b5d27c07"
+    },
+    {
+      "dataset": "Dataset297_TotalSegmentator_total_3mm_1559subj",
+      "asset": "Dataset297_TotalSegmentator_total_3mm_1559subj.zip",
+      "bytes": 165702065,
+      "sha256": "7ebed082ca4090d2898fd647b4c79a6e7b7e143398922be0755d8c86113b627a"
+    },
+    {
+      "dataset": "Dataset298_TotalSegmentator_total_6mm_1559subj",
+      "asset": "Dataset298_TotalSegmentator_total_6mm_1559subj.zip",
+      "bytes": 165767204,
+      "sha256": "e44497a074d0921842596f2221cdaa81c9c1e1a27675a9ee98a3e1e745913102"
+    }
+  ]
+}

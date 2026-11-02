@@ -1,3 +1,4 @@
+// Changes: download mirrored weights before packaged processing.
 // Changes: Record IPC saves an MP4 under Movies/BronchoRoute and cancels if the window closes.
 // Changes: native Save image dialog under Pictures/BronchoRoute; never log the path.
 // Changes: one-time FileVault note when fdesetup reports FileVault is Off.
@@ -44,6 +45,12 @@ const {
   resolveFfmpeg,
 } = require("./lib");
 const { startEncoder } = require("./encoder");
+const {
+  downloadWeights,
+  loadManifest,
+  weightsRequired,
+  weightsStatus,
+} = require("./weights");
 
 app.setName("BronchoRoute");
 // Chromium's profile is userData. Point it at the override before ready so a
@@ -63,6 +70,8 @@ let shutdownStarted = false;
 let saveImageBaseDir = null;
 let saveVideoBaseDir = null;
 const recordings = new Map();
+let weightsDownload = null;
+let weightsAbort = null;
 
 function setSaveImageBaseDir(dir) {
   saveImageBaseDir = typeof dir === "string" && dir.trim() !== "" ? dir : null;
@@ -660,6 +669,58 @@ function installRecord() {
   ipcMain.handle("bronchoroute:record-cancel", (event, payload) => recordCancel(event, payload));
 }
 
+function fromMainWindow(event) {
+  return Boolean(mainWindow) && event.sender === mainWindow.webContents;
+}
+
+function modelsDirectory() {
+  return path.join(resolveDataRoot(process.env, app.getPath("userData")), "models");
+}
+
+function manifestPath() {
+  return path.join(__dirname, "weights-manifest.json");
+}
+
+function installWeights() {
+  ipcMain.handle("bronchoroute:weights-required", (event) => {
+    if (!fromMainWindow(event)) throw new Error("Weights request from an unknown window");
+    return weightsRequired(app.isPackaged, process.env);
+  });
+  ipcMain.handle("bronchoroute:weights-status", (event) => {
+    if (!fromMainWindow(event)) throw new Error("Weights request from an unknown window");
+    return weightsStatus(modelsDirectory(), loadManifest(manifestPath()));
+  });
+  ipcMain.handle("bronchoroute:weights-download", (event) => {
+    if (!fromMainWindow(event)) throw new Error("Weights request from an unknown window");
+    if (weightsDownload) return weightsDownload;
+    const abort = new AbortController();
+    weightsAbort = abort;
+    const job = downloadWeights({
+      modelsDir: modelsDirectory(),
+      manifest: loadManifest(manifestPath()),
+      signal: abort.signal,
+      onProgress(progress) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("bronchoroute:weights-progress", progress);
+        }
+      },
+    }).finally(() => {
+      if (weightsDownload === job) {
+        weightsDownload = null;
+        weightsAbort = null;
+      }
+    });
+    weightsDownload = job;
+    job.catch(() => {});
+    return job;
+  });
+  ipcMain.handle("bronchoroute:weights-cancel", (event) => {
+    if (!fromMainWindow(event)) throw new Error("Weights request from an unknown window");
+    if (weightsAbort) weightsAbort.abort();
+    return true;
+  });
+}
+
 function installArchiveMenu() {
   ipcMain.handle("bronchoroute:open-archive", event => openArchive(event));
   Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -686,6 +747,7 @@ async function launch() {
   installArchiveMenu();
   installSaveImage();
   installRecord();
+  installWeights();
   installNavigationGuards(mainWindow);
   await loadInline(mainWindow, splashHtml());
   mainWindow.show();
@@ -734,6 +796,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", (event) => {
+  if (weightsAbort) weightsAbort.abort();
   if (shutdownStarted) {
     return;
   }

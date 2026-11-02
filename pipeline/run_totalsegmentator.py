@@ -1,3 +1,4 @@
+# Changes: refuse TotalSegmentator tasks outside lung_vessels and total.
 # Changes: empty or missing lobe masks exit as segmentation: no lungs found.
 # Changes: emit airway-model progress before mask combination.
 # Changes: invoke TotalSegmentator through the active Python for relocatable bundles.
@@ -25,6 +26,25 @@ from snomed import LOBES as LOBE_TABLE
 
 LOBES = {info["key"]: value for value, info in LOBE_TABLE.items()}
 ROIS = [*LOBES, "trachea"]
+ALLOWED_TASKS = frozenset({"lung_vessels", "lung_vessels_LEGACY", "total"})
+
+
+def require_task(task: str) -> str:
+    if task not in ALLOWED_TASKS:
+        sys.exit(f"refused task {task}: licensed TotalSegmentator tasks are blocked")
+    return task
+
+
+def guard_command(cmd: list[str]) -> None:
+    if "--license_number" in cmd:
+        sys.exit("refused: TotalSegmentator --license_number is blocked")
+    if "--task" in cmd:
+        index = cmd.index("--task")
+        if index + 1 >= len(cmd):
+            sys.exit("refused task: missing TotalSegmentator task name")
+        require_task(cmd[index + 1])
+        return
+    require_task("total")
 BRIDGE_MAX_GAP_MM = 4.0
 BRIDGE_MIN_VOLUME_MM3 = 20.0
 BRIDGE_RADIUS_MM = 1.0
@@ -259,6 +279,7 @@ def main() -> None:
         cmd.append("--fast")
     if args.higher_order:
         cmd.append("--higher_order_resampling")
+    guard_command(cmd)
     airway_options = {
         "ct": ct, "device": args.device, "fast": args.fast,
         "legacy": args.legacy, "higher_order_resampling": args.higher_order,
@@ -276,6 +297,7 @@ def main() -> None:
         cmd.append("--fast")
     if args.higher_order:
         cmd.append("--higher_order_resampling")
+    guard_command(cmd)
     # Lobe step never passes --legacy; keep it out of the cache key.
     lobe_options = {
         "ct": ct, "device": args.device, "fast": args.fast,
