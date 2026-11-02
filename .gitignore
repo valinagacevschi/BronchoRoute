@@ -11,3 +11,7 @@ __pycache__/
 
 # Agent briefs are working notes, not project history.
 .codex-briefs/
+
+# Electron dev shell.
+desktop/node_modules/
+desktop/dist/
