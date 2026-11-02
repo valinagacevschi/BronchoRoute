@@ -17,3 +17,7 @@
   `graph: no airway tree in lung`; the job error names the graph step.
 - Real-fixture graph tests (`test_graph_fixes.py`) skip unless `G14_FIXTURE_ROOT` points at a
   writable copy under `$TMPDIR` of the derived series-kernel fixtures (never the originals).
+- Topology rotation: drawing and picking can drift if they transform coordinates
+  separately. Rotate positions in their shared screen projection; draw glyphs
+  without rotating the canvas. Use synthetic graphs and dynamic server ports in
+  browser tests so local case availability and other worktrees cannot affect them.
