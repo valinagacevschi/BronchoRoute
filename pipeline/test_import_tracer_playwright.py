@@ -1,4 +1,5 @@
 # Changes: settings assertion includes the FileVault note flag.
+# Changes: settings payload includes ram_warning_shown.
 # Changes: import initials share Settings and leave the other preferences intact.
 # Changes: real-click Archive import and cancellation on a free port and isolated state.
 from __future__ import annotations
@@ -112,6 +113,7 @@ def test_archive_import(tracer_server, cancel):
         assert settings == {
             "initials": "AB", "role": "", "updates_enabled": True,
             "disclaimer_ack": False, "filevault_note_shown": False,
+            "ram_warning_shown": False,
         }
         assert not errors, errors
         browser.close()

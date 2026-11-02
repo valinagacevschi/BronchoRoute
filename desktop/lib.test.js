@@ -1,4 +1,5 @@
 // Changes: FileVault Off is the only status that asks for the one-time note.
+// Changes: cover the arm64 gate, the 16 GB warning, and sign scripts.
 // Changes: shell helper coverage excludes Python-owned settings persistence.
 "use strict";
 
@@ -12,7 +13,10 @@ const {
   buildSidecarEnv,
   fileVaultIsOff,
   firstLocalCaseId,
+  hardwareBlockReason,
   isAllowedAppUrl,
+  MIN_RAM_BYTES,
+  shouldWarnLowRam,
   newLaunchToken,
   parsePortLine,
   requestFilterUrls,
@@ -169,8 +173,30 @@ test("packaged sidecar uses the resource interpreter and isolated model state", 
   }
 });
 
+test("hardware gate is arm64-only and warns once below 16 GB", () => {
+  assert.equal(hardwareBlockReason("arm64"), null);
+  assert.match(hardwareBlockReason("x64"), /Apple Silicon/);
+  assert.match(hardwareBlockReason("ia32"), /arm64/);
+  assert.equal(shouldWarnLowRam(MIN_RAM_BYTES, false), false);
+  assert.equal(shouldWarnLowRam(MIN_RAM_BYTES - 1, false), true);
+  assert.equal(shouldWarnLowRam(8 * 1024 * 1024 * 1024, false), true);
+  assert.equal(shouldWarnLowRam(8 * 1024 * 1024 * 1024, true), false);
+  assert.equal(shouldWarnLowRam(Number.NaN, false), false);
+});
+
+test("entitlements stay empty for Python and allow-jit only for the app", () => {
+  const python = fs.readFileSync(path.join(__dirname, "build-resources", "python.entitlements.plist"), "utf8");
+  const appEntitlements = fs.readFileSync(path.join(__dirname, "build-resources", "app.entitlements.plist"), "utf8");
+  assert.equal(python.includes("com.apple.security"), false);
+  assert.equal(appEntitlements.includes("com.apple.security.cs.allow-jit"), true);
+  assert.equal(appEntitlements.includes("disable-library-validation"), false);
+  assert.equal(appEntitlements.includes("get-task-allow"), false);
+});
+
 test("builder includes only runtime resources and targets unsigned arm64 macOS", () => {
-  const { build, devDependencies } = require("./package.json");
+  const { build, devDependencies, scripts } = require("./package.json");
+  assert.equal(scripts.sign, "bash scripts/sign-and-notarize.sh");
+  assert.equal(scripts["sign:adhoc"], "IDENTITY=- bash scripts/sign-and-notarize.sh");
   assert.equal(build.mac.identity, null);
   assert.equal(build.mac.minimumSystemVersion, "14.0");
   assert.deepEqual(build.mac.target, [{ target: "dir", arch: ["arm64"] }]);

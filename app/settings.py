@@ -1,4 +1,5 @@
 # Changes: allow filevault_note_shown on the shared settings API.
+# Changes: allow ram_warning_shown on the public settings allowlist.
 # Changes: one atomic settings store preserves switches and unknown fields.
 # Changes: app_state under LUNGNAV_CACHE_DIR when set (RO data root).
 """Local clinician identity (role + initials) and per-clinician CT view prefs.
@@ -188,6 +189,7 @@ PUBLIC_DEFAULTS = {
     "updates_enabled": True,
     "disclaimer_ack": False,
     "filevault_note_shown": False,
+    "ram_warning_shown": False,
 }
 
 

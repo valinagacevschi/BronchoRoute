@@ -1,4 +1,5 @@
 // Changes: one-time FileVault note when fdesetup reports FileVault is Off.
+// Changes: refuse non-arm64 launch and warn once when memory is below 16 GB.
 // Changes: combine native Archive IPC with API-owned disclaimer acknowledgement.
 // Changes: launch bundled standalone Python in packaged mode; preserve dev launch.
 // Changes: Python owns disclaimer acknowledgement through the token-guarded settings API.
@@ -9,6 +10,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, session } = require("electron");
 const { execFile, spawn } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const {
   DISCLAIMER,
@@ -18,11 +20,13 @@ const {
   atomicWriteText,
   sidecarLaunch,
   firstLocalCaseId,
+  hardwareBlockReason,
   isAllowedAppUrl,
   newLaunchToken,
   parsePortLine,
   requestFilterUrls,
   resolveDataRoot,
+  shouldWarnLowRam,
   sidecarOrigin,
   splitCompleteLines,
 } = require("./lib");
@@ -384,6 +388,40 @@ async function showFileVaultNote(win, port, token) {
   await win.webContents.executeJavaScript(fileVaultInstallScript());
 }
 
+async function maybeWarnLowRam(port, token) {
+  const response = await fetch(`${sidecarOrigin(port)}/api/settings`, {
+    headers: { "X-BronchoRoute-Token": token },
+  });
+  if (!response.ok) throw new Error("Could not load Settings");
+  const settings = await response.json();
+  if (!shouldWarnLowRam(os.totalmem(), settings.ram_warning_shown)) {
+    return;
+  }
+  const message = "This Mac has less than 16 GB of memory.";
+  const detail = "BronchoRoute is built for Apple Silicon Macs with at least 16 GB of memory. Segmentation can be slow or run out of memory on this Mac.";
+  if (process.env.BRONCHOROUTE_SMOKE === "1") {
+    process.stderr.write(`${message} ${detail}\n`);
+  } else {
+    await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["OK"],
+      defaultId: 0,
+      title: "BronchoRoute",
+      message,
+      detail,
+    });
+  }
+  const saved = await fetch(`${sidecarOrigin(port)}/api/settings`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-BronchoRoute-Token": token,
+    },
+    body: JSON.stringify({ ram_warning_shown: true }),
+  });
+  if (!saved.ok) throw new Error("Could not save the memory warning");
+}
+
 async function showDisclaimer(win, port, token) {
   const response = await fetch(`${sidecarOrigin(port)}/api/settings`, {
     headers: { "X-BronchoRoute-Token": token },
@@ -478,6 +516,7 @@ async function launch() {
   allowedPort = port;
   installTokenHeader(port, token);
   await waitForHealth(port, token, HEALTH_TIMEOUT_MS);
+  await maybeWarnLowRam(port, token);
   const url = await chooseStartUrl(port, token);
   await mainWindow.loadURL(url);
   await showDisclaimer(mainWindow, port, token);
@@ -490,6 +529,13 @@ async function launch() {
 }
 
 async function start() {
+  const blocked = hardwareBlockReason(process.arch);
+  if (blocked) {
+    process.stderr.write(`${blocked}\n`);
+    dialog.showErrorBox("BronchoRoute", blocked);
+    app.exit(1);
+    return null;
+  }
   try {
     return await launch();
   } catch (err) {

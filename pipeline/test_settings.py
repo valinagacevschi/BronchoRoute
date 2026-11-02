@@ -1,4 +1,5 @@
 # Changes: filevault_note_shown is a boolean on the shared settings API.
+# Changes: ram_warning_shown round-trips on the settings allowlist.
 # Changes: shared settings API validation, preservation, and record identity.
 import json
 
@@ -14,6 +15,7 @@ def test_settings_defaults(client):
     assert client.get("/api/settings").json() == {
         "initials": "", "role": "", "updates_enabled": True,
         "disclaimer_ack": False, "filevault_note_shown": False,
+        "ram_warning_shown": False,
     }
 
 
@@ -35,6 +37,7 @@ def test_settings_initials(client, initials):
     *({"role": "Role" + c} for c in "<>'\""),
     {"updates_enabled": "false"}, {"disclaimer_ack": 1},
     {"filevault_note_shown": "yes"}, {"filevault_note_shown": 1},
+    {"ram_warning_shown": 1}, {"ram_warning_shown": "true"},
 ])
 def test_settings_invalid(client, patch):
     before = client.get("/api/settings").json()
@@ -46,7 +49,10 @@ def test_settings_preserved_by_all_writers(client):
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"future": {"enabled": 7}}))
-    patch = {"initials": "AB", "role": "", "updates_enabled": False, "disclaimer_ack": True}
+    patch = {
+        "initials": "AB", "role": "", "updates_enabled": False, "disclaimer_ack": True,
+        "ram_warning_shown": True,
+    }
     expected = {**patch, "filevault_note_shown": False}
     assert client.put("/api/settings", json=patch).json() == expected
     assert client.get("/api/settings").json() == expected
@@ -56,6 +62,7 @@ def test_settings_preserved_by_all_writers(client):
     assert saved["future"] == {"enabled": 7}
     assert saved["updates_enabled"] is False
     assert saved["disclaimer_ack"] is True
+    assert saved["ram_warning_shown"] is True
 
 
 def test_filevault_note_flag(client):
@@ -86,6 +93,15 @@ def test_settings_lesion_stamp(client, harness):
     case = json.loads(harness["case"].read_text())
     assert case["lesion"]["confirmed_by"] == "Clinician, X.Y."
     assert case["records"][-1]["clinician"] == "Clinician, X.Y."
+
+
+def test_settings_ram_warning_shown(client):
+    assert client.get("/api/settings").json()["ram_warning_shown"] is False
+    saved = client.put("/api/settings", json={"initials": "AB", "ram_warning_shown": True}).json()
+    assert saved["initials"] == "AB"
+    assert saved["ram_warning_shown"] is True
+    assert saved["disclaimer_ack"] is False
+    assert client.put("/api/settings", json={"disclaimer_ack": True}).json()["ram_warning_shown"] is True
 
 
 def test_settings_identity_keeps_ct_preferences(client):
