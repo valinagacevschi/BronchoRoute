@@ -2,7 +2,7 @@
 pipeline/data/
 pipeline/ts_out/
 pipeline/out/
-pipeline/.venv/
+pipeline/.venv
 pipeline/app_state/
 pipeline/tmp/
 pipeline/logs/
@@ -13,7 +13,7 @@ __pycache__/
 .codex-briefs/
 
 # Electron dev shell.
-desktop/node_modules/
+desktop/node_modules
 desktop/dist/
 
 # Standalone Python build artifacts.
