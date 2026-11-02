@@ -1,5 +1,7 @@
 <!-- Changes: PNG stills redraw at 2× CSS size; strip text chunks; do not log the save path. -->
 <!-- Changes: verify default viewer routes as well as selectable RouteTarget routes. -->
+<!-- Changes: endoluminal Lesion label must clear the arrow and the visible edge. -->
+<!-- Changes: endoluminal Lesion radius is the on-axis silhouette. -->
 <!-- Changes: failure copy is one sentence; the override reason is the clinician's. -->
 <!-- Changes: lesion slice distance follows the RAS crop slice increment. -->
 <!-- Changes: outdated-Case prompt must not cover the footer hit targets. -->
@@ -16,6 +18,10 @@
   follow a blocked branch before a RouteTarget exists. Stop that payload route at
   the first bridge boundary and test actual route geometry for every decision state.
 
+- Endoluminal Lesion disc radius is the on-axis silhouette `F·R/sqrt(z²−R²)`; the glow
+  stops at 1.25× that radius. Fit the arrow and label inside the canvas box clipped to
+  the window, clear of the arrowhead, rail, clocks, and limitations panel. Clamping a
+  label into `clientWidth` parks it on the arrowhead and on the last pixel.
 - Processing failure is one sentence: `<step> step failed: <reason>. Try another Series`.
   The screen adds only the final period. All-zero lobe masks are "no lungs". A Series
   override stores the clinician's text; the ranking note stays in `status_reason`.

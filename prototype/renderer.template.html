@@ -1,6 +1,8 @@
 <!-- Changes: PNG stills at 2× CSS size with burn-in, HUD and Lesion toggles, and Save image. -->
 <!-- Changes: show stored RouteTarget staleness as status and clear it after bridge reconfirmation. -->
 <!-- Changes: refresh Case views and RouteTarget proposals after CT bridge decisions. -->
+<!-- Changes: endoluminal Lesion label stays inside the visible view and off the arrow. -->
+<!-- Changes: endoluminal Lesion sphere, edge arrow, and reached label. -->
 <!-- Changes: RouteTarget proposals in the rail; trachea RouteStart; target-gap anchor. -->
 <!-- Changes: anatomical lesion sphere, topology marker beside the nearest CT-seen branch. -->
 <!-- Changes: Case Library link in the viewer footer. -->
@@ -1806,6 +1808,460 @@ let lastAnteriorTick = {
   angleFrom12Deg: null, screen: null,
 };
 let lastForkOrifices = [];
+let lastEndoluminalLesion = null;
+let lastEndoCamera = null;
+
+// Lighter, more saturated tint of the anatomical lesion ink rgb(180, 82, 47).
+const LESION_CORE = "rgba(244, 168, 112, 0.9)";
+const LESION_OUTLINE = "#FFF1E8";
+const LESION_ARROW_INK = "#F4A870";
+const LESION_TEXT = "#FFF6F0";
+const LESION_PILL = "#140C0A";
+const LESION_FONT = '12px "IBM Plex Mono", ui-monospace, monospace';
+const LESION_PAD_X = 5;
+const LESION_PAD_Y = 4;
+const LESION_ARROW = 16;
+const LESION_ARROW_HALF = 6;
+const LESION_INSET = 24;
+const LESION_EDGE = 1;
+
+function windowViewportRect() {
+  const view = window.visualViewport;
+  if (!view) return { l: 0, t: 0, r: window.innerWidth, b: window.innerHeight };
+  return {
+    l: view.offsetLeft,
+    t: view.offsetTop,
+    r: view.offsetLeft + view.width,
+    b: view.offsetTop + view.height,
+  };
+}
+
+function canvasMetrics() {
+  const box = cv.getBoundingClientRect();
+  return {
+    box,
+    sx: box.width > 0 ? W / box.width : 1,
+    sy: box.height > 0 ? H / box.height : 1,
+  };
+}
+
+function clientRectToCanvas(left, top, right, bottom, metrics) {
+  const { box, sx, sy } = metrics;
+  return {
+    l: (left - box.left) * sx,
+    t: (top - box.top) * sy,
+    r: (right - box.left) * sx,
+    b: (bottom - box.top) * sy,
+  };
+}
+
+function canvasVisibleRect(metrics) {
+  const { box } = metrics;
+  const view = windowViewportRect();
+  const left = Math.max(box.left, view.l);
+  const top = Math.max(box.top, view.t);
+  const right = Math.min(box.right, view.r);
+  const bottom = Math.min(box.bottom, view.b);
+  if (!(right > left) || !(bottom > top)) return { l: 0, t: 0, r: W, b: H };
+  return clientRectToCanvas(left, top, right, bottom, metrics);
+}
+
+function elementCanvasRect(el, metrics) {
+  if (!el) return null;
+  const box = el.getBoundingClientRect();
+  if (!(box.width > 0) || !(box.height > 0)) return null;
+  return clientRectToCanvas(box.left, box.top, box.right, box.bottom, metrics);
+}
+
+function endoluminalChrome() {
+  const metrics = canvasMetrics();
+  const visible = canvasVisibleRect(metrics);
+  const railEl = document.querySelector(".rail");
+  let railRight = 0;
+  if (railEl) {
+    const railBox = railEl.getBoundingClientRect();
+    railRight = (railBox.right - metrics.box.left) * metrics.sx;
+  }
+  if (lastGuidance && Number.isFinite(lastGuidance.railRight)) {
+    railRight = Math.max(railRight, lastGuidance.railRight);
+  }
+  return {
+    rail: { l: visible.l, t: visible.t, r: railRight, b: visible.b },
+    panel: lastGuidance && lastGuidance.panel ? lastGuidance.panel : null,
+    limitations: elementCanvasRect(document.getElementById("limitations-panel"), metrics),
+    visible,
+  };
+}
+
+function lesionRectsOverlap(a, b) {
+  if (!a || !b || !(b.r > b.l) || !(b.b > b.t)) return false;
+  return a.x < b.r && a.x + a.w > b.l && a.y < b.b && a.y + a.h > b.t;
+}
+
+function lesionObstacles(chrome) {
+  return [chrome.rail, chrome.panel, chrome.limitations].filter(Boolean);
+}
+
+function lesionLabelClear(rect, obstacles, visible) {
+  if (rect.x < visible.l + LESION_EDGE || rect.y < visible.t + LESION_EDGE) return false;
+  if (rect.x + rect.w > visible.r - LESION_EDGE) return false;
+  if (rect.y + rect.h > visible.b - LESION_EDGE) return false;
+  return !obstacles.some(box => lesionRectsOverlap(rect, box));
+}
+
+function lesionLabelSize(text) {
+  ctx.font = LESION_FONT;
+  const metrics = ctx.measureText(text);
+  const ink = (metrics.actualBoundingBoxLeft || 0) + (metrics.actualBoundingBoxRight || 0);
+  return {
+    w: Math.ceil(Math.max(metrics.width, ink) + LESION_PAD_X * 2),
+    h: LESION_PAD_Y * 2 + 12,
+    padX: LESION_PAD_X,
+    padY: LESION_PAD_Y,
+  };
+}
+
+function placeClearLabel(text, anchor, preferred, obstacles, visible) {
+  const size = lesionLabelSize(text);
+  const gap = 8;
+  const ax = anchor.x + anchor.w / 2;
+  const ay = anchor.y + anchor.h / 2;
+  let ux = preferred[0];
+  let uy = preferred[1];
+  const plen = Math.hypot(ux, uy) || 1;
+  ux /= plen;
+  uy /= plen;
+  const halfA = Math.abs(ux) * anchor.w / 2 + Math.abs(uy) * anchor.h / 2;
+  const halfL = Math.abs(ux) * size.w / 2 + Math.abs(uy) * size.h / 2;
+  const spots = [];
+  const push = (cx, cy) => spots.push([cx - size.w / 2, cy - size.h / 2]);
+  const dist = halfA + gap + halfL;
+  push(ax + ux * dist, ay + uy * dist);
+  const px = -uy;
+  const py = ux;
+  for (const shift of [28, -28, 56, -56, 84, -84]) {
+    push(ax + ux * dist + px * shift, ay + uy * dist + py * shift);
+  }
+  const cards = [
+    [1, 0, anchor.x + anchor.w + gap + size.w / 2, ay],
+    [-1, 0, anchor.x - gap - size.w / 2, ay],
+    [0, -1, ax, anchor.y - gap - size.h / 2],
+    [0, 1, ax, anchor.y + anchor.h + gap + size.h / 2],
+  ];
+  cards.sort((a, b) => (b[0] * ux + b[1] * uy) - (a[0] * ux + a[1] * uy));
+  for (const card of cards) push(card[2], card[3]);
+  const blocked = obstacles.filter(Boolean);
+  if (anchor.w > 0 && anchor.h > 0) {
+    blocked.push({ l: anchor.x, t: anchor.y, r: anchor.x + anchor.w, b: anchor.y + anchor.h });
+  }
+  const accept = (x, y) => {
+    const rect = {
+      x: Math.round(x), y: Math.round(y), w: size.w, h: size.h,
+      padX: size.padX, padY: size.padY,
+    };
+    return lesionLabelClear(rect, blocked, visible) ? rect : null;
+  };
+  for (const spot of spots) {
+    const rect = accept(spot[0], spot[1]);
+    if (rect) return rect;
+  }
+  const span = Math.max(visible.r - visible.l, visible.b - visible.t);
+  for (let extra = gap + 8; extra < span; extra += 8) {
+    const rect = accept(
+      ax + ux * (halfA + extra + halfL) - size.w / 2,
+      ay + uy * (halfA + extra + halfL) - size.h / 2,
+    );
+    if (rect) return rect;
+  }
+  for (let y = visible.t + LESION_EDGE; y <= visible.b - size.h - LESION_EDGE; y += 12) {
+    for (let x = visible.l + LESION_EDGE; x <= visible.r - size.w - LESION_EDGE; x += 12) {
+      const rect = accept(x, y);
+      if (rect) return rect;
+    }
+  }
+  return {
+    x: Math.round(visible.l + LESION_EDGE),
+    y: Math.round(visible.t + LESION_EDGE),
+    w: size.w,
+    h: size.h,
+    padX: size.padX,
+    padY: size.padY,
+  };
+}
+
+function paintLesionLabel(text, rect) {
+  ctx.font = LESION_FONT;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = LESION_PILL;
+  ctx.beginPath();
+  ctx.roundRect(rect.x, rect.y, rect.w, rect.h, 3);
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = LESION_PILL;
+  ctx.strokeText(text, rect.x + rect.padX, rect.y + rect.padY);
+  ctx.fillStyle = LESION_TEXT;
+  ctx.fillText(text, rect.x + rect.padX, rect.y + rect.padY);
+}
+
+function lesionCentreInView(x, y, chrome) {
+  const visible = chrome.visible;
+  if (!(x > visible.l && x < visible.r && y > visible.t && y < visible.b)) return false;
+  const point = { x, y, w: 0, h: 0 };
+  return !lesionObstacles(chrome).some(box => lesionRectsOverlap(point, box));
+}
+
+function lesionScreenDirection(v0, v1) {
+  let dx = v0;
+  let dy = -v1;
+  if (Math.hypot(dx, dy) < 1e-4) {
+    dx = 0;
+    dy = 1;
+  }
+  const len = Math.hypot(dx, dy) || 1;
+  return [dx / len, dy / len];
+}
+
+function rayExitRect(ox, oy, dx, dy, box) {
+  let t = Infinity;
+  if (dx > 1e-12) t = Math.min(t, (box.r - ox) / dx);
+  else if (dx < -1e-12) t = Math.min(t, (box.l - ox) / dx);
+  if (dy > 1e-12) t = Math.min(t, (box.b - oy) / dy);
+  else if (dy < -1e-12) t = Math.min(t, (box.t - oy) / dy);
+  return Number.isFinite(t) && t > 0 ? t : null;
+}
+
+function rayEnterRect(ox, oy, dx, dy, box) {
+  let tMin = -Infinity;
+  let tMax = Infinity;
+  const axes = [[dx, ox, box.l, box.r], [dy, oy, box.t, box.b]];
+  for (const [delta, origin, lo, hi] of axes) {
+    if (Math.abs(delta) < 1e-12) {
+      if (origin <= lo || origin >= hi) return null;
+      continue;
+    }
+    let t1 = (lo - origin) / delta;
+    let t2 = (hi - origin) / delta;
+    if (t1 > t2) {
+      const swap = t1;
+      t1 = t2;
+      t2 = swap;
+    }
+    tMin = Math.max(tMin, t1);
+    tMax = Math.min(tMax, t2);
+    if (tMin > tMax) return null;
+  }
+  return tMin > 0 ? tMin : null;
+}
+
+function lesionArrowPoint(v0, v1, chrome) {
+  const [dx, dy] = lesionScreenDirection(v0, v1);
+  const visible = chrome.visible;
+  const cx = W / 2;
+  const cy = H / 2;
+  let outer = {
+    l: Math.max(chrome.rail.r, visible.l) + LESION_INSET,
+    t: visible.t + LESION_INSET,
+    r: visible.r - LESION_INSET,
+    b: visible.b - LESION_INSET,
+  };
+  if (!(outer.l < cx && cx < outer.r && outer.t < cy && cy < outer.b)) {
+    outer = {
+      l: visible.l + LESION_INSET,
+      t: visible.t + LESION_INSET,
+      r: visible.r - LESION_INSET,
+      b: visible.b - LESION_INSET,
+    };
+  }
+  let travel = rayExitRect(cx, cy, dx, dy, outer);
+  for (const block of [chrome.panel, chrome.limitations]) {
+    if (!block) continue;
+    const obstacle = {
+      l: block.l - LESION_INSET,
+      t: block.t - LESION_INSET,
+      r: block.r + LESION_INSET,
+      b: block.b + LESION_INSET,
+    };
+    const hit = rayEnterRect(cx, cy, dx, dy, obstacle);
+    if (hit != null && (travel == null || hit < travel)) travel = hit;
+  }
+  if (travel == null) travel = Math.min(visible.r - visible.l, visible.b - visible.t) / 2;
+  return {
+    x: Math.min(visible.r - LESION_EDGE, Math.max(visible.l + LESION_EDGE, cx + dx * travel)),
+    y: Math.min(visible.b - LESION_EDGE, Math.max(visible.t + LESION_EDGE, cy + dy * travel)),
+    dx, dy,
+  };
+}
+
+function paintLesionArrow(x, y, dx, dy) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(Math.atan2(dy, dx));
+  ctx.fillStyle = LESION_ARROW_INK;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(-LESION_ARROW, -LESION_ARROW_HALF);
+  ctx.lineTo(-LESION_ARROW, LESION_ARROW_HALF);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function lesionArrowRect(x, y, dx, dy) {
+  const angle = Math.atan2(dy, dx);
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const local = [[0, 0], [-LESION_ARROW, -LESION_ARROW_HALF], [-LESION_ARROW, LESION_ARROW_HALF]];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [lx, ly] of local) {
+    const px = x + lx * c - ly * s;
+    const py = y + lx * s + ly * c;
+    minX = Math.min(minX, px);
+    minY = Math.min(minY, py);
+    maxX = Math.max(maxX, px);
+    maxY = Math.max(maxY, py);
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+function endoluminalLesionRecord(mode, x, y, radiusPx, glowPx, distanceMm, label, labelRect, v, radiusMm, arrowRect) {
+  return {
+    mode, x, y, radiusPx, glowPx, distanceMm, label,
+    labelRect: { x: labelRect.x, y: labelRect.y, w: labelRect.w, h: labelRect.h },
+    arrowRect: arrowRect
+      ? { x: arrowRect.x, y: arrowRect.y, w: arrowRect.w, h: arrowRect.h }
+      : null,
+    view: [v[0], v[1], v[2]],
+    focalPx: Math.min(W, H) * 0.62,
+    radiusMm,
+    viewport: { w: W, h: H },
+  };
+}
+
+function centredLesionLabel(text, chrome) {
+  const size = lesionLabelSize(text);
+  const visible = chrome.visible;
+  const rect = {
+    x: Math.round((visible.l + visible.r - size.w) / 2),
+    y: Math.round((visible.t + visible.b - size.h) / 2),
+    w: size.w,
+    h: size.h,
+    padX: size.padX,
+    padY: size.padY,
+  };
+  if (lesionLabelClear(rect, lesionObstacles(chrome), visible)) return rect;
+  return placeClearLabel(
+    text,
+    { x: (visible.l + visible.r) / 2, y: (visible.t + visible.b) / 2, w: 0, h: 0 },
+    [0, -1],
+    lesionObstacles(chrome),
+    visible,
+  );
+}
+
+function drawEndoluminalLesion(toView) {
+  lastEndoluminalLesion = null;
+  const lesion = A.lesion;
+  if (!lesion || !Array.isArray(lesion.ras_mm) || lesion.ras_mm.length < 3) return;
+  if (!(W > 0) || !(H > 0)) return;
+  const origin = A.origin_mm || [0, 0, 0];
+  const ras = lesion.ras_mm;
+  const centre = [ras[0] - origin[0], ras[1] - origin[1], ras[2] - origin[2]];
+  const v = toView(centre);
+  const radiusMm = lesionRadiusMm(lesion);
+  const distanceMm = hypot3(v);
+  const chrome = endoluminalChrome();
+  const focal = Math.min(W, H) * 0.62;
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  if (distanceMm <= radiusMm) {
+    const label = "Lesion reached";
+    const labelRect = centredLesionLabel(label, chrome);
+    paintLesionLabel(label, labelRect);
+    lastEndoluminalLesion = endoluminalLesionRecord(
+      "reached",
+      labelRect.x + labelRect.w / 2,
+      labelRect.y + labelRect.h / 2,
+      null, null, distanceMm, label, labelRect, v, radiusMm, null,
+    );
+    ctx.restore();
+    return;
+  }
+  const ahead = v[2] > radiusMm;
+  let projected = null;
+  if (ahead) {
+    const scalePx = focal / v[2];
+    projected = { x: W / 2 + v[0] * scalePx, y: H / 2 - v[1] * scalePx };
+  }
+  if (ahead && projected && lesionCentreInView(projected.x, projected.y, chrome)) {
+    // On-axis silhouette: pixels = F · R / sqrt(z² − R²).
+    const radiusPx = focal * radiusMm / Math.sqrt(v[2] * v[2] - radiusMm * radiusMm);
+    const glowPx = Math.min(radiusPx * 1.25, 0.45 * Math.min(W, H));
+    if (glowPx > radiusPx + 0.5) {
+      const glow = ctx.createRadialGradient(
+        projected.x, projected.y, radiusPx, projected.x, projected.y, glowPx,
+      );
+      glow.addColorStop(0, "rgba(244, 168, 112, 0.55)");
+      glow.addColorStop(1, "rgba(244, 168, 112, 0)");
+      ctx.beginPath();
+      ctx.arc(projected.x, projected.y, glowPx, 0, Math.PI * 2);
+      ctx.moveTo(projected.x + radiusPx, projected.y);
+      ctx.arc(projected.x, projected.y, radiusPx, 0, Math.PI * 2, true);
+      ctx.fillStyle = glow;
+      ctx.fill("evenodd");
+    }
+    ctx.beginPath();
+    ctx.arc(projected.x, projected.y, radiusPx, 0, Math.PI * 2);
+    ctx.fillStyle = LESION_CORE;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = LESION_OUTLINE;
+    ctx.stroke();
+    const label = `Lesion ${Math.round(distanceMm)} mm`;
+    const outwardX = projected.x - (chrome.visible.l + chrome.visible.r) / 2;
+    const outwardY = projected.y - (chrome.visible.t + chrome.visible.b) / 2;
+    const labelRect = placeClearLabel(
+      label,
+      {
+        x: projected.x - radiusPx,
+        y: projected.y - radiusPx,
+        w: radiusPx * 2,
+        h: radiusPx * 2,
+      },
+      Math.hypot(outwardX, outwardY) < 1 ? [1, 0] : [outwardX, outwardY],
+      lesionObstacles(chrome),
+      chrome.visible,
+    );
+    paintLesionLabel(label, labelRect);
+    lastEndoluminalLesion = endoluminalLesionRecord(
+      "sphere", projected.x, projected.y, radiusPx, glowPx,
+      distanceMm, label, labelRect, v, radiusMm, null,
+    );
+    ctx.restore();
+    return;
+  }
+  const arrow = lesionArrowPoint(v[0], v[1], chrome);
+  const arrowRect = lesionArrowRect(arrow.x, arrow.y, arrow.dx, arrow.dy);
+  const label = `Lesion ${Math.round(distanceMm)} mm`;
+  const labelRect = placeClearLabel(
+    label,
+    arrowRect,
+    [-arrow.dx, -arrow.dy],
+    lesionObstacles(chrome),
+    chrome.visible,
+  );
+  paintLesionArrow(arrow.x, arrow.y, arrow.dx, arrow.dy);
+  paintLesionLabel(label, labelRect);
+  lastEndoluminalLesion = endoluminalLesionRecord(
+    "arrow", arrow.x, arrow.y, null, null,
+    distanceMm, label, labelRect, v, radiusMm, arrowRect,
+  );
+  ctx.restore();
+}
 
 /** Project patient anterior into the view plane; null when nearly along the view axis. */
 function anteriorInView(dir, right, up) {
@@ -1844,12 +2300,18 @@ function drawEndoluminal() {
   const up = norm(applyRoll(here.up, right0, fly.phi));
   const right = norm(cross(here.t, up));
   const dir = here.t;
+  lastEndoCamera = {
+    pos: [...pos], right: [...right], up: [...up], dir: [...dir],
+    origin: [...(A.origin_mm || [0, 0, 0])],
+    w: W, h: H, focalPx: Math.min(W, H) * 0.62, s: fly.s,
+  };
   const aheadEnd = Math.min(A.fly.s[A.fly.s.length - 1], fly.s + 90);
   const ahead = [];
   for (let s = fly.s; s <= aheadEnd; s += 1) {
     ahead.push(flyAt(s));
   }
   if (ahead.length < 2) {
+    lastEndoluminalLesion = null;
     ctx.fillStyle = tok("--ground");
     ctx.fillRect(0, 0, W, H);
     return;
@@ -1927,6 +2389,7 @@ function drawEndoluminal() {
   const hud = endoHudModel(right, up, dir);
   drawForkOrifices(toView, project, lastGuidance);
   drawAnteriorTick(rings, right, up, dir, lastGuidance);
+  drawEndoluminalLesion(toView);
 
   const remaining = Math.max(0, A.fly.s[A.fly.s.length - 1] - fly.s);
   setReadout({
@@ -3843,6 +4306,18 @@ if (DEBUG) {
     lesionViews: () => ({
       anatomical: lastAnatomicalLesion,
       topology: lastTopologyLesion,
+      endoluminal: lastEndoluminalLesion,
+    }),
+    endoCamera: () => lastEndoCamera && ({
+      pos: [...lastEndoCamera.pos],
+      right: [...lastEndoCamera.right],
+      up: [...lastEndoCamera.up],
+      dir: [...lastEndoCamera.dir],
+      origin: [...lastEndoCamera.origin],
+      w: lastEndoCamera.w,
+      h: lastEndoCamera.h,
+      focalPx: lastEndoCamera.focalPx,
+      s: lastEndoCamera.s,
     }),
     nearestCtSeenSample: (edges, origin, ras) => (
       window.CtPanes && window.CtPanes.nearestCtSeenSample
