@@ -1,4 +1,5 @@
 #!/bin/bash
+# Changes: sign bundled ffmpeg with hardened runtime and no entitlements.
 # Changes: sign the packaged app inside out, then notarize when NOTARY_PROFILE is set.
 set -euo pipefail
 export LANG=C LC_ALL=C
@@ -82,6 +83,10 @@ sign_file() {
     framework)
       args+=(--options runtime)
       ;;
+    runtime-exec)
+      # Bundled helpers (ffmpeg): hardened runtime, no entitlements unless a run needs one.
+      args+=(--options runtime)
+      ;;
     *)
       echo "Unknown sign mode: $mode" >&2
       exit 1
@@ -130,10 +135,12 @@ fi
 : > "$work/all_macho"
 : > "$work/python_libs"
 : > "$work/python_execs"
+: > "$work/ffmpeg_execs"
 : > "$work/other_libs"
 : > "$work/other_execs"
 : > "$work/bundle_mains"
 python_root="$APP/Contents/Resources/python/"
+ffmpeg_bin="$APP/Contents/Resources/ffmpeg/ffmpeg"
 
 while IFS= read -r line; do
   [[ -n "$line" ]] || continue
@@ -187,6 +194,10 @@ while IFS= read -r line; do
     printf '%s\n' "$path" >> "$work/bundle_mains"
     continue
   fi
+  if [[ "$path" == "$ffmpeg_bin" ]]; then
+    printf '%s\n' "$path" >> "$work/ffmpeg_execs"
+    continue
+  fi
   if [[ "$path" == "$python_root"* ]]; then
     if [[ "$is_exec" -eq 1 ]]; then
       printf '%s\n' "$path" >> "$work/python_execs"
@@ -228,6 +239,7 @@ tag_list() {
 tag_list lib "$work/python_libs"
 tag_list lib "$work/other_libs"
 tag_list python-exec "$work/python_execs"
+tag_list runtime-exec "$work/ffmpeg_execs"
 tag_list app-exec "$work/other_execs"
 while IFS=$'\t' read -r _depth mode target; do
   [[ -n "$target" ]] || continue
@@ -255,13 +267,18 @@ sign_file "$APP" app-exec
 
 python_lib_count=$(count_lines "$work/python_libs")
 python_exec_count=$(count_lines "$work/python_execs")
+ffmpeg_exec_count=$(count_lines "$work/ffmpeg_execs")
 other_lib_count=$(count_lines "$work/other_libs")
 other_exec_count=$(count_lines "$work/other_execs")
 bundle_main_count=$(count_lines "$work/bundle_mains")
 macho_total=$(count_lines "$work/all_macho")
-classified=$((python_lib_count + python_exec_count + other_lib_count + other_exec_count + bundle_main_count))
+classified=$((python_lib_count + python_exec_count + ffmpeg_exec_count + other_lib_count + other_exec_count + bundle_main_count))
 if [[ "$classified" -ne "$macho_total" ]]; then
   echo "Internal error: classified ${classified} Mach-O files, found ${macho_total}." >&2
+  exit 1
+fi
+if [[ -e "$ffmpeg_bin" && "$ffmpeg_exec_count" -ne 1 ]]; then
+  echo "Expected one bundled ffmpeg Mach-O at $ffmpeg_bin." >&2
   exit 1
 fi
 
@@ -318,6 +335,22 @@ if [[ -e "$python_bin" ]]; then
   python_ents=$(codesign -d --entitlements :- "$python_bin" 2>/dev/null || true)
   if printf '%s\n' "$python_ents" | grep -q 'allow-jit\|disable-library-validation\|get-task-allow'; then
     echo "Python executable has an entitlement it must not have." >&2
+    exit 1
+  fi
+fi
+
+if [[ -e "$ffmpeg_bin" ]]; then
+  ffmpeg_flags=$(codesign -d --verbose=2 "$ffmpeg_bin" 2>&1 | grep 'flags=' || true)
+  case "$ffmpeg_flags" in
+    *runtime*) ;;
+    *)
+      echo "Hardened runtime is missing on $ffmpeg_bin" >&2
+      exit 1
+      ;;
+  esac
+  ffmpeg_ents=$(codesign -d --entitlements :- "$ffmpeg_bin" 2>/dev/null || true)
+  if printf '%s\n' "$ffmpeg_ents" | grep -q 'allow-jit\|disable-library-validation\|get-task-allow'; then
+    echo "ffmpeg has an entitlement it must not have." >&2
     exit 1
   fi
 fi
@@ -392,6 +425,7 @@ fi
 echo "Mach-O files signed: ${macho_total}"
 echo "  python libraries: ${python_lib_count}"
 echo "  python executables: ${python_exec_count}"
+echo "  ffmpeg executables: ${ffmpeg_exec_count}"
 echo "  other libraries: ${other_lib_count}"
 echo "  other executables: ${other_exec_count}"
 echo "  bundle main executables: ${bundle_main_count}"

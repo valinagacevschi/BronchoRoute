@@ -10,6 +10,7 @@
     "test": "node --test",
     "smoke": "node scripts/smoke.js",
     "build:python": "bash scripts/build-python.sh",
+    "build:ffmpeg": "bash scripts/build-ffmpeg.sh",
     "pack": "electron-builder --mac dir --arm64 --publish never",
     "smoke:packaged": "node scripts/smoke-packaged.js",
     "sign": "bash scripts/sign-and-notarize.sh",
@@ -21,6 +22,7 @@
     "files": [
       "main.js",
       "lib.js",
+      "encoder.js",
       "preload.js",
       "weights.js",
       "weights-manifest.json"
@@ -41,6 +43,13 @@
       {
         "from": "build/python",
         "to": "python",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/ffmpeg",
+        "to": "ffmpeg",
         "filter": [
           "**/*"
         ]

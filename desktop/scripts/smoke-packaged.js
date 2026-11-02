@@ -1,3 +1,4 @@
+// Changes: encode a short packaged-ffmpeg clip (h264 / 30 fps) before the viewer smoke.
 // Changes: check packaged viewer lifecycle and TotalSegmentator module without PATH scripts.
 "use strict";
 
@@ -6,11 +7,54 @@ const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { resolveFfmpeg } = require("../lib");
+const { startEncoder } = require("../encoder");
 
 const desktop = path.resolve(__dirname, "..");
 const pipeline = path.resolve(desktop, "..", "pipeline");
 const bundle = path.join(desktop, "dist", "mac-arm64", "BronchoRoute.app", "Contents");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Valid 64×64 JPEG (no lavfi in the LGPL build). scale/format in encoder.js sizes it.
+const SYNTHETIC_JPEG = Buffer.from(
+  "/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAxAP/bAEMACAoKCwoLDQ0N"
+  + "DQ0NEA8QEBAQEBAQEBAQEBISEhUVFRISEhAQEhIUFBUVFxcXFRUVFRcXGRkZHh4cHCMj"
+  + "JCsrM//EAEsAAQEAAAAAAAAAAAAAAAAAAAAIAQEAAAAAAAAAAAAAAAAAAAAAEAEAAAAA"
+  + "AAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAQABAAwEiAAIRAAMRAP/a"
+  + "AAwDAQACEQMRAD8An8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH//2Q==",
+  "base64",
+);
+
+async function encodePackagedClip(resourcesPath) {
+  const ffmpegPath = resolveFfmpeg({ packaged: true, resourcesPath });
+  assert.equal(SYNTHETIC_JPEG[0], 0xff);
+  assert.equal(SYNTHETIC_JPEG[1], 0xd8);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bronchoroute-52-ffmpeg-"));
+  const outPath = path.join(dir, "clip.mp4");
+  try {
+    const enc = startEncoder({
+      ffmpegPath,
+      outPath,
+      width: 1280,
+      height: 720,
+      fps: 30,
+    });
+    for (let i = 0; i < 30; i += 1) {
+      await enc.writeFrame(SYNTHETIC_JPEG);
+    }
+    await enc.finish();
+    const probe = spawnSync(ffmpegPath, ["-hide_banner", "-i", outPath], {
+      encoding: "utf8",
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    const info = String(probe.stderr || "");
+    assert.match(info, /Video:\s*h264/i, "packaged encode is h264");
+    assert.match(info, /30\s*fps|30\s*tbr/i, "packaged encode is 30 fps");
+    process.stdout.write("PASS: packaged ffmpeg encoded 30 JPEG frames to h264@30fps\n");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 function snapshot(root) {
   const result = new Map();
@@ -70,6 +114,12 @@ async function until(check, timeout = 180000) {
 }
 
 async function main() {
+  const standIn = process.env.BRONCHOROUTE_SMOKE_RESOURCES;
+  if (typeof standIn === "string" && standIn.trim() !== "") {
+    await encodePackagedClip(path.resolve(standIn.trim()));
+    return;
+  }
+  await encodePackagedClip(path.join(bundle, "Resources"));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bronchoroute-27-data-"));
   const trees = ["data", "ts_out", "out", "app_state"];
   const before = trees.map((name) => snapshot(path.join(pipeline, name)));
