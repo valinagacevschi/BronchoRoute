@@ -1,3 +1,4 @@
+<!-- # Changes: review flags render as a collapsible amber warning panel. -->
 <!-- # Changes: topology geometry rotation with upright markers and time-based spin. -->
 <!-- Changes: hide legacy review behind the default-off feature flag. -->
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
@@ -171,14 +172,34 @@ kbd {
 body.ct-panes-active .proto {
   top: auto; bottom: 16px; left: 252px; right: auto; z-index: 5;
 }
-.review-banner {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 10;
-  padding: 10px 16px; color: #3B2A08; background: #F5C451;
-  border-bottom: 1px solid #C99A28; font-weight: 600;
+/* In the rail so every view shows it without covering the switcher,
+   limitations panel, CT toolbar, or the endoluminal HUD. */
+.review-warnings {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #F5C451;
+  color: #3B2A08;
+  border: 1px solid #C99A28;
+  font-size: 12.5px;
+  line-height: 1.35;
+  overflow-wrap: break-word;
 }
-.review-banner[hidden], .reviewed-note[hidden] { display: none; }
-.review-banner strong { display: block; }
-.review-banner p { margin: 2px 0 0; font-size: 12px; font-weight: 400; }
+.review-warnings[hidden], .reviewed-note[hidden] { display: none; }
+.review-warnings button {
+  display: block; width: 100%; margin: 0; padding: 0;
+  border: 0; background: transparent; color: inherit; cursor: pointer;
+  text-align: left;
+  font: 600 10px/1.2 "IBM Plex Sans Condensed", sans-serif;
+  letter-spacing: .12em; text-transform: uppercase;
+}
+.review-warnings button::after { content: " ▾"; }
+.review-warnings.collapsed button::after { content: " ▸"; }
+.review-warnings button:focus-visible {
+  outline: 2px solid #3B2A08; outline-offset: 2px;
+}
+.review-warnings ul { margin: 6px 0 0; padding: 0; list-style: none; }
+.review-warnings li + li { margin-top: 4px; }
+.review-warnings.collapsed ul { display: none; }
 .reviewed-note { margin: 5px 0 0; font-size: 11px; color: var(--muted); }
 .limitations-panel {
   position: fixed; top: 14px; right: 16px; z-index: 6;
@@ -324,6 +345,12 @@ body.walkthrough-active .walk-sim-label { display: block; }
 <aside class="rail">
   <div class="brand"><span>Lung Navigator</span>Bronchial tree renderer</div>
 
+  <section class="review-warnings" id="review-warnings" hidden aria-label="Review warnings">
+    <button type="button" id="review-warnings-toggle" aria-expanded="true"
+      aria-controls="review-warnings-list" title="Show or hide review warnings">Review warnings</button>
+    <ul id="review-warnings-list"></ul>
+  </section>
+
   <div class="group group-case">
     <h2>Case</h2>
     <label class="case-picker-label" id="case-picker-label" hidden>
@@ -380,10 +407,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
 </aside>
 
 <div class="proto">Prototype</div>
-<div class="review-banner" id="review-banner" role="alert" hidden>
-  <strong>Clinical review pending — not for training use</strong>
-  <div id="review-banner-entries"></div>
-</div>
 
 <aside class="limitations-panel collapsed" id="limitations-panel" aria-label="View limitations">
   <h2 id="limitations-toggle" title="Show or hide limitations">Limitations</h2>
@@ -488,24 +511,93 @@ function loadCtPanesScript() {
   });
 }
 
+// Review.lobe is a LOBE_NAMES string, a mask label 1..5, or a TotalSegmentator key.
+const LOBE_LABELS = {
+  1: "Left upper lobe",
+  2: "Left lower lobe",
+  3: "Right upper lobe",
+  4: "Right middle lobe",
+  5: "Right lower lobe",
+  lung_upper_lobe_left: "Left upper lobe",
+  lung_lower_lobe_left: "Left lower lobe",
+  lung_upper_lobe_right: "Right upper lobe",
+  lung_middle_lobe_right: "Right middle lobe",
+  lung_lower_lobe_right: "Right lower lobe",
+  "left upper lobe": "Left upper lobe",
+  "left lower lobe": "Left lower lobe",
+  "right upper lobe": "Right upper lobe",
+  "right middle lobe": "Right middle lobe",
+  "right lower lobe": "Right lower lobe",
+};
+
+function reviewWarningLines(A) {
+  const formatReviewNumber = (value) => {
+    if (typeof value === "boolean" || value == null || value === "") return "";
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "";
+    const rounded = Math.round(n * 10) / 10;
+    if (Math.abs(rounded - Math.round(rounded)) < 1e-9) return String(Math.round(rounded));
+    return String(rounded);
+  };
+  const lobeLabel = (code) => {
+    if (code == null || code === "") return "Unknown lobe";
+    const key = typeof code === "number" ? code : String(code).trim().toLowerCase();
+    return LOBE_LABELS[key] || String(code).trim();
+  };
+  const smallLobeDetail = (item) => {
+    const parts = [];
+    const ml = formatReviewNumber(item.ml);
+    if (ml) parts.push(`${ml} ml`);
+    const median = formatReviewNumber(item.median_ml);
+    if (median) parts.push(`median ${median} ml`);
+    if (!parts.length) {
+      for (const [key, value] of Object.entries(item)) {
+        if (key === "kind" || key === "lobe") continue;
+        const num = formatReviewNumber(value);
+        if (num) parts.push(`${key.replace(/_/g, " ")} ${num}`);
+      }
+    }
+    if (!parts.length) return "";
+    return ` (${parts.join(", ")})`;
+  };
+  const review = A && Array.isArray(A.review) ? A.review : [];
+  const lines = [];
+  for (const item of review) {
+    if (!item || typeof item !== "object") continue;
+    const lobe = lobeLabel(item.lobe);
+    if (item.kind === "lobe_without_airways") {
+      lines.push(`${lobe}: no airways found in this lobe`);
+    } else if (item.kind === "small_lobe") {
+      lines.push(`${lobe}: smaller than expected${smallLobeDetail(item)}`);
+    } else if (item.kind) {
+      lines.push(`${lobe}: ${String(item.kind).replace(/_/g, " ")}`);
+    }
+  }
+  return lines;
+}
+window.reviewWarningLines = reviewWarningLines;
+
 ensureAirway().then(async (A) => {
 const features = await fetch("/api/features").then(res => res.json()).catch(() => ({
   legacy_review: false, viewer_only: false,
 }));
 await loadCtPanesScript().catch(err => console.warn(err));
 document.getElementById("r-source").textContent = A.source || "unknown";
-if (A.review && A.review.length) {
-  const banner = document.getElementById("review-banner");
-  const entries = document.getElementById("review-banner-entries");
-  for (const item of A.review) {
-    const line = document.createElement("p");
-    line.textContent = `${item.kind} ${item.lobe}`;
-    entries.appendChild(line);
-  }
-  banner.hidden = false;
-  document.querySelector(".rail").style.paddingTop = `${banner.offsetHeight + 20}px`;
-  document.getElementById("limitations-panel").style.top = `${banner.offsetHeight + 10}px`;
+const reviewPanel = document.getElementById("review-warnings");
+const reviewList = document.getElementById("review-warnings-list");
+const reviewLines = reviewWarningLines(A);
+reviewList.replaceChildren();
+for (const text of reviewLines) {
+  const item = document.createElement("li");
+  item.textContent = text;
+  reviewList.appendChild(item);
 }
+reviewPanel.hidden = reviewLines.length === 0;
+document.getElementById("review-warnings-toggle").addEventListener("click", () => {
+  const collapsed = reviewPanel.classList.toggle("collapsed");
+  document.getElementById("review-warnings-toggle")
+    .setAttribute("aria-expanded", collapsed ? "false" : "true");
+});
 const hasInterpolatedEdges = A.edges.some(edge => edge.prov === "interpolated");
 document.getElementById("prov-legend").hidden = !hasInterpolatedEdges && A.provenance_recorded;
 if (!A.provenance_recorded) {
