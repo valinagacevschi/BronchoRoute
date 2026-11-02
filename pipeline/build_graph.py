@@ -1,3 +1,5 @@
+# Changes: disable soma cuts, repair only mask-contained skeleton holes, root in RAS,
+# and reject empty lung trees before exporting.
 """AeroPath airway mask -> navigable airway graph.
 
     mask.nii.gz -> kimimaro skeleton -> networkx graph -> graph.json
@@ -20,6 +22,7 @@ import kimimaro
 import networkx as nx
 import nibabel as nib
 import numpy as np
+from scipy.spatial import cKDTree
 from paths import OUT
 from snomed import LOBES, SNOMED_SOURCE, TRACHEA
 
@@ -31,8 +34,9 @@ TEASAR = {
     "const": 2.0,          # mm
     "pdrf_scale": 100_000,
     "pdrf_exponent": 4,
-    "soma_detection_threshold": 0,
-    "soma_acceptance_threshold": 0,
+    # Soma handling cuts paths around a neuronal cell body; the trachea is a tube.
+    "soma_detection_threshold": float("inf"),
+    "soma_acceptance_threshold": float("inf"),
 }
 
 # Branches shorter than this are thinning artefacts rather than anatomy.
@@ -70,7 +74,7 @@ def skeletonise(mask: np.ndarray, spacing: tuple[float, float, float]):
         parallel=1,
     )
     if not skels:
-        raise SystemExit("kimimaro produced no skeleton — is the mask empty?")
+        raise SystemExit("graph: no airway tree in lung")
 
     # A clean airway mask is one connected component; more means the mask
     # fragmented, so keep the largest and say so.
@@ -100,49 +104,69 @@ def to_voxel(pos: np.ndarray, spacing, shape) -> np.ndarray:
     return np.clip(vox, 0, np.asarray(shape) - 1)
 
 
-def to_graph(skel) -> nx.Graph:
-    """Skeleton -> the largest connected component of it.
+def segment_inside_mask(start, end, mask: np.ndarray, spacing) -> bool:
+    """Only repair skeleton holes supported throughout by the airway mask."""
+    steps = max(1, int(np.ceil(np.linalg.norm(end - start) / 0.25)))
+    samples = np.linspace(start, end, steps + 1)
+    voxels = np.rint(samples / np.asarray(spacing)).astype(int)
+    if np.any(voxels < 0) or np.any(voxels >= np.asarray(mask.shape)):
+        return False
+    return bool(np.all(mask[tuple(voxels.T)] > 0))
 
-    One kimimaro "component" can still contain several graph components, so
-    this filters again. On AeroPath case 1 that drops a stray 141-vertex
-    fragment; leaving it in strands the root and the trace finds one branch.
-    """
+
+def to_graph(skel, mask: np.ndarray, spacing) -> nx.Graph:
+    """Recover skeleton holes without inventing airways across mask gaps."""
     g = nx.Graph()
     for i, (pos, radius) in enumerate(zip(skel.vertices, skel.radii)):
         g.add_node(i, pos=pos.astype(float), radius=float(radius))
     for a, b in skel.edges:
         pa, pb = skel.vertices[a], skel.vertices[b]
-        g.add_edge(int(a), int(b), length=float(np.linalg.norm(pa - pb)))
+        g.add_edge(int(a), int(b), length=float(np.linalg.norm(pa - pb)), provenance="ct")
+
+    if not g:
+        raise SystemExit("graph: no airway tree in lung")
+    while True:
+        parts = sorted(nx.connected_components(g), key=len, reverse=True)
+        if len(parts) == 1:
+            break
+        main = np.array(sorted(parts[0]))
+        tree = cKDTree(skel.vertices[main])
+        candidates = []
+        for part in parts[1:]:
+            nodes = np.array(sorted(part))
+            distances, nearest = tree.query(skel.vertices[nodes])
+            index = int(distances.argmin())
+            a = int(nodes[index])
+            b = int(main[nearest[index]])
+            if segment_inside_mask(skel.vertices[a], skel.vertices[b], mask, spacing):
+                candidates.append((float(distances[index]), a, b))
+        if not candidates:
+            break
+        distance, a, b = min(candidates)
+        g.add_edge(a, b, length=distance, provenance="ct")
+        print(f"  repaired skeleton hole: {distance:.2f} mm inside airway mask")
 
     parts = sorted(nx.connected_components(g), key=len, reverse=True)
     if len(parts) > 1:
         dropped = sum(len(p) for p in parts[1:])
         share = dropped / g.number_of_nodes()
         print(f"  warning: {len(parts)} graph components, dropped {dropped} "
-              f"vertices ({share:.0%} of the skeleton)")
-        # Dropping is correct — a fragment with no path from the trachea cannot
-        # be navigated to. But on case 5 one discarded fragment was 62 vertices
-        # of real right-middle-lobe airway, so silence here hides missing
-        # anatomy. Loud enough that a reviewer sees it.
+              f"vertices ({share:.0%} of the skeleton); no mask-contained join")
         if share > 0.05:
             print(f"  ** {share:.0%} of the skeleton is disconnected from the "
-                  f"main tree — the mask may be fragmented; review before use")
+                  f"main tree — review before use")
     return g.subgraph(parts[0]).copy()
 
 
-def find_root(g: nx.Graph) -> int:
-    """The trachea: the widest terminal vertex.
-
-    Radius separates it cleanly — on AeroPath case 1 the trachea's cut end is
-    13.99mm and the next widest terminal is 3.18mm. Position heuristics do not
-    work here: the mask does not reach the top of the trachea, so the most
-    superior point is a distal twig, and "start at the top slice" (both older
-    specs) would root the tree in a 0.5mm bronchiole.
-    """
-    terminals = [n for n in g if g.degree(n) == 1]
-    if not terminals:
-        raise SystemExit("skeleton has no terminal vertices")
-    return max(terminals, key=lambda n: g.nodes[n]["radius"])
+def find_root(g: nx.Graph, spacing, affine: np.ndarray) -> int:
+    """Wide superior vertices identify the trachea even when its cut end fans out."""
+    if not g:
+        raise SystemExit("graph: no airway tree in lung")
+    maximum = max(data["radius"] for _, data in g.nodes(data=True))
+    wide = [n for n in g if g.nodes[n]["radius"] >= 0.5 * maximum]
+    positions = np.array([g.nodes[n]["pos"] for n in wide])
+    world = to_patient_mm(positions, spacing, affine)
+    return wide[int(world[:, 2].argmax())]
 
 
 def branch_points(g: nx.Graph, root: int) -> set[int]:
@@ -550,8 +574,8 @@ def main() -> None:
     skel = skeletonise(mask, spacing)
     print(f"  skeleton {len(skel.vertices):,} vertices")
 
-    g = to_graph(skel)
-    root = find_root(g)
+    g = to_graph(skel, mask, spacing)
+    root = find_root(g, spacing, affine)
     print(f"  root     vertex {root}, radius {g.nodes[root]['radius']:.2f} mm")
 
     branches = trace_branches(g, root)
@@ -566,6 +590,8 @@ def main() -> None:
     label_lobes(kept, lungs, spacing)
     kept = prune_blind_alleys(kept)
     kept = recollapse(kept, root)
+    if not kept:
+        raise SystemExit("graph: no airway tree in lung")
     name_proximal(kept)
     named = sum(1 for b in kept if b.get("airway_name"))
     with_lobe = sum(1 for b in kept if b["lobe"])

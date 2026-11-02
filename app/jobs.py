@@ -1,3 +1,4 @@
+# Changes: surface empty airway failures as a plain graph-step error.
 """Background pipeline jobs (Phase 4a — segmentation).
 
 One job per case at a time. Launcher uses a new session, clean env, and arg
@@ -393,6 +394,11 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
                 _kill_process_group(job._pgid, proc.pid)
                 raise TimeoutError(f"job timed out after {_job_timeout_s:.0f}s")
             if code != 0:
+                if "build_graph.py" in cmd:
+                    reason = ("no airway tree in lung" if any(
+                        "graph: no airway tree in lung" in line for line in job.log_lines
+                    ) else f"command exited {code}")
+                    raise RuntimeError(f"graph step failed: {reason}. Try another Series")
                 raise RuntimeError(f"command exited {code}: {redact_log_line(' '.join(cmd))}")
         register_segment_artifacts(job.case_id, clinician)
         job.status = "succeeded"
