@@ -1,3 +1,4 @@
+<!-- # Changes: About dialog with licence, notices, and sponsors. -->
 <!-- # Changes: topology geometry rotation with upright markers and time-based spin. -->
 <!-- Changes: hide legacy review behind the default-off feature flag. -->
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
@@ -315,6 +316,37 @@ body.walkthrough-active .walk-sim-label { display: block; }
   border: 2px solid #e85d4c; border-radius: 50%; pointer-events: none; z-index: 3;
   display: none;
 }
+.about-link {
+  margin-top: auto; align-self: flex-start;
+  font: 500 13px/1 "IBM Plex Sans Condensed", sans-serif;
+  letter-spacing: .04em; color: var(--steel);
+  text-decoration: underline; text-underline-offset: 2px;
+}
+#about-dialog {
+  border: 1px solid var(--edge); border-radius: 8px;
+  background: var(--surface); color: var(--ink); box-shadow: var(--shadow);
+  width: min(28rem, calc(100vw - 32px)); padding: 18px 20px 16px;
+}
+#about-dialog::backdrop { background: rgba(12, 18, 22, .45); }
+#about-dialog h2 {
+  margin: 0; font-family: "IBM Plex Sans Condensed", sans-serif;
+  font-weight: 600; font-size: 22px;
+}
+#about-dialog h3 {
+  margin: 14px 0 4px; font-size: 11px; font-weight: 500;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  font-family: "IBM Plex Sans Condensed", sans-serif;
+}
+#about-dialog p { margin: 8px 0; font-size: 14px; }
+#about-dialog a { color: var(--steel); }
+#about-sponsors { margin: 0; padding-left: 18px; }
+#about-sponsors:empty { list-style: none; padding: 0; }
+.about-close {
+  margin-top: 14px; font: 500 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
+  letter-spacing: .03em; border: 1px solid var(--edge); border-radius: 6px;
+  padding: 7px 12px; background: var(--ground); color: var(--ink); cursor: pointer;
+}
+.about-close:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
 </style>
 
 <div class="stage"><canvas id="c"></canvas><div class="shared-marker-3d" id="shared-marker-3d"></div></div>
@@ -377,6 +409,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
     whether moving through it teaches anything.</p>
   </div>
 
+  <a href="#about" class="about-link" id="about-open">About</a>
 </aside>
 
 <div class="proto">Prototype</div>
@@ -402,6 +435,19 @@ body.walkthrough-active .walk-sim-label { display: block; }
 </aside>
 
 <nav class="switcher" id="switcher" aria-label="Renderer variant"></nav>
+
+<dialog id="about-dialog" aria-labelledby="about-name">
+  <h2 id="about-name">BronchoRoute</h2>
+  <p>Version <span id="about-version"></span></p>
+  <p id="about-disclaimer">Research and education tool. Not a medical device. Not for diagnosis or treatment decisions.</p>
+  <p><a id="about-licence" href="/LICENSE"></a></p>
+  <p><a id="about-notices" href="/THIRD_PARTY_NOTICES.md">Third-party notices</a></p>
+  <section id="about-sponsors-section">
+    <h3>Sponsors</h3>
+    <ul id="about-sponsors"></ul>
+  </section>
+  <button type="button" class="about-close" id="about-close">Close</button>
+</dialog>
 
 <script id="airway-data">
 /*__AIRWAY_EMBED__*/
@@ -437,6 +483,38 @@ if (VIEWER_MODE) {
     return _fetch(input, init);
   };
 }
+
+document.getElementById("about-open").addEventListener("click", (event) => {
+  event.preventDefault();
+  const dialog = document.getElementById("about-dialog");
+  fetch("/api/about").then((aboutRes) => {
+    if (!aboutRes.ok) throw new Error("about");
+    return aboutRes.json();
+  }).then((about) => fetch("/sponsors.json").then((sponsorsRes) => {
+    if (!sponsorsRes.ok) throw new Error("sponsors");
+    return sponsorsRes.json().then((sponsors) => ({ about, sponsors }));
+  })).then(({ about, sponsors }) => {
+    document.getElementById("about-name").textContent = about.name;
+    document.getElementById("about-version").textContent = about.version;
+    const licence = document.getElementById("about-licence");
+    licence.textContent = about.licence;
+    licence.href = "/LICENSE";
+    const list = document.getElementById("about-sponsors");
+    while (list.firstChild) list.removeChild(list.firstChild);
+    const items = Array.isArray(sponsors) ? sponsors : [];
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.textContent = typeof item === "string" ? item : String((item && item.name) || "");
+      list.appendChild(li);
+    }
+    if (!dialog.open) dialog.showModal();
+  }).catch(() => {
+    if (!dialog.open) dialog.showModal();
+  });
+});
+document.getElementById("about-close").addEventListener("click", () => {
+  document.getElementById("about-dialog").close();
+});
 
 async function resolveCaseId() {
   const params = new URLSearchParams(location.search);
