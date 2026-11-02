@@ -37,3 +37,7 @@
 - Electron dev entry (GitLab #26): `electron .` puts the app directory in `argv`,
   so `require.main === module` is false and the shell never starts. Treat that
   directory as the entry, and launch with `electron .` as well as the smoke script.
+- Endoluminal clock hours: a branch within about 9° of the view axis (in-plane
+  fraction under 0.15, the same cut as `clock_of`) has no stable hour. That
+  residual is the direction of a small miss, so call it straight ahead. The
+  bronchus intermedius at the right-upper takeoff is that case; the carina is not.

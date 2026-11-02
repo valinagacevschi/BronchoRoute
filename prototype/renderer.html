@@ -3,6 +3,7 @@
 <!-- # Changes: About dialog with licence, notices, and sponsors. -->
 <!-- Changes: local IBM Plex faces and the research-tool footer. -->
 <!-- # Changes: topology geometry rotation with upright markers and time-based spin. -->
+<!-- # Changes: manual endoluminal roll, patient and scope clocks, no interactive auto-roll. -->
 <!-- Changes: hide legacy review behind the default-off feature flag. -->
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
      Deploy: clamp orifice labels inside canvas clear of the left rail; keep
@@ -539,7 +540,7 @@ window.AIRWAY = {"case":"1","source":"AeroPath 1","root":0,"nodes":{"0":{"p":[0.
 "use strict";
 // Four renderers of the same airway graph:
 //   A — Anatomical 3D: orbit camera around the tree in the bronchoscopist frame
-//   B — Endoluminal: fly the lumen along the route with anterior at 12 o'clock
+//   B — Endoluminal: fly the lumen; roll is manual and persists along the route
 //   C — Topology map: radial tree (angle by leaf share, radius by generation)
 //   D — CT panes: linked axial/coronal/sagittal (server mode only)
 // Throwaway prototype for wayfinder ticket 06 (navigation renderer).
@@ -758,7 +759,7 @@ const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
     hint: "<kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front)" },
   { key: "endoluminal", name: "Endoluminal",
-    hint: "<kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · <kbd>Space</kbd> auto-play (slows near forks, pauses 1&nbsp;s) · <kbd>T</kbd> reset route" },
+    hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>T</kbd> reset route" },
   { key: "topology", name: "Topology map",
     hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>[</kbd> / <kbd>]</kbd> rotate 15° · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
   { key: "ct-panes", name: "CT panes",
@@ -766,7 +767,7 @@ const VARIANTS = [
       ? "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L"
       : "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L · Mark Lesion in axial" },
   { key: "walkthrough", name: "Walk-through",
-    hint: "Endoluminal + CT panes linked · <kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · pauses at forks · simulated roll" },
+    hint: "Endoluminal + CT panes linked · <kbd>←</kbd><kbd>→</kbd> roll · <kbd>↑</kbd><kbd>↓</kbd> fly · pauses at forks" },
 ];
 
 // Switcher number order (1–4); URL variant= keys and VARIANTS indices unchanged.
@@ -1185,7 +1186,392 @@ function drawOrientationGizmo() {
 const fly = {
   s: 0, playing: false, pausedFork: null, pauseUntil: null,
   armed: new Set(A.forks.map(f => f.fork)),
+  // User roll about the transported frame. route.roll is the video auto-align
+  // profile and is not applied while the scope is flown by hand.
+  phi: 0,
+  lastPause: null,
 };
+let rigDial = null;
+let rigDragging = false;
+let lastGuidance = null;
+let lastForkLabels = [];
+const AP_DEGENERACY = 0.10;
+const AHEAD_FRACTION = 0.15;
+const ALIGN_DEG = 15;
+
+function patientFrame(t) {
+  const n = Math.hypot(t[0], t[1], t[2]);
+  const v = n < 1e-12 ? [0, 0, 0] : [t[0] / n, t[1] / n, t[2] / n];
+  const projected = [-v[0] * v[1], 1 - v[1] * v[1], -v[2] * v[1]];
+  const length = Math.hypot(projected[0], projected[1], projected[2]);
+  if (length < AP_DEGENERACY) {
+    return { degenerate: true, upA: null, rightA: null, length };
+  }
+  const upA = [projected[0] / length, projected[1] / length, projected[2] / length];
+  const rightA = [
+    v[1] * upA[2] - v[2] * upA[1],
+    v[2] * upA[0] - v[0] * upA[2],
+    v[0] * upA[1] - v[1] * upA[0],
+  ];
+  return { degenerate: false, upA, rightA, length };
+}
+
+function patientAngle(t, d) {
+  const frame = patientFrame(t);
+  if (frame.degenerate || !d) return null;
+  let rightDot = 0;
+  let upDot = 0;
+  for (let i = 0; i < 3; i++) {
+    rightDot += d[i] * frame.rightA[i];
+    upDot += d[i] * frame.upA[i];
+  }
+  return Math.atan2(rightDot, upDot);
+}
+
+function scopeAngle(t, upScreen) {
+  return patientAngle(t, upScreen);
+}
+
+function inPlaneFraction(t, d) {
+  const magnitude = hypot3(d);
+  if (magnitude < 1e-12) return 0;
+  const tangent = norm(t);
+  const projected = sub(d, scale(tangent, dot(d, tangent)));
+  return hypot3(projected) / magnitude;
+}
+
+function wrapDeg(x) {
+  let wrapped = ((x + 180) % 360 + 360) % 360 - 180;
+  if (wrapped === -180) wrapped = 180;
+  return wrapped;
+}
+
+function jsFixed0(value) {
+  return Number(value).toFixed(0);
+}
+
+function clockHour(angleRad) {
+  if (angleRad == null || !Number.isFinite(angleRad)) return null;
+  const hours = Math.round(angleRad * 6 / Math.PI);
+  const hour = ((hours % 12) + 12) % 12;
+  return hour || 12;
+}
+
+function rotateHint(deltaDeg, ahead = false) {
+  if (ahead) return "straight ahead";
+  if (deltaDeg == null || !Number.isFinite(deltaDeg)) return "degenerate AP axis";
+  const wrapped = wrapDeg(deltaDeg);
+  if (Math.abs(wrapped) <= ALIGN_DEG) return "aligned ✓";
+  const arrow = wrapped > 0 ? "↻" : "↺";
+  return `rotate ${jsFixed0(Math.abs(wrapped))}° ${arrow}`;
+}
+
+function applyRoll(up, right, phi) {
+  const c = Math.cos(phi);
+  const s = Math.sin(phi);
+  return [
+    up[0] * c + right[0] * s,
+    up[1] * c + right[1] * s,
+    up[2] * c + right[2] * s,
+  ];
+}
+
+function childOffset(edge) {
+  const centreline = edge && edge.c;
+  if (!centreline || centreline.length < 2) return null;
+  let length = 0;
+  for (let i = 1; i < centreline.length; i++) {
+    length += hypot3(sub(centreline[i], centreline[i - 1]));
+  }
+  if (length < 1e-9) return null;
+  const at = pointAlongCentreline(centreline, Math.min(5, length / 2));
+  if (!at) return null;
+  return sub(at, centreline[0]);
+}
+
+function routeRollAt(s) {
+  const route = A.fly;
+  if (!route.roll || !route.roll.length) return 0;
+  const sample = Math.max(0, Math.min(route.s.length - 1, s / route.step_mm));
+  const before = Math.floor(sample);
+  const after = Math.min(before + 1, route.s.length - 1);
+  const fraction = sample - before;
+  return route.roll[before] + (route.roll[after] - route.roll[before]) * fraction;
+}
+
+function clearOfChrome(x, y, hud) {
+  const railRight = hud && Number.isFinite(hud.railRight) ? hud.railRight : 0;
+  if (x < railRight + 8 || x > W - 8 || y < 8 || y > H - 8) return false;
+  const panel = hud && hud.panel;
+  if (panel && x > panel.l && x < panel.r && y > panel.t && y < panel.b) return false;
+  return true;
+}
+
+function guidanceLayout(textWidth) {
+  const canvasRect = cv.getBoundingClientRect();
+  const railEl = document.querySelector(".rail");
+  const switcher = document.getElementById("switcher").getBoundingClientRect();
+  const railBox = railEl ? railEl.getBoundingClientRect() : canvasRect;
+  const railRight = Math.max(0, railBox.right - canvasRect.left);
+  const left = railRight + 12;
+  const switcherTop = switcher.top - canvasRect.top;
+  const bottom = Math.min(H - 12, (Number.isFinite(switcherTop) ? switcherTop : H - 22) - 8);
+  const radius = 26;
+  const gap = 116;
+  const cx = left + 50;
+  const cy = bottom - radius - 45;
+  const dials = [
+    { x: cx, y: cy, radius },
+    { x: cx + gap, y: cy, radius },
+  ];
+  const textX = dials[1].x + radius + 28;
+  const labelOut = radius + 18;
+  const panel = {
+    l: left - 8,
+    t: cy - labelOut,
+    r: Math.min(W - 10, Math.max(dials[1].x + labelOut, textX + textWidth + 12)),
+    b: Math.min(H - 8, bottom + 2),
+  };
+  return { railRight, left, bottom, radius, cx, cy, dials, textX, panel };
+}
+
+function forkSurvey() {
+  return (A.forks || []).map(fork => {
+    const parent = flyAt(fork.s);
+    const frame = patientFrame(parent.t);
+    return {
+      fork: fork.fork,
+      s: fork.s,
+      name: fork.name || "",
+      degenerate: frame.degenerate,
+      children: (fork.children || []).map(child => {
+        const direction = childOffset(A.edges[child.edge]);
+        const ahead = !frame.degenerate && !!direction
+          && inPlaneFraction(parent.t, direction) < AHEAD_FRACTION;
+        const theta = !direction || frame.degenerate || ahead
+          ? null
+          : patientAngle(parent.t, direction);
+        return {
+          name: child.name || "",
+          on_route: !!child.on_route,
+          ahead,
+          clock: theta == null ? null : clockHour(theta),
+          thetaDeg: theta == null ? null : theta * 180 / Math.PI,
+          inPlane: direction ? inPlaneFraction(parent.t, direction) : null,
+        };
+      }),
+    };
+  });
+}
+
+function endoHudModel(right, up, dir) {
+  const next = A.forks.find(fork => fork.s >= fly.s - 1e-6);
+  const parentT = next ? flyAt(next.s).t : dir;
+  const frame = patientFrame(parentT);
+  const degenerate = frame.degenerate;
+  let ahead = false;
+  let theta = null;
+  if (next && !degenerate) {
+    const chosen = (next.children || []).find(child => child.on_route) || (next.children || [])[0];
+    const direction = chosen ? childOffset(A.edges[chosen.edge]) : null;
+    if (direction && inPlaneFraction(parentT, direction) < AHEAD_FRACTION) {
+      ahead = true;
+    } else if (direction) {
+      theta = patientAngle(parentT, direction);
+    } else {
+      ahead = true;
+    }
+  }
+  const psi = degenerate ? null : scopeAngle(parentT, up);
+  const delta = !ahead && theta != null && psi != null
+    ? wrapDeg((theta - psi) * 180 / Math.PI)
+    : null;
+  let hint = "Route complete";
+  if (degenerate) hint = "degenerate AP axis";
+  else if (ahead) hint = "straight ahead";
+  else if (theta != null && psi != null) hint = rotateHint(delta);
+  else if (next) hint = "straight ahead";
+  const phiDeg = wrapDeg(fly.phi * 180 / Math.PI);
+  const rollText = `Scope roll: ${jsFixed0(phiDeg)}°`;
+  let forkText = "";
+  if (next) {
+    const distance = Math.max(0, next.s - fly.s);
+    const mark = next.prov === "interpolated" ? " · interp" : "";
+    const stem = `Fork ${next.fork} · ${jsFixed0(distance)} mm — `;
+    if (degenerate) forkText = `${stem}degenerate AP axis${mark}`;
+    else if (ahead || theta == null) forkText = `${stem}straight ahead${mark}`;
+    else {
+      forkText = `${stem}patient ${clockHour(theta)} o'clock · scope ${clockHour(theta - psi)} o'clock${mark}`;
+    }
+  }
+  const lines = [];
+  if (forkText) lines.push({ text: forkText, color: "#f4f7f8" });
+  if (fly.pausedFork) {
+    lines.push({ text: `Paused at fork ${fly.pausedFork} — Space / ↑`, color: "#f4f7f8" });
+  }
+  if (flyAt(fly.s).prov === "interpolated") {
+    lines.push({ text: "Interpolated — not CT-demonstrated", color: "#ffd166" });
+  }
+  if (A.target_gap_mm > 0 && !A.target_inside_airway
+      && A.fly.s[A.fly.s.length - 1] - fly.s <= 10) {
+    lines.push({ text: `Target ${A.target_gap_mm.toFixed(1)} mm beyond airway`, color: "#f4f7f8" });
+  }
+  if (degenerate && !forkText) lines.push({ text: "degenerate AP axis", color: "#f4f7f8" });
+  lines.push({ text: rollText, color: "#d5e0e5" });
+  lines.push({ text: "Simulated · CT-derived · not live", color: "#d5e0e5" });
+  ctx.save();
+  ctx.font = "11px system-ui";
+  let natural = 80;
+  for (const line of lines) natural = Math.max(natural, ctx.measureText(line.text).width);
+  ctx.restore();
+  const layout = guidanceLayout(Math.min(420, natural));
+  const childAngles = [];
+  if (next && !degenerate) {
+    for (const child of next.children || []) {
+      const direction = childOffset(A.edges[child.edge]);
+      if (!direction || inPlaneFraction(parentT, direction) < AHEAD_FRACTION) continue;
+      childAngles.push({
+        theta: patientAngle(parentT, direction),
+        on_route: !!child.on_route,
+      });
+    }
+  }
+  rigDial = {
+    x: layout.dials[1].x,
+    y: layout.dials[1].y,
+    radius: layout.dials[1].radius,
+  };
+  lastGuidance = {
+    phiDeg,
+    psiDeg: psi == null ? null : psi * 180 / Math.PI,
+    thetaDeg: theta == null ? null : theta * 180 / Math.PI,
+    delta,
+    hint,
+    rollText,
+    forkText,
+    ahead,
+    degenerate,
+    patientClock: theta == null ? null : clockHour(theta),
+    scopeClock: theta == null || psi == null ? null : clockHour(theta - psi),
+    routeRollDeg: routeRollAt(fly.s) * 180 / Math.PI,
+    s: fly.s,
+    pausedFork: fly.pausedFork,
+    lastPause: fly.lastPause,
+    nextPause: next ? next.pause_s : null,
+    scopeDial: { ...rigDial },
+    panel: { ...layout.panel },
+    railRight: layout.railRight,
+    aligned: hint.startsWith("aligned"),
+  };
+  return { layout, lines, hint, psi, childAngles, natural };
+}
+
+function paintEndoHud(model) {
+  const layout = model.layout;
+  const hint = model.hint;
+  const psi = model.psi;
+  const hintColor = hint.startsWith("aligned") ? "#65e399" : "#ffd166";
+  const point = (x, angle, r) => [x + Math.sin(angle) * r, layout.cy - Math.cos(angle) * r];
+  ctx.save();
+  ctx.font = "11px system-ui";
+  ctx.fillStyle = "rgba(17, 27, 33, 0.88)";
+  ctx.beginPath();
+  ctx.roundRect(
+    layout.panel.l,
+    layout.panel.t,
+    layout.panel.r - layout.panel.l,
+    layout.panel.b - layout.panel.t,
+    8,
+  );
+  ctx.fill();
+  const cardinals = [
+    ["A", "R", "P", "L"],
+    ["12", "3", "6", "9"],
+  ];
+  for (let dial = 0; dial < 2; dial++) {
+    const x = layout.dials[dial].x;
+    const alignedRing = dial === 1 && hint.startsWith("aligned");
+    ctx.strokeStyle = alignedRing ? "#65e399" : "#a9bbc4";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, layout.cy, layout.radius, 0, 7);
+    ctx.stroke();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = "#f4f7f8";
+    ctx.font = "11px system-ui";
+    for (let i = 0; i < 4; i++) {
+      const p = point(x, i * Math.PI / 2, layout.radius + 10);
+      ctx.fillText(cardinals[dial][i], p[0], p[1] + 3);
+    }
+    for (const child of model.childAngles) {
+      if (child.theta == null) continue;
+      if (dial && psi == null) continue;
+      const angle = child.theta - (dial ? psi : 0);
+      const p = point(x, angle, layout.radius);
+      ctx.fillStyle = child.on_route ? "#58b8ff" : "#87939b";
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], child.on_route ? 4 : 2.5, 0, 7);
+      ctx.fill();
+    }
+    ctx.strokeStyle = "#ffd166";
+    ctx.lineWidth = 2;
+    ctx.fillStyle = "#48a9ff";
+    if (!dial && psi != null) {
+      const p = point(x, psi, layout.radius * 0.8);
+      ctx.beginPath();
+      ctx.moveTo(x, layout.cy);
+      ctx.lineTo(p[0], p[1]);
+      ctx.stroke();
+    } else if (dial && psi != null) {
+      const p = point(x, -psi, layout.radius * 0.66);
+      ctx.font = '700 12px "IBM Plex Sans Condensed", sans-serif';
+      ctx.fillText("A", p[0], p[1] + 3);
+      ctx.font = "11px system-ui";
+    }
+    ctx.fillStyle = "#f4f7f8";
+    ctx.font = "11px system-ui";
+    ctx.fillText(dial ? "Scope view" : "Patient (supine)", x, layout.cy + layout.radius + 25);
+    if (dial) {
+      ctx.fillStyle = hintColor;
+      ctx.fillText(hint, x, layout.cy + layout.radius + 40);
+    }
+  }
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = "11px system-ui";
+  const maxTextWidth = Math.max(40, layout.panel.r - layout.textX - 12);
+  let textY = layout.panel.t + 16;
+  for (const line of model.lines) {
+    ctx.fillStyle = line.color;
+    ctx.fillText(line.text, layout.textX, textY, maxTextWidth);
+    textY += 14;
+  }
+  ctx.restore();
+}
+
+function canvasPos(e) {
+  const rect = cv.getBoundingClientRect();
+  const width = rect.width || 1;
+  const height = rect.height || 1;
+  return {
+    x: (e.clientX - rect.left) * (W / width),
+    y: (e.clientY - rect.top) * (H / height),
+  };
+}
+
+function hitScopeDial(e) {
+  if (!rigDial) return false;
+  const p = canvasPos(e);
+  return Math.hypot(p.x - rigDial.x, p.y - rigDial.y) <= rigDial.radius + 14;
+}
+
+function setRollFromPointer(e) {
+  if (!rigDial) return;
+  const p = canvasPos(e);
+  fly.phi = Math.atan2(p.x - rigDial.x, -(p.y - rigDial.y));
+}
+
 const ANTERIOR_HIDE_DOT = Math.cos(10 * Math.PI / 180);
 const ANTERIOR_LOOKAHEAD_MM = 8;
 const FORK_ORIFICE_AHEAD_MM = 40;
@@ -1223,7 +1609,6 @@ function flyAt(s) {
     p: mix(route.p[before], route.p[after]),
     t: tangent,
     up,
-    roll: route.roll[before] + (route.roll[after] - route.roll[before]) * fraction,
     r: route.r[before] + (route.r[after] - route.r[before]) * fraction,
     g: route.g[before] + (route.g[after] - route.g[before]) * fraction,
     prov: route.prov[Math.round(sample)],
@@ -1234,8 +1619,7 @@ function drawEndoluminal() {
   const here = flyAt(fly.s);
   const pos = here.p;
   const right0 = norm(cross(here.t, here.up));
-  const up = norm(here.up.map((value, i) =>
-    value * Math.cos(here.roll) + right0[i] * Math.sin(here.roll)));
+  const up = norm(applyRoll(here.up, right0, fly.phi));
   const right = norm(cross(here.t, up));
   const dir = here.t;
   const aheadEnd = Math.min(A.fly.s[A.fly.s.length - 1], fly.s + 90);
@@ -1318,8 +1702,9 @@ function drawEndoluminal() {
     }
   }
 
-  drawForkOrifices(toView, project);
-  drawAnteriorTick(rings, right, up, dir);
+  const hud = endoHudModel(right, up, dir);
+  drawForkOrifices(toView, project, lastGuidance);
+  drawAnteriorTick(rings, right, up, dir, lastGuidance);
 
   const remaining = Math.max(0, A.fly.s[A.fly.s.length - 1] - fly.s);
   setReadout({
@@ -1328,7 +1713,7 @@ function drawEndoluminal() {
     togo: remaining.toFixed(0) + " mm",
     turns: A.forks.filter(fork => fork.s > fly.s).length,
   });
-  drawGuidance(right, up, dir, here.roll);
+  paintEndoHud(hud);
   // Endoluminal fly camera drives the shared world position continuously.
   SharedPos.set(toWorld(here.p), "endoluminal");
 }
@@ -1357,10 +1742,11 @@ function pointAlongCentreline(c, mm) {
 }
 
 /** Dark lumen openings for each child when a fork is within ~40 mm ahead. */
-function drawForkOrifices(toView, projectFn) {
+function drawForkOrifices(toView, projectFn, hud) {
   const fork = A.forks.find(f => f.s >= fly.s && f.s - fly.s <= FORK_ORIFICE_AHEAD_MM);
   if (!fork || !fork.children || fork.children.length < 2) {
     lastForkOrifices = [];
+    lastForkLabels = [];
     return;
   }
   const FORK_ORIFICE_DEPTH_MM = 8;
@@ -1388,6 +1774,7 @@ function drawForkOrifices(toView, projectFn) {
   }
   if (openings.length < 2) {
     lastForkOrifices = [];
+    lastForkLabels = [];
     return;
   }
 
@@ -1396,6 +1783,7 @@ function drawForkOrifices(toView, projectFn) {
   const parentScr = projectFn(toView(forkHere.p));
   if (!parentScr) {
     lastForkOrifices = [];
+    lastForkLabels = [];
     return;
   }
   const parentCx = parentScr.x, parentCy = parentScr.y;
@@ -1590,10 +1978,13 @@ function drawForkOrifices(toView, projectFn) {
       on_route: o.on_route,
     };
   });
+  const canvasRect = cv.getBoundingClientRect();
   const railEl = document.querySelector(".rail");
-  const railRight = railEl ? railEl.getBoundingClientRect().right : 236;
+  const railRight = hud && Number.isFinite(hud.railRight)
+    ? hud.railRight
+    : (railEl ? Math.max(0, railEl.getBoundingClientRect().right - canvasRect.left) : 0);
   const labelPad = 10;
-  const labelBottom = H - 70;
+  const panel = hud && hud.panel;
   for (let pass = 0; pass < 8; pass++) {
     let moved = false;
     for (let i = 0; i < labels.length; i++) {
@@ -1615,7 +2006,11 @@ function drawForkOrifices(toView, projectFn) {
       ctx.font = `600 ${lab.on_route ? 12 : 11}px "IBM Plex Sans Condensed", sans-serif`;
       const half = ctx.measureText(lab.text).width / 2;
       const nx = Math.max(railRight + labelPad + half, Math.min(W - labelPad - half, lab.x));
-      const ny = Math.max(20, Math.min(labelBottom, lab.y));
+      let maxY = H - 20;
+      if (panel && lab.x + half > panel.l && lab.x - half < panel.r) {
+        maxY = Math.min(maxY, panel.t - 14);
+      }
+      const ny = Math.max(20, Math.min(maxY, lab.y));
       if (nx !== lab.x || ny !== lab.y) {
         lab.x = nx; lab.y = ny;
         moved = true;
@@ -1640,13 +2035,22 @@ function drawForkOrifices(toView, projectFn) {
     edge: o.child.edge,
     x: o.x, y: o.y, pixels: o.pixels,
   }));
+  lastForkLabels = labels.map(lab => {
+    ctx.font = `600 ${lab.on_route ? 12 : 11}px "IBM Plex Sans Condensed", sans-serif`;
+    return {
+      text: lab.text,
+      x: lab.x,
+      y: lab.y,
+      half: ctx.measureText(lab.text).width / 2,
+    };
+  });
 }
 
-function drawAnteriorTick(rings, right, up, dir) {
+function drawAnteriorTick(rings, right, up, dir, hud) {
   // Always-on "A" on the visible lumen edge; rotates with camera roll.
   // Hidden when anterior is within 10° of the view axis. Prefer ~8 mm
-  // look-ahead, but skip rings whose edge/label would land off-canvas
-  // (wide trachea + short look-ahead projects past the viewport).
+  // look-ahead, but skip a ring whose tick or label would sit under the
+  // side rail or the clock panel (the canvas is full-bleed behind both).
   const screen = anteriorInView(dir, right, up);
   const remember = (visible, extra = {}) => {
     lastAnteriorTick = {
@@ -1667,7 +2071,7 @@ function drawAnteriorTick(rings, right, up, dir) {
     const tipY = r.point.y - ay * pixels;
     const labelX = tipX + ax * 10;
     const labelY = tipY - ay * 10;
-    if (labelX < 8 || labelX > W - 8 || labelY < 8 || labelY > H - 8) continue;
+    if (!clearOfChrome(tipX, tipY, hud) || !clearOfChrome(labelX, labelY, hud)) continue;
     const err = Math.abs(r.i - ANTERIOR_LOOKAHEAD_MM);
     if (err < best) { best = err; ring = r; }
   }
@@ -1696,106 +2100,6 @@ function drawAnteriorTick(rings, right, up, dir) {
   ctx.restore();
 }
 
-function drawGuidance(right, up, dir, roll) {
-  // Compact strip just above the variant switcher — never covers lumen/orifices.
-  const rail = document.querySelector(".rail").getBoundingClientRect();
-  const switcher = document.getElementById("switcher").getBoundingClientRect();
-  const left = rail.right + 12;
-  const switcherTop = switcher.top || H - 22;
-  const bottom = Math.min(H - 12, switcherTop - 8);
-  const radius = 26;
-  const cx = left + 32;
-  const cy = bottom - radius - 6;
-  const next = A.forks.find(fork => fork.s >= fly.s);
-  const screenAnterior = anteriorInView(dir, right, up);
-  const textX = left + 72;
-  const lines = [];
-  if (next) {
-    const chosen = next.children.find(child => child.on_route);
-    const clockText = chosen.clock == null
-      ? "straight ahead"
-      : `${chosen.clock} o'clock${next.name ? ` (${next.name})` : ""}`;
-    const mark = next.prov === "interpolated" ? " · interp" : "";
-    lines.push({
-      text: `Fork ${next.fork} · ${Math.max(0, next.s - fly.s).toFixed(0)} mm — ${clockText}${mark}`,
-      color: "#f4f7f8",
-    });
-  }
-  if (fly.pausedFork) {
-    lines.push({
-      text: `Paused at fork ${fly.pausedFork} — Space / ↑`,
-      color: "#f4f7f8",
-    });
-  }
-  if (flyAt(fly.s).prov === "interpolated") {
-    lines.push({ text: "Interpolated — not CT-demonstrated", color: "#ffd166" });
-  }
-  if (A.target_gap_mm > 0 && !A.target_inside_airway
-      && A.fly.s[A.fly.s.length - 1] - fly.s <= 10) {
-    lines.push({ text: `Target ${A.target_gap_mm.toFixed(1)} mm beyond airway`, color: "#f4f7f8" });
-  }
-  if (!screenAnterior) {
-    lines.push({ text: "Anterior undefined (AP axis)", color: "#f4f7f8" });
-  }
-  lines.push({ text: "Simulated · CT-derived · not live", color: "#d5e0e5" });
-
-  ctx.save();
-  ctx.font = "11px system-ui";
-  const lineHeight = 14;
-  const maxTextWidth = Math.max(80, Math.min(420, W - textX - 16));
-  const textWidth = Math.min(maxTextWidth,
-    Math.max(...lines.map(line => ctx.measureText(line.text).width)));
-  const panelBottom = bottom + 2;
-  const textBottom = panelBottom - 8;
-  const textTop = textBottom - (lines.length - 1) * lineHeight;
-  const panelLeft = left - 6;
-  const panelTop = Math.min(cy - radius - 10, textTop - 8);
-  const panelRight = Math.min(W - 10, Math.max(cx + radius + 14, textX + textWidth + 10));
-  ctx.fillStyle = "rgba(17, 27, 33, 0.88)";
-  ctx.beginPath();
-  ctx.roundRect(panelLeft, panelTop, panelRight - panelLeft, panelBottom - panelTop, 8);
-  ctx.fill();
-
-  ctx.fillStyle = "#f4f7f8";
-  ctx.strokeStyle = "#a9bbc4";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, 7);
-  ctx.stroke();
-
-  for (const [clock, angle] of [
-    [12, -Math.PI / 2], [3, 0], [6, Math.PI / 2], [9, Math.PI],
-  ]) {
-    ctx.fillText(clock, cx + Math.cos(angle) * (radius + 10) - 4,
-      cy + Math.sin(angle) * (radius + 10) + 3);
-  }
-  if (screenAnterior) {
-    ctx.strokeStyle = "#48a9ff";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + screenAnterior.x * radius * 0.72, cy - screenAnterior.y * radius * 0.72);
-    ctx.stroke();
-  }
-
-  if (next) {
-    for (const child of next.children) {
-      if (child.clock == null) continue;
-      const screenAngle = (child.angle - roll * 180 / Math.PI) * Math.PI / 180
-        - Math.PI / 2;
-      ctx.fillStyle = child.on_route ? "#58b8ff" : "#87939b";
-      ctx.beginPath();
-      ctx.arc(cx + Math.cos(screenAngle) * radius,
-        cy + Math.sin(screenAngle) * radius, child.on_route ? 4 : 2.5, 0, 7);
-      ctx.fill();
-    }
-  }
-  lines.forEach((line, index) => {
-    ctx.fillStyle = line.color;
-    ctx.fillText(line.text, textX, textTop + index * lineHeight, maxTextWidth);
-  });
-  ctx.restore();
-}
 
 function mucosa(d) {
   const t = Math.max(0, Math.min(1, d));
@@ -1994,12 +2298,23 @@ let drag = null;
 let pointerDownAt = null;
 cv.addEventListener("pointerdown", e => {
   if (variant === 3) return;
+  if ((variant === 1 || variant === 4) && hitScopeDial(e)) {
+    rigDragging = true;
+    cv.setPointerCapture(e.pointerId);
+    setRollFromPointer(e);
+    e.preventDefault();
+    return;
+  }
   pointerDownAt = { x: e.clientX, y: e.clientY, rotate: variant === 2 && e.shiftKey };
   if (pointerDownAt.rotate) setTopoRotation(topoRot);
   drag = { x: e.clientX, y: e.clientY }; cv.classList.add("dragging");
   cv.setPointerCapture(e.pointerId);
 });
 cv.addEventListener("pointerup", e => {
+  if (rigDragging) {
+    rigDragging = false;
+    return;
+  }
   const start = pointerDownAt;
   pointerDownAt = null;
   drag = null; cv.classList.remove("dragging");
@@ -2009,6 +2324,10 @@ cv.addEventListener("pointerup", e => {
   handleViewClick(e.clientX, e.clientY);
 });
 cv.addEventListener("pointermove", e => {
+  if (rigDragging) {
+    setRollFromPointer(e);
+    return;
+  }
   if (!drag || variant === 3) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   if (variant === 2 && pointerDownAt.rotate) {
@@ -2342,6 +2661,11 @@ addEventListener("keydown", e => {
     fly.pauseUntil = null;
     e.preventDefault();
   }
+  if (endoKeys && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    const step = 5 * Math.PI / 180;
+    fly.phi += e.key === "ArrowRight" ? step : -step;
+    e.preventDefault();
+  }
   if (variant === 3) return;
   if (["ArrowUp", "ArrowDown"].includes(e.key)) {
     if (fly.pausedFork && e.key === "ArrowUp" && !e.repeat) {
@@ -2386,6 +2710,11 @@ setInterval(() => {
       fly.pausedFork = fork.fork;
       fly.pauseUntil = performance.now() + FORK_PAUSE_MS;
       fly.playing = false;
+      fly.lastPause = {
+        fork: fork.fork,
+        phiDeg: wrapDeg(fly.phi * 180 / Math.PI),
+        s: fork.pause_s,
+      };
       return;
     }
   }
@@ -2669,7 +2998,20 @@ if (DEBUG) {
     },
     anteriorTick: () => ({ ...lastAnteriorTick }),
     forkOrifices: () => lastForkOrifices.map(o => ({ ...o })),
+    forkLabels: () => lastForkLabels.map(label => ({ ...label })),
     forks: () => A.forks,
+    rig: () => lastGuidance ? { ...lastGuidance } : null,
+    patientFrame,
+    patientAngle,
+    scopeAngle,
+    wrapDeg,
+    clockHour,
+    rotateHint,
+    applyRoll,
+    inPlaneFraction,
+    forkSurvey,
+    aheadFraction: AHEAD_FRACTION,
+    apDegeneracy: AP_DEGENERACY,
   };
   window.__p3_debug = {
     setVariant,

@@ -1,4 +1,7 @@
+# Changes: patient and scope clocks for manual endoluminal roll.
 """Pure geometry for a transported airway navigation frame."""
+
+import math
 
 import numpy as np
 
@@ -7,6 +10,11 @@ LOOK_AHEAD_MM = 6.0
 ROLL_START_MM = 10.0
 ROLL_END_MM = 6.0  # finish rolling before the pause point so the paused view is already steered
 PAUSE_BEFORE_MM = 5.0
+# Below this, a clock hour is the direction of a small miss, not a takeoff.
+AHEAD_FRACTION = 0.15
+# |anterior projected perpendicular to t| under this means the AP axis is unusable.
+AP_DEGENERACY = 0.10
+ALIGN_DEG = 15.0
 
 
 def _unit(vector):
@@ -103,7 +111,7 @@ def clock_of(direction, tangent, up):
     direction = np.asarray(direction, dtype=float)
     tangent = _unit(np.asarray(tangent, dtype=float))
     projected = direction - np.dot(direction, tangent) * tangent
-    if np.linalg.norm(projected) < 0.15 * np.linalg.norm(direction):
+    if np.linalg.norm(projected) < AHEAD_FRACTION * np.linalg.norm(direction):
         return None, None
 
     right = _unit(np.cross(tangent, up))
@@ -120,6 +128,140 @@ def rotate(up, tangent, angle):
     up = np.asarray(up, dtype=float)
     return (up * np.cos(angle) + np.cross(tangent, up) * np.sin(angle)
             + tangent * np.dot(tangent, up) * (1.0 - np.cos(angle)))
+
+
+def patient_frame(tangent):
+    """Anterior (0, 1, 0) projected perpendicular to the parent direction t.
+
+    Degenerate when that projection is shorter than AP_DEGENERACY: t is then
+    nearly the supine AP axis and 12 o'clock is undefined.
+    """
+    tangent = _unit(np.asarray(tangent, dtype=float))
+    anterior = np.array([0.0, 1.0, 0.0])
+    projected = anterior - tangent * float(np.dot(anterior, tangent))
+    length = float(np.linalg.norm(projected))
+    if length < AP_DEGENERACY:
+        return {"degenerate": True, "upA": None, "rightA": None, "length": length}
+    up_a = projected / length
+    right_a = np.cross(tangent, up_a)
+    return {"degenerate": False, "upA": up_a, "rightA": right_a, "length": length}
+
+
+def patient_angle(tangent, direction):
+    """θ_pat = atan2(d·rightA, d·upA). None when the AP axis is degenerate."""
+    frame = patient_frame(tangent)
+    if frame["degenerate"]:
+        return None
+    direction = np.asarray(direction, dtype=float)
+    return float(np.arctan2(
+        np.dot(direction, frame["rightA"]),
+        np.dot(direction, frame["upA"]),
+    ))
+
+
+def scope_angle(tangent, up_screen):
+    """ψ: signed angle from upA to the screen-up, about t."""
+    return patient_angle(tangent, up_screen)
+
+
+def in_plane_fraction(tangent, direction):
+    """Share of d perpendicular to t. Near 0, the branch is straight ahead."""
+    direction = np.asarray(direction, dtype=float)
+    magnitude = float(np.linalg.norm(direction))
+    if magnitude < 1e-12:
+        return 0.0
+    tangent = _unit(np.asarray(tangent, dtype=float))
+    projected = direction - tangent * float(np.dot(direction, tangent))
+    return float(np.linalg.norm(projected) / magnitude)
+
+
+def branch_angle(tangent, direction):
+    """Patient angle, or None if AP-degenerate or the branch is straight ahead."""
+    if patient_frame(tangent)["degenerate"]:
+        return None
+    if in_plane_fraction(tangent, direction) < AHEAD_FRACTION:
+        return None
+    return patient_angle(tangent, direction)
+
+
+def direction_along(centreline, distance_mm=5.0):
+    """Offset from the first point to a sample min(distance, half the length)."""
+    points = np.asarray(centreline, dtype=float)
+    if len(points) < 2:
+        return None
+    lengths = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))]
+    if float(lengths[-1]) < 1e-9:
+        return None
+    distance = min(float(distance_mm), float(lengths[-1]) / 2.0)
+    point = np.array([
+        np.interp(distance, lengths, points[:, axis])
+        for axis in range(3)
+    ])
+    return point - points[0]
+
+
+def apply_roll(up, right, phi):
+    """User roll about the tangent: up' = up·cosφ + right·sinφ."""
+    up = np.asarray(up, dtype=float)
+    right = np.asarray(right, dtype=float)
+    return up * math.cos(phi) + right * math.sin(phi)
+
+
+def _js_round(value):
+    """Math.round: halves toward +infinity."""
+    return int(math.floor(float(value) + 0.5))
+
+
+def wrap_deg(degrees):
+    """Wrap degrees into (-180, 180]."""
+    wrapped = ((float(degrees) + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
+    if wrapped == -180.0:
+        return 180.0
+    return float(wrapped)
+
+
+def js_fixed0(value):
+    """Number.toFixed(0): halves away from zero."""
+    number = float(value)
+    sign = -1 if number < 0 else 1
+    rounded = int(math.floor(abs(number) + 0.5))
+    return str(sign * rounded)
+
+
+def clock_hour(angle_rad):
+    """Nearest hour on a clock whose 12 is 0 radians. None stays None."""
+    if angle_rad is None:
+        return None
+    hours = _js_round(float(angle_rad) * 6.0 / math.pi) % 12
+    return hours or 12
+
+
+def rotate_hint(delta_deg, ahead=False):
+    """Shortest roll hint. Aligned within ±ALIGN_DEG; ahead has no hour to chase."""
+    if ahead:
+        return "straight ahead"
+    if delta_deg is None:
+        return "degenerate AP axis"
+    wrapped = wrap_deg(delta_deg)
+    if abs(wrapped) <= ALIGN_DEG:
+        return "aligned ✓"
+    arrow = "↻" if wrapped > 0 else "↺"
+    return f"rotate {js_fixed0(abs(wrapped))}° {arrow}"
+
+
+def fork_clock_line(fork_n, distance_mm, theta, psi, ahead=False):
+    """HUD fork line. A degenerate AP axis replaces the patient-clock hour."""
+    distance = js_fixed0(max(0.0, float(distance_mm)))
+    if ahead:
+        return f"Fork {fork_n} · {distance} mm — straight ahead"
+    if theta is None or psi is None:
+        return f"Fork {fork_n} · {distance} mm — degenerate AP axis"
+    patient = clock_hour(theta)
+    scope = clock_hour(theta - psi)
+    return (
+        f"Fork {fork_n} · {distance} mm — "
+        f"patient {patient} o'clock · scope {scope} o'clock"
+    )
 
 
 def forks(graph_edges, route, points, s, tangents, ups):
