@@ -1,3 +1,4 @@
+<!-- # Changes: topology geometry rotation with upright markers and time-based spin. -->
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
      Deploy: clamp orifice labels inside canvas clear of the left rail; keep
      endoluminal step caption compact above the variant switcher (never over lumen).
@@ -526,7 +527,7 @@ const VARIANTS = [
   { key: "endoluminal", name: "Endoluminal",
     hint: "<kbd>&uarr;</kbd><kbd>&darr;</kbd> fly · <kbd>Space</kbd> auto-play (slows near forks, pauses 1&nbsp;s) · <kbd>T</kbd> reset route" },
   { key: "topology", name: "Topology map",
-    hint: "<kbd>drag</kbd> pan · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
+    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>[</kbd> / <kbd>]</kbd> rotate 15° · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
   { key: "ct-panes", name: "CT panes",
     hint: VIEWER_MODE
       ? "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L"
@@ -1570,6 +1571,33 @@ function mucosa(d) {
 
 /* --------------------------------------------------- variant C: topology */
 let topoLayout = null;
+let topoRot = 0;
+let topoSpin = false;
+let topoSpinTime = null;
+const topoControls = document.createElement("div");
+topoControls.id = "topo-controls";
+topoControls.style.cssText = "position:fixed;right:20px;bottom:80px;z-index:20;background:var(--surface);padding:8px;border:1px solid var(--edge);border-radius:6px";
+topoControls.innerHTML = `<span id="topo-angle">Rotation 0°</span>
+  <button id="topo-reset">Reset rotation</button>
+  <button id="topo-spin" aria-pressed="false">Auto-spin</button>`;
+document.body.appendChild(topoControls);
+function setTopoRotation(degrees, manual = true) {
+  topoRot = ((degrees % 360) + 540) % 360 - 180;
+  if (topoRot === -180) topoRot = 180;
+  if (manual) {
+    topoSpin = false;
+    topoSpinTime = null;
+  }
+  const rounded = Math.round(topoRot);
+  document.getElementById("topo-angle").textContent = `Rotation ${rounded === -180 ? 180 : rounded}°`;
+  document.getElementById("topo-spin").setAttribute("aria-pressed", String(topoSpin));
+}
+document.getElementById("topo-reset").onclick = () => setTopoRotation(0);
+document.getElementById("topo-spin").onclick = () => {
+  topoSpin = !topoSpin;
+  topoSpinTime = null;
+  setTopoRotation(topoRot, false);
+};
 function buildTopology() {
   // Radial tree: angle by subtree leaf share, radius by generation. Trachea
   // at centre; trachea edge points straight down (head→feet). Sibling order
@@ -1618,10 +1646,11 @@ function buildTopology() {
 }
 
 function topoToScreen(p) {
+  const angle = topoRot * Math.PI / 180;
   const s = DEFAULT_DIST / cam.dist;
   return {
-    x: W / 2 + cam.panX + p.x * s,
-    y: H / 2 + cam.panY + p.y * s,
+    x: W / 2 + cam.panX + (p.x * Math.cos(angle) - p.y * Math.sin(angle)) * s,
+    y: H / 2 + cam.panY + (p.x * Math.sin(angle) + p.y * Math.cos(angle)) * s,
   };
 }
 
@@ -1630,6 +1659,13 @@ function drawTopology() {
   const ox = W / 2 + cam.panX, oy = H / 2 + cam.panY;
   const s = DEFAULT_DIST / cam.dist;
   ctx.lineCap = "round";
+  ctx.font = '500 12px "IBM Plex Sans", sans-serif';
+  ctx.textAlign = "center";
+  ctx.fillStyle = tok("--ink");
+  for (const [label, x] of [["R", 65], ["L", -65]]) {
+    const pt = topoToScreen({ x, y: 0 });
+    ctx.fillText(label, pt.x, pt.y);
+  }
   // Generation rings, so depth is readable as distance from centre.
   ctx.strokeStyle = tok("--grid"); ctx.lineWidth = 1;
   for (let g = 5; g <= maxGen; g += 5) {
@@ -1703,7 +1739,11 @@ function setReadout(o) {
   document.getElementById("r-turns").textContent = o.turns;
 }
 
-function frame() {
+function frame(now) {
+  if (variant === 2 && topoSpin) {
+    if (topoSpinTime != null) setTopoRotation(topoRot + (now - topoSpinTime) * 0.03, false);
+    topoSpinTime = now;
+  }
   if (variant === 3) {
     requestAnimationFrame(frame);
     return;
@@ -1721,7 +1761,8 @@ let drag = null;
 let pointerDownAt = null;
 cv.addEventListener("pointerdown", e => {
   if (variant === 3) return;
-  pointerDownAt = { x: e.clientX, y: e.clientY };
+  pointerDownAt = { x: e.clientX, y: e.clientY, rotate: variant === 2 && e.shiftKey };
+  if (pointerDownAt.rotate) setTopoRotation(topoRot);
   drag = { x: e.clientX, y: e.clientY }; cv.classList.add("dragging");
   cv.setPointerCapture(e.pointerId);
 });
@@ -1731,12 +1772,23 @@ cv.addEventListener("pointerup", e => {
   drag = null; cv.classList.remove("dragging");
   if (!start || variant === 3) return;
   const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y);
-  if (moved > 4) return;
+  if (moved > 4 || start.rotate) return;
   handleViewClick(e.clientX, e.clientY);
 });
 cv.addEventListener("pointermove", e => {
   if (!drag || variant === 3) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (variant === 2 && pointerDownAt.rotate) {
+    const rect = cv.getBoundingClientRect();
+    const ox = rect.left + W / 2 + cam.panX;
+    const oy = rect.top + H / 2 + cam.panY;
+    const before = Math.atan2(drag.y - oy, drag.x - ox);
+    const after = Math.atan2(e.clientY - oy, e.clientX - ox);
+    const delta = Math.atan2(Math.sin(after - before), Math.cos(after - before));
+    setTopoRotation(topoRot + delta * 180 / Math.PI);
+    drag = { x: e.clientX, y: e.clientY };
+    return;
+  }
   drag = { x: e.clientX, y: e.clientY };
   if (variant === 2) { cam.panX += dx; cam.panY += dy; }
   else if (variant === 0) { orbitCamera(dx, dy); }
@@ -2035,6 +2087,11 @@ addEventListener("keydown", e => {
     if (idx >= 0) setVariant(idx);
     return;
   }
+  if (variant === 2 && (e.key === "[" || e.key === "]")) {
+    setTopoRotation(topoRot + (e.key === "]" ? 15 : -15));
+    e.preventDefault();
+    return;
+  }
   const endoKeys = variant === 1 || variant === 4;
   if (variant === 0) {
     if (e.key === "f" || e.key === "F") applyPreset("radiologist");
@@ -2207,6 +2264,7 @@ async function ensureCtPanes() {
 }
 
 function setVariant(i) {
+  if (variant !== i) setTopoRotation(0);
   variant = i;
   const u = new URL(location); u.searchParams.set("variant", VARIANTS[i].key);
   history.replaceState(null, "", u);
@@ -2216,6 +2274,7 @@ window.setVariant = setVariant;
 window.ensureCtPanes = ensureCtPanes;
 window.SharedPos = SharedPos;
 function render() {
+  topoControls.hidden = variant !== 2;
   sw.innerHTML = "";
   SWITCHER_VARIANTS.forEach((v, i) => {
     const idx = VARIANTS.findIndex(x => x.key === v.key);
@@ -2270,6 +2329,12 @@ if (DEBUG) {
   // Headless verify hook (?debug=1): main-bronchus L/R, radiologist front,
   // endoluminal anterior tick + fork orifice labels.
   window.__p2_debug = {
+    topology: () => ({
+      pan: [cam.panX, cam.panY],
+      pickedEdge: A.edges.find(e => toWorld(A.nodes[String(e.t)].p)
+        .every((value, i) => value === SharedPos.get()[i]))?.oi,
+      points: A.edges.map(e => ({ id: e.t, edge: e.oi, ...topoToScreen(topoLayout.get(e.t)) })),
+    }),
     applyPreset,
     orbitCamera,
     getPreset: () => cam.preset,
