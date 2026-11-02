@@ -1,3 +1,4 @@
+# Changes: recheck saved header facts before confirming an imported Series.
 # Changes: Phase 4d review fixes — note_change on lesion/route_start/records;
 # clinician-text checks on note records.
 """Case inventory and locked record writes for the local app server.
@@ -351,12 +352,20 @@ def confirm_existing_series(case_id: str, clinician: str, *, overridden: bool = 
         source = record.get("source") or {}
         if not isinstance(source, dict) or not source.get("folder"):
             raise ValueError("case has no source series to confirm")
+        from series_rule import reject_reason
+
+        facts = source.get("series_facts")
+        reason = reject_reason(facts) if facts else None
+        if reason or source.get("status") == "not_usable":
+            raise ValueError(f"Series not usable: {reason or source.get('reason')}")
         data = {
             "folder": source.get("folder"),
             "series_number": source.get("series_number"),
             "description": source.get("series_description", ""),
             "kernel": source.get("convolution_kernel", ""),
             "overridden": bool(overridden),
+            "status": source.get("status"),
+            "override_reason": source.get("reason", "") if overridden else "",
         }
         entry = {
             "step": int(WorkflowStep.IMPORT),

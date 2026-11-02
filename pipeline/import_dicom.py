@@ -1,4 +1,4 @@
-# Changes: lazy pydicom import so the viewer image can omit pydicom.
+# Changes: apply header eligibility and vendor-aware Series ranking at import.
 """Select and import an axial CT series without exporting DICOM identifiers.
 
 Geometry fix: build the NIfTI volume from pydicom (sort by slice normal,
@@ -24,6 +24,7 @@ import nibabel as nib
 import numpy as np
 from atomic_json import atomic_write_json, json_file_lock
 from paths import LOCAL_CASES
+from series_rule import classify_series, first_kernel, kernel_class, reject_reason
 
 if TYPE_CHECKING:
     import pydicom as pydicom_mod
@@ -36,9 +37,6 @@ def _pydicom():
 
 
 VERSION = "1.0"
-PREFERRED_KERNEL = re.compile(r"STANDARD|SOFT|B30", re.IGNORECASE)
-CONTRAST_WORDS = re.compile(r"ARTERIAL|VENOUS|VENOS|TARDIV|ANGIO", re.IGNORECASE)
-SCOUT_WORDS = re.compile(r"SCOUT|LOCALIZER|TOPOGRAM", re.IGNORECASE)
 UNIFORM_SPACING_TOL_MM = 0.05
 TILT_ANGLE_TOL_DEG = 1.0
 GEOMETRY_TOL_MM = 0.01
@@ -66,19 +64,22 @@ def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
             continue
         try:
             ds = _pydicom().dcmread(path, stop_before_pixels=True, force=False)
-            uid = str(ds.SeriesInstanceUID)
+            uid = series_uid_hash(str(ds.SeriesInstanceUID))
             sop_class = str(ds.SOPClassUID.name)
             row = series.get(uid)
             if row is None:
                 row = {
-                    "series_uid_sha256": series_uid_hash(uid),
+                    "series_uid_sha256": uid,
                     "number": int(ds.SeriesNumber),
                     "folder": (path.relative_to(src_dir).parts[0]
                                if len(path.relative_to(src_dir).parts) > 1 else "."),
                     "description": str(getattr(ds, "SeriesDescription", "")),
                     "modality": str(getattr(ds, "Modality", "")),
                     "sop_class": sop_class,
-                    "kernel": str(getattr(ds, "ConvolutionKernel", "")),
+                    "kernel": first_kernel(getattr(ds, "ConvolutionKernel", "")),
+                    "image_type": list(getattr(ds, "ImageType", []) or []),
+                    "manufacturer": str(getattr(ds, "Manufacturer", "")),
+                    "contrast_agent": bool(str(getattr(ds, "ContrastBolusAgent", "")).strip()),
                     "slice_thickness": float(getattr(ds, "SliceThickness", 0) or 0),
                     "orientation": np.zeros(6),
                     "positions": [],
@@ -105,6 +106,7 @@ def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
     for row in series.values():
         if row["sop_class"] != "CT Image Storage":
             row["count"] = len(row["files"])
+            row["z_span_mm"] = 0.0
             row["spacing"] = row["slice_thickness"]
             row["uniform"] = False
             row["axial"] = False
@@ -112,6 +114,7 @@ def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
             continue
         coords = np.sort(np.asarray(row["positions"], dtype=float))
         gaps = np.diff(coords)
+        row["z_span_mm"] = float(coords[-1] - coords[0]) if len(coords) > 1 else 0.0
         row["count"] = len(row["files"])
         row["spacing"] = float(np.median(gaps)) if len(gaps) else float(row["slice_thickness"])
         row["uniform"] = bool(len(gaps) and np.max(np.abs(gaps - row["spacing"])) <= UNIFORM_SPACING_TOL_MM)
@@ -123,64 +126,34 @@ def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
 
 
 def skip_reason(row: dict) -> str | None:
-    if row["sop_class"] != "CT Image Storage":
-        return f"not a CT image ({row['sop_class']})"
-    if row["modality"] != "CT":
-        return "not CT modality"
-    if not row["axial"]:
-        return "not axial"
-    if row["count"] < 100:
-        return "fewer than 100 slices"
-    if not row["uniform"]:
-        return "non-uniform slice spacing"
-    if SCOUT_WORDS.search(row["description"]):
-        return "scout/localizer"
-    return None
+    return reject_reason(row)
 
 
 def pick_series(series: dict[str, dict], override: str | None) -> tuple[str, dict, dict[str, str]]:
-    reasons = {uid: reason for uid, row in series.items()
-               if (reason := skip_reason(row)) is not None}
-    candidates = [(uid, row) for uid, row in series.items() if uid not in reasons]
+    classified = dict(zip(series, classify_series(list(series.values()))))
+    reasons = {key: row["reason"] for key, row in classified.items()
+               if row["status"] == "not_usable"}
+    candidates = [(key, row) for key, row in classified.items() if key not in reasons]
     if override is not None:
-        selected = [(uid, row) for uid, row in candidates
-                    if str(row["number"]) == override or row["folder"] == override]
-        if not selected:
-            raise SystemExit(f"no eligible series numbered or in folder {override}")
-        chosen_uid, chosen = selected[0]
+        matches = [(key, row) for key, row in classified.items()
+                   if str(row["number"]) == override or row["folder"] == override
+                   or row.get("series_uid_sha256") == override]
+        if not matches:
+            raise SystemExit("no matching Series found")
+        if len(matches) > 1:
+            raise SystemExit("ambiguous Series choice")
+        chosen_uid, chosen = matches[0]
+        if chosen_uid in reasons:
+            raise SystemExit(f"Series not usable: {reasons[chosen_uid]}")
     else:
-        if not candidates:
-            raise SystemExit("no eligible CT series found")
-        chosen_uid, chosen = min(candidates, key=lambda item: (
-            item[1]["spacing"],
-            not bool(PREFERRED_KERNEL.search(item[1]["kernel"])),
-            bool(CONTRAST_WORDS.search(item[1]["description"])),
-            -item[1]["count"],
-        ))
-    for uid, row in candidates:
-        if uid != chosen_uid:
-            reasons[uid] = selection_reason(row, chosen)
+        recommended = [item for item in candidates if item[1]["status"] == "recommended"]
+        if not recommended:
+            raise SystemExit("no recommended CT Series; choose a usable Series explicitly")
+        chosen_uid, chosen = recommended[0]
+    for key, row in candidates:
+        if key != chosen_uid:
+            reasons[key] = row["reason"] or "another Series selected"
     return chosen_uid, chosen, reasons
-
-
-def selection_reason(row: dict, chosen: dict) -> str:
-    if row["spacing"] > chosen["spacing"] + 0.05:
-        return f"thicker slices ({row['spacing']:.2f} mm)"
-    if row["spacing"] < chosen["spacing"] - 0.05:
-        return f"thinner slices ({row['spacing']:.2f} mm)"
-    row_preferred = bool(PREFERRED_KERNEL.search(row["kernel"]))
-    chosen_preferred = bool(PREFERRED_KERNEL.search(chosen["kernel"]))
-    if row_preferred != chosen_preferred:
-        return f"{row['kernel']} kernel"
-    phase = re.search(r"ARTERIAL|VENOUS|VENOS|TARDIV|ANGIO", row["description"], re.IGNORECASE)
-    chosen_phase = re.search(r"ARTERIAL|VENOUS|VENOS|TARDIV|ANGIO", chosen["description"], re.IGNORECASE)
-    if phase and not chosen_phase:
-        return f"contrast phase ({phase.group(0).title()})"
-    if row["count"] < chosen["count"]:
-        return "fewer slices"
-    if row["count"] > chosen["count"]:
-        return f"more slices ({row['count']})"
-    return "duplicate series at the same selection rank"
 
 
 def next_case_id(root: Path) -> str:
@@ -203,7 +176,7 @@ def next_case_id(root: Path) -> str:
 def duplicate_message(existing_id: str, chosen: dict) -> str:
     return (
         f"already imported as {existing_id} "
-        f"(folder {chosen['folder']} / SeriesNumber {chosen['number']})"
+        f"(SeriesNumber {chosen['number']})"
     )
 
 
@@ -227,6 +200,16 @@ def build_case_document(
             "convolution_kernel": chosen["kernel"],
             "spacing_mm": spacing_mm,
             "size": list(size),
+            "status": chosen["status"],
+            "reason": chosen["reason"],
+            "kernel_class": chosen["kernel_class"],
+            "contrast": chosen["contrast"],
+            "z_span_mm": chosen["z_span_mm"],
+            "series_facts": {key: chosen[key] for key in (
+                "number", "description", "modality", "sop_class", "kernel",
+                "slice_thickness", "spacing", "count", "uniform", "axial",
+                "size", "z_span_mm", "image_type", "manufacturer", "contrast_agent",
+            )},
         },
         "skipped_series": [
             {
@@ -371,7 +354,7 @@ def main() -> None:
         series_dir = Path(src_dir) / series_name
         headers = sorted(path for path in series_dir.rglob("*") if path.is_file())
         if not headers:
-            raise SystemExit(f"no DICOM header found in {series_name}")
+            raise SystemExit("no DICOM header found")
         ds = _pydicom().dcmread(headers[0], stop_before_pixels=True, force=False)
         series_hash = series_uid_hash(str(ds.SeriesInstanceUID))
         case_path = LOCAL_CASES / case_id / "case.json"
@@ -401,18 +384,18 @@ def main() -> None:
 
     for uid, row in sorted(series.items(), key=lambda item: item[1]["number"]):
         orientation = "axial" if row["axial"] else "other"
-        print(f"{row['folder']} / SeriesNumber {row['number']} | "
+        print(f"SeriesNumber {row['number']} | "
               f"{row['description']} | {row['modality']} | "
               f"{row['sop_class']} | {row['kernel']} | "
               f"slice {row['slice_thickness']:.2f} mm | spacing {row['spacing']:.2f} mm | "
               f"{orientation} | {row['size']} | {row['count']} files")
     print(f"Skipped unreadable/non-DICOM files: {unreadable}")
     for uid, reason in sorted(reasons.items(), key=lambda item: series[item[0]]["number"]):
-        print(f"Skipped {series[uid]['folder']} / SeriesNumber "
+        print(f"Skipped SeriesNumber "
               f"{series[uid]['number']}: {reason}")
     if args.dry_run:
         case_id = args.id or "(next)"
-        print(f"Pick: folder {chosen['folder']} / SeriesNumber {chosen['number']} "
+        print(f"Pick: SeriesNumber {chosen['number']} "
               f"({chosen['description']}) -> {case_id}")
         return
 
@@ -425,7 +408,7 @@ def main() -> None:
         else:
             output_dir = LOCAL_CASES / case_id
             output_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Pick: folder {chosen['folder']} / SeriesNumber {chosen['number']} "
+        print(f"Pick: SeriesNumber {chosen['number']} "
               f"({chosen['description']}) -> {case_id}")
         target = output_dir / f"{case_id}_CT.nii.gz"
         volume, affine = write_ct_nifti(chosen["files"], target)

@@ -1,3 +1,4 @@
+# Changes: include the shared Series classifier in the server image.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -23,6 +24,7 @@ COPY app /app/app
 COPY prototype /app/prototype
 COPY pipeline/atomic_json.py \
      pipeline/import_dicom.py \
+     pipeline/series_rule.py \
      pipeline/make_prototype_data.py \
      pipeline/paths.py \
      pipeline/repo_root.py \

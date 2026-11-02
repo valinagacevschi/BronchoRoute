@@ -1,3 +1,4 @@
+# Changes: expose Series eligibility, kernel class and coverage in scan responses.
 """Step 1 — DICOM series scan and import from the app (Phase 4a).
 
 Scan uses import_dicom dry-run semantics (grouping + pick). Confirm writes the
@@ -17,6 +18,7 @@ import paths
 from atomic_json import atomic_write_json
 from import_dicom import (
     build_case_document,
+    classify_series,
     duplicate_message,
     next_case_id,
     pick_series,
@@ -42,9 +44,9 @@ def validate_src_dir(src_dir: str | Path) -> Path:
     try:
         path = Path(src_dir).expanduser().resolve()
     except OSError as exc:
-        raise ValueError(f"invalid src_dir: {src_dir}") from exc
+        raise ValueError("invalid source directory") from exc
     if not path.is_dir():
-        raise ValueError(f"src_dir is not an existing directory: {path}")
+        raise ValueError("src_dir is not an existing directory")
     try:
         path.relative_to(home)
     except ValueError as exc:
@@ -54,6 +56,7 @@ def validate_src_dir(src_dir: str | Path) -> Path:
 
 def _public_row(row: dict, *, skip: str | None, proposed: bool) -> dict:
     return {
+        "series_key": row["series_uid_sha256"],
         "folder": row["folder"],
         "series_number": row["number"],
         "description": row["description"],
@@ -64,6 +67,11 @@ def _public_row(row: dict, *, skip: str | None, proposed: bool) -> dict:
         "axial": bool(row["axial"]),
         "size": list(row["size"]),
         "count": int(row["count"]),
+        "status": row["status"],
+        "reason": row["reason"],
+        "kernel_class": row["kernel_class"],
+        "contrast": row["contrast"],
+        "z_span_mm": row["z_span_mm"],
         "skip_reason": skip,
         "proposed": proposed,
     }
@@ -72,22 +80,18 @@ def _public_row(row: dict, *, skip: str | None, proposed: bool) -> dict:
 def scan_series(src_dir: str | Path) -> dict:
     """Group + pick with dry-run semantics; allowed facts only (no UIDs/paths)."""
     root = validate_src_dir(src_dir)
-    cprint(f"import scan: {root}", "cyan")
     series, unreadable = read_series(root)
-    try:
-        chosen_uid, chosen, reasons = pick_series(series, None)
-    except SystemExit as exc:
-        raise ValueError(str(exc) or "no eligible CT series found") from exc
-
-    table = []
-    for uid, row in sorted(series.items(), key=lambda item: item[1]["number"]):
-        skip = reasons.get(uid)
-        table.append(_public_row(row, skip=skip, proposed=(uid == chosen_uid)))
-
+    if not series:
+        raise ValueError("no CT Series found")
+    rows = classify_series(list(series.values()))
+    table = [_public_row(row,
+                         skip=row["reason"] if row["status"] == "not_usable" else None,
+                         proposed=row["status"] == "recommended")
+             for row in sorted(rows, key=lambda row: row["number"])]
     return {
         "src_dir": str(root),
         "unreadable_files": unreadable,
-        "proposed": _public_row(chosen, skip=None, proposed=True),
+        "proposed": next((row for row in table if row["proposed"]), None),
         "series": table,
     }
 
@@ -124,7 +128,7 @@ def confirm_import(
         raise ValueError("confirm must be true to import")
     root = validate_src_dir(src_dir)
     override = str(series)
-    cprint(f"import confirm: {root} series={override}", "cyan")
+    cprint("import confirm", "cyan")
     series_map, _unreadable = read_series(root)
     try:
         _uid, chosen, reasons = pick_series(series_map, override)
@@ -173,6 +177,8 @@ def confirm_import(
                 "description": chosen["description"],
                 "kernel": chosen["kernel"],
                 "overridden": bool(overridden),
+                "override_reason": chosen["reason"] if overridden else "",
+                "status": chosen["status"],
             },
             clinician,
         )
