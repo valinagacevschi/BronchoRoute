@@ -1,3 +1,4 @@
+# Changes: stamp pipeline_version when processing finishes; reprocess skips the import gate.
 # Changes: import lifecycle cleanup, cancellable jobs, step progress and guarded smoke launcher.
 # Changes: surface empty airway failures as a plain graph-step error.
 # Changes: viewer-only startup skips recovery, tmp, and file logs; redact Archive paths only.
@@ -388,6 +389,9 @@ def register_segment_artifacts(
             "at": at,
         }
         case.setdefault("records", []).append(entry)
+        # Same write as the segmentation record, so a finished Case is never unstamped.
+        case["pipeline_version"] = paths.PIPELINE_VERSION
+        case["processed_at"] = at
         atomic_write_json(case_path, case)
         return entry
 
@@ -488,9 +492,22 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
         job._done.set()
 
 
-def start_segment_job(case_id: str, clinician: str, *, import_id: str | None = None) -> dict:
-    """Start TotalSegmentator + build_graph; 409 if already running."""
-    if import_id is None:
+def job_in_progress() -> bool:
+    """True while the single pipeline job has not finished."""
+    with _jobs_lock:
+        return bool(_running)
+
+
+def start_segment_job(
+    case_id: str,
+    clinician: str,
+    *,
+    import_id: str | None = None,
+    reprocess: bool = False,
+) -> dict:
+    """Start TotalSegmentator + build_graph; 409 if another job is running."""
+    # Reprocess reads the stored CT. It does not repeat Series confirmation.
+    if import_id is None and not reprocess:
         require_prior_steps(case_id, int(WorkflowStep.SEGMENT))
     ref = CaseRef.parse(case_id)
     if not ref.ct.is_file():
@@ -580,6 +597,7 @@ __all__ = [
     "DEFAULT_JOB_TIMEOUT_S",
     "JobConflict",
     "JobState",
+    "job_in_progress",
     "latest_job",
     "redact_log_line",
     "register_segment_artifacts",

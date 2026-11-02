@@ -1,3 +1,4 @@
+# Changes: filevault_note_shown is a boolean on the shared settings API.
 # Changes: shared settings API validation, preservation, and record identity.
 import json
 
@@ -11,7 +12,8 @@ pytestmark = pytest.mark.server
 
 def test_settings_defaults(client):
     assert client.get("/api/settings").json() == {
-        "initials": "", "role": "", "updates_enabled": True, "disclaimer_ack": False,
+        "initials": "", "role": "", "updates_enabled": True,
+        "disclaimer_ack": False, "filevault_note_shown": False,
     }
 
 
@@ -32,6 +34,7 @@ def test_settings_initials(client, initials):
     {"initials": None}, {"role": "x" * 41},
     *({"role": "Role" + c} for c in "<>'\""),
     {"updates_enabled": "false"}, {"disclaimer_ack": 1},
+    {"filevault_note_shown": "yes"}, {"filevault_note_shown": 1},
 ])
 def test_settings_invalid(client, patch):
     before = client.get("/api/settings").json()
@@ -44,14 +47,24 @@ def test_settings_preserved_by_all_writers(client):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"future": {"enabled": 7}}))
     patch = {"initials": "AB", "role": "", "updates_enabled": False, "disclaimer_ack": True}
-    assert client.put("/api/settings", json=patch).json() == patch
-    assert client.get("/api/settings").json() == patch
+    expected = {**patch, "filevault_note_shown": False}
+    assert client.put("/api/settings", json=patch).json() == expected
+    assert client.get("/api/settings").json() == expected
     assert client.put("/api/clinician", json={"role": "Radiologist", "initials": "C.D."}).status_code == 200
     assert client.put("/api/clinician", json={"ct_view": "head"}).status_code == 200
     saved = json.loads(path.read_text())
     assert saved["future"] == {"enabled": 7}
     assert saved["updates_enabled"] is False
     assert saved["disclaimer_ack"] is True
+
+
+def test_filevault_note_flag(client):
+    assert client.get("/api/settings").json()["filevault_note_shown"] is False
+    saved = client.put("/api/settings", json={"filevault_note_shown": True}).json()
+    assert saved["filevault_note_shown"] is True
+    assert saved["updates_enabled"] is True
+    assert saved["disclaimer_ack"] is False
+    assert client.get("/api/settings").json()["filevault_note_shown"] is True
 
 
 def test_settings_free_text_role(client):

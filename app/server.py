@@ -1,4 +1,5 @@
 # Changes: PUT lesion accepts an optional diameter_mm.
+# Changes: Case Library list, delete, and reprocess routes.
 # Changes: preserve Archive import and the shared Settings API after rebase.
 # Changes: shared settings API alongside the compatible clinician endpoints.
 # Changes: serve About (name, version, licence), LICENSE, notices, and sponsors.
@@ -59,6 +60,7 @@ from app.cases import (
 )
 from app.ct_crop import build_ct_crop, read_ct_bytes
 from app.imports import ImportDuplicate, import_and_process, release_import, scan_series, MAX_ARCHIVE_BYTES
+from app.library import delete_case, delete_library, list_library
 from app.jobs import (
     JobConflict,
     cancel_latest_job,
@@ -407,6 +409,43 @@ def api_features():
 @app.get("/api/cases")
 def api_cases():
     return list_cases()
+
+
+@app.get("/api/library")
+def api_library():
+    return list_library()
+
+
+@app.delete("/api/library")
+def api_library_delete():
+    try:
+        return delete_library()
+    except JobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/cases/{case_id}")
+def api_case_delete(case_id: str):
+    try:
+        return delete_case(case_id)
+    except JobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/reprocess")
+def api_reprocess(case_id: str):
+    clinician = _require_clinician()
+    try:
+        ref = CaseRef.parse(case_id)
+        if ref.kind != "local":
+            raise UnknownCase(f"unknown case: {case_id}")
+        return start_segment_job(case_id, clinician["clinician"], reprocess=True)
+    except JobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
 
 
 @app.get("/api/cases/{case_id}/workflow")

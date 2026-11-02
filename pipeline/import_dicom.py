@@ -1,3 +1,4 @@
+# Changes: store Study date on the Case for the library list.
 # Changes: retain only hashed Study grouping and allowed picker metadata.
 # Changes: apply header eligibility and vendor-aware Series ranking at import.
 """Select and import an axial CT series without exporting DICOM identifiers.
@@ -201,6 +202,7 @@ def build_case_document(
             "folder": chosen["folder"],
             "series_number": chosen["number"],
             "series_description": chosen["description"],
+            "study_date": str(chosen.get("study_date") or ""),
             "convolution_kernel": chosen["kernel"],
             "spacing_mm": spacing_mm,
             "size": list(size),

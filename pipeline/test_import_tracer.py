@@ -1,3 +1,4 @@
+# Changes: scan rows include the library hit field.
 # Changes: synthetic Archive safety, privacy and processing lifecycle coverage.
 from __future__ import annotations
 
@@ -72,7 +73,7 @@ def test_scan_privacy_and_non_dicom(lifecycle, extraction):
     assert set(result["series"][0]) == {
         "series_key", "series_number", "description", "kernel", "modality", "slice_thickness_mm",
         "spacing_mm", "axial", "size", "count", "status", "reason", "kernel_class", "contrast",
-        "z_span_mm", "skip_reason", "proposed",
+        "z_span_mm", "skip_reason", "proposed", "in_library",
     }
     root = next(paths.TMP_DIR.iterdir())
     assert len(list(root.iterdir())) == 255

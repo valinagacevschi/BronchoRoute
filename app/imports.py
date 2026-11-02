@@ -1,3 +1,4 @@
+# Changes: scan marks a Series already in the Case Library.
 # Changes: bounded Archive extraction, opaque sessions and identifier-free import results.
 # Changes: expose Series eligibility, kernel class and coverage in scan responses.
 # Changes: log import lifecycle without Archive paths or Series selections.
@@ -171,10 +172,14 @@ def scan_series(path: str | Path) -> dict:
         if not series:
             raise ValueError("no CT Series found")
         rows = classify_series(list(series.values()))
+        from app.library import cases_by_series_key
+        known = cases_by_series_key()
         table = [_public_row(row,
                              skip=row["reason"] if row["status"] == "not_usable" else None,
                              proposed=row["status"] == "recommended")
                  for row in sorted(rows, key=lambda row: row["number"])]
+        for public in table:
+            public["in_library"] = known.get(public["series_key"])
         studies = {}
         for row, public in zip(sorted(rows, key=lambda row: row["number"]), table):
             key = row.get("study_key", "unknown")

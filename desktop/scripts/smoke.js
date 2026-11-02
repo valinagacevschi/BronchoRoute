@@ -1,3 +1,4 @@
+// Changes: dismiss the one-time FileVault note when FileVault is off.
 // Changes: first-launch acknowledgement and IPC Archive import persist across relaunch.
 // Changes: synthetic Case smoke verifies click acknowledgement and persistence after relaunch.
 // Changes: synthetic Archive via native IPC → picker → processing → Case; verify shutdown isolation.
@@ -78,6 +79,24 @@ function createArchive(dataRoot, pipeline) {
   }
 }
 
+async function dismissFileVault(wc) {
+  const point = await wc.executeJavaScript(`(() => {
+    const overlay = document.getElementById("filevault-overlay");
+    if (!overlay) return null;
+    const button = document.getElementById("filevault-ack");
+    if (!button || button.disabled) return { waiting: true };
+    const rect = button.getBoundingClientRect();
+    if (!rect.width || !rect.height) return { waiting: true };
+    return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
+  })()`);
+  if (!point) return false;
+  if (!point.waiting) {
+    wc.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...point });
+    wc.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...point });
+  }
+  return true;
+}
+
 async function clickElement(wc, selector) {
   const point = await wc.executeJavaScript(`(() => {
     const element = document.querySelector(${JSON.stringify(selector)});
@@ -123,6 +142,10 @@ async function childMain() {
   while (Date.now() < deadline) {
     let state = null;
     try {
+      if (await dismissFileVault(wc)) {
+        await delay(200);
+        continue;
+      }
       if (!relaunch && !archiveOpened) {
         const acknowledged = await wc.executeJavaScript("!document.getElementById('disclaimer-overlay')");
         if (acknowledged) {
@@ -185,6 +208,7 @@ async function childMain() {
           processing: Boolean(document.getElementById("processing") && !document.getElementById("processing").hidden),
           caseListed: (await fetch("/api/cases").then(response => response.json())).some(item => item.id === "local-001" && item.has_graph),
           ackSaved: (await fetch("/api/settings").then(response => response.json())).disclaimer_ack === true,
+          filevault: Boolean(document.getElementById("filevault-overlay")),
         };
       })()`);
     } catch (err) {
@@ -192,7 +216,7 @@ async function childMain() {
       continue;
     }
     processingSeen = processingSeen || state.processing;
-    if (state.imported && state.caseListed && state.buttons > 0 && !state.overlay && state.ackSaved) {
+    if (state.imported && state.caseListed && state.buttons > 0 && !state.overlay && !state.filevault && state.ackSaved) {
       if (!readyAt) {
         readyAt = Date.now();
       }

@@ -1,13 +1,16 @@
+/* Changes: Case Library list, size warning, and outdated-Case prompt. */
 /* Changes: keep the shared Settings footer reachable on import and processing screens. */
 /* Changes: import screens share the viewer's clinical palette and typography. */
 #import-screen { position: fixed; inset: 0; z-index: 8000; background: var(--ground, #edf1f3); overflow: auto; padding-bottom: 60px; color: #17242b; }
-#import-screen[hidden], #archive-open[hidden] { display: none; }
+#import-screen[hidden], #library-screen[hidden], #outdated-note[hidden], #archive-open[hidden] { display: none; }
+#library-screen { position: fixed; inset: 0; z-index: 8100; background: var(--ground, #edf1f3); overflow: auto; padding-bottom: 72px; color: #17242b; }
 .import-heading { display: flex; justify-content: space-between; align-items: center; padding: 24px 40px; border-bottom: 1px solid #ced9df; font-size: 20px; }
 .import-panel { max-width: 1120px; margin: 56px auto; padding: 0 32px; }
 .import-panel h1 { font-size: 40px; margin: 8px 0; font-weight: 500; }
 .import-eyebrow { letter-spacing: .16em; font-size: 11px; color: #526e7c; }
-#import-screen button, #archive-open { background: #2e6e88; color: white; border: 0; border-radius: 5px; padding: 11px 20px; cursor: pointer; font: inherit; }
-#import-screen button:disabled { opacity: .5; cursor: wait; }
+#import-screen button, #library-screen button, #outdated-note button, #archive-open { background: #2e6e88; color: white; border: 0; border-radius: 5px; padding: 11px 20px; cursor: pointer; font: inherit; }
+#import-screen button:disabled, #library-screen button:disabled { opacity: .5; cursor: wait; }
+.import-actions { display: flex; gap: 8px; }
 #archive-drop { margin-top: 32px; border: 2px dashed #9bb2be; border-radius: 12px; background: #f9fbfc; padding: 56px 24px; text-align: center; }
 #archive-drop strong { font-size: 24px; font-weight: 500; }
 #archive-open { position: fixed; top: 14px; right: 18px; z-index: 8500; font-size: 12px; }
@@ -20,6 +23,8 @@
 .series-badge { font-size: 11px; display: inline-block; padding: 3px 6px; border-radius: 4px; background: #e0e9ee; }
 .series-badge.recommended { background: #d8eee1; color: #245c3a; }
 .series-badge.not_usable { background: #eee3df; color: #844b37; }
+.series-badge.in-library { background: #f4e2b8; color: #6a4b12; margin: 0 8px; }
+.series-open, .series-reprocess, #library-rows button { padding: 6px 10px; margin-right: 6px; }
 #import-confirm { margin-top: 24px; }
 #clinician-initials { padding: 8px; margin-left: 12px; width: 100px; }
 #processing-steps { display: flex; gap: 40px; padding: 28px; margin: 28px 0; border-block: 1px solid #c6d6de; }
@@ -29,4 +34,22 @@
 @media(max-width: 700px) { .import-panel { margin-top: 24px; padding: 0 16px; } #processing-steps { flex-direction: column; gap: 8px; } }
 
 .import-heading { padding-right: 200px; }
-body:has(#import-screen:not([hidden])) .research-footer { z-index: 9000; width: 100%; padding: 12px 18px; text-align: center; background: #edf1f3; }
+body:has(#import-screen:not([hidden])) .research-footer,
+body:has(#library-screen:not([hidden])) .research-footer { z-index: 9000; width: 100%; padding: 12px 18px; text-align: center; background: #edf1f3; }
+#library-warn { background: #f4e2b8; color: #6a4b12; padding: 12px 14px; border-radius: 6px; }
+#library-table-wrap { overflow-x: auto; }
+#library-table { width: 100%; border-collapse: collapse; background: #fafcfd; font-size: 13px; }
+#library-table th, #library-table td { text-align: left; padding: 14px 10px; border-bottom: 1px solid #d5dfe4; vertical-align: middle; }
+#library-table th { color: #526e7c; font-weight: 500; }
+#library-message, #outdated-error { color: #8b3d2c; min-height: 24px; }
+#library-confirm { border: 0; border-radius: 10px; padding: 20px 22px; max-width: 28rem; color: #17242b; }
+#library-confirm::backdrop { background: rgba(12, 18, 22, .45); }
+#library-confirm p { margin: 0 0 16px; }
+#library-confirm button { margin-right: 8px; }
+#outdated-note {
+  position: fixed; z-index: 30; top: 16px; left: 252px; width: 380px; margin: 0;
+  padding: 14px 16px; background: #fff8e8; color: #6a4b12; border: 1px solid #e2c07a;
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(23, 36, 43, .12);
+}
+#outdated-note p { margin: 0 0 10px; }
+#outdated-note button { margin-right: 8px; }

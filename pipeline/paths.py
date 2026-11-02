@@ -1,3 +1,4 @@
+# Changes: PIPELINE_VERSION stamped on each Case when processing finishes.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: sidecar temporary and rotating log directories.
 # Changes: LUNGNAV_DATA_ROOT (alias of pipeline root), LUNGNAV_CACHE_DIR,
@@ -45,6 +46,10 @@ def legacy_review() -> bool:
     return os.environ.get("BRONCHOROUTE_LEGACY_REVIEW", "").strip().lower() in {
         "1", "true", "yes", "on",
     }
+
+
+# Bump when a processed Case should be offered for reprocess. Missing stamps count as outdated.
+PIPELINE_VERSION = "1"
 
 
 def viewer_only() -> bool:
