@@ -1,8 +1,13 @@
+<!-- Changes: verify default viewer routes as well as selectable RouteTarget routes. -->
 <!-- Changes: failure copy is one sentence; the override reason is the clinician's. -->
 <!-- Changes: lesion slice distance follows the RAS crop slice increment. -->
 <!-- Changes: outdated-Case prompt must not cover the footer hit targets. -->
 <!-- Changes: retain Settings persistence and subprocess isolation lessons after rebase. -->
 # Lessons Learned
+
+- Bridge selectability does not protect the default viewer route: it can still
+  follow a blocked branch before a RouteTarget exists. Stop that payload route at
+  the first bridge boundary and test actual route geometry for every decision state.
 
 - Processing failure is one sentence: `<step> step failed: <reason>. Try another Series`.
   The screen adds only the final period. All-zero lobe masks are "no lungs". A Series

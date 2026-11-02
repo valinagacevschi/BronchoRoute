@@ -1,3 +1,4 @@
+# Changes: expose CT bridge rows and allow ungated, optional-note v1 decisions.
 # Changes: bridge labels write to CaseRef.bridge_labels (LUNGNAV_CACHE_DIR);
 # ensure_bridge_labels skips rewrite when the companion file already exists.
 # Phase 4d review fixes — note_change on review mutate/signoff;
@@ -27,6 +28,7 @@ from typing import Any, Callable
 
 import nibabel as nib
 import numpy as np
+import paths
 from atomic_json import atomic_write_json, json_file_lock
 from make_prototype_data import review_gate
 from review_signoff import (
@@ -584,6 +586,32 @@ def effective_for_case(case_id: str, case: dict | None = None) -> dict[str, Any]
     return compute_effective_graph(graph, case, bridges, ref=ref)
 
 
+def bridge_state(case_id: str) -> dict[str, Any]:
+    """CT controls use absolute patient RAS, as do bridge labels and graph points."""
+    ref = CaseRef.parse(case_id)
+    case = load_case_record(ref)
+    graph = load_graph(ref=ref)
+    bridges = load_bridges_annotated(ref)
+    mapping = map_all_bridges(graph, bridges, ref) if bridges else {}
+    decisions = case.get("bridge_decisions") or {}
+    rows = []
+    for bridge in bridges:
+        entry = decisions.get(bridge["id"]) or {}
+        rows.append({
+            "id": bridge["id"],
+            "midpoint_ras_mm": bridge["midpoint_mm"],
+            "gap_mm": bridge["gap_mm"],
+            "decision": entry.get("decision"),
+            "decided_by": entry.get("clinician"),
+            "decided_at": entry.get("at"),
+            "matched": bool(mapping.get(bridge["id"])),
+        })
+    return {
+        "bridges": rows,
+        "unconfirmed": sum(row["matched"] and row["decision"] is None for row in rows),
+    }
+
+
 def review_state(case_id: str) -> dict[str, Any]:
     """GET /api/cases/{id}/review payload."""
     ref = CaseRef.parse(case_id)
@@ -754,12 +782,14 @@ def _commit_review_state(
 def apply_review_mutation(
     case_id: str,
     mutator: Callable[[dict, dict, list[dict], dict[str, Any]], dict],
+    *, require_steps: bool = True,
 ) -> dict:
     """Shared load→mutate→compute→write helper for all review mutators.
 
     Manual mask KD-tree compute runs OUTSIDE the case.json lock.
     """
-    require_prior_steps(case_id, int(WorkflowStep.REVIEW))
+    if require_steps:
+        require_prior_steps(case_id, int(WorkflowStep.REVIEW))
     ref = CaseRef.parse(case_id)
     path = ref.case_json
     graph = load_graph(ref=ref)
@@ -813,11 +843,12 @@ def apply_review_mutation(
 
 
 def set_bridge_decision(
-    case_id: str, bridge_id: str, decision: str, note: str, clinician: str
+    case_id: str, bridge_id: str, decision: str, note: str | None, clinician: str
 ) -> dict:
     if decision not in DECISIONS:
         raise ValueError(f"decision must be one of {sorted(DECISIONS)}")
-    note_text = validate_ct_evidence_note(note)
+    legacy = paths.legacy_review()
+    note_text = "" if note is None and not legacy else validate_ct_evidence_note(note)
 
     def mutate(record, graph, bridges, ctx):
         by_id = {b["id"]: b for b in bridges}
@@ -848,7 +879,7 @@ def set_bridge_decision(
         record.setdefault("records", []).append(rec)
         return {"decision": decisions[bridge_id], "record": rec}
 
-    return apply_review_mutation(case_id, mutate)
+    return apply_review_mutation(case_id, mutate, require_steps=legacy)
 
 
 def add_correction(

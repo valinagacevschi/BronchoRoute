@@ -1,3 +1,4 @@
+# Changes: stop the default viewer route at the first unconfirmed bridge boundary.
 # Changes: lesion record stores diameter_mm (default 10 mm, allowed 2–60).
 # Changes: keep unfinished imported Cases out of the library.
 # Changes: recheck saved header facts before confirming an imported Series.
@@ -152,6 +153,22 @@ def case_payload(case_id: str, allow_review: bool = False) -> dict:
         payload = build_payload(
             eff["graph"], record, allow_review, start_node=start
         )
+        for ei in payload["route"]:
+            edge = eff["graph"]["edges"][ei]
+            until = edge.get("selectable_until_mm")
+            if edge.get("selectable", True) and until is None:
+                continue
+            arc = float(until or 0.0)
+            points = np.asarray(edge["centreline_mm"], dtype=float)
+            arcs = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))]
+            point = [float(np.interp(arc, arcs, points[:, axis])) for axis in range(3)]
+            payload = build_payload(
+                eff["graph"], record, allow_review, start_node=start,
+                end_edge=ei,
+                end_sample=last_original_index_at_or_before_arc(edge, arc),
+                end_ras_mm=point,
+            )
+            break
         # Stale or absent target: never draw a disagreeing RouteTarget marker.
         payload["endpoint"] = None
         payload["target_gap_mm"] = None

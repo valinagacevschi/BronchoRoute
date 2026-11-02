@@ -1,3 +1,4 @@
+// Changes: bridge decisions beside CT controls and slice-slab midpoint rings.
 // Changes: drop RouteStart confirmation controls; draw the target gap dashed grey.
 // Changes: place a Lesion in any pane, drag its diameter, draw the sphere slice, no overlay gate.
 /* Phase 4c review: raw click ras_mm (server snaps); hover route highlight in panes.
@@ -266,6 +267,7 @@ window.CtPanes = (function () {
       setCtView,
       ensureClinician,
       onLesionChange,
+      onBridgeChange,
       debug,
       isViewActive,
       readOnly = false,
@@ -277,6 +279,9 @@ window.CtPanes = (function () {
     let maskData = null;
     let invAffine = null;
     let loaded = false;
+    let bridges = [];
+    let bridgeBusy = false;
+    const bridgeDraw = {};
     let loadError = null;
     let windowW = 1500;
     let windowL = -600;
@@ -322,6 +327,80 @@ window.CtPanes = (function () {
     const toolbar = document.createElement("div");
     toolbar.className = "ct-toolbar";
     rootEl.appendChild(toolbar);
+
+    const bridgeList = document.createElement("div");
+    bridgeList.id = "bridge-list";
+    bridgeList.hidden = true;
+    rootEl.appendChild(bridgeList);
+
+    function renderBridges() {
+      bridgeList.replaceChildren();
+      bridgeList.hidden = !bridges.some(b => b.matched);
+      if (bridgeList.hidden) return;
+      const title = document.createElement("strong");
+      title.textContent = "Bridges";
+      bridgeList.appendChild(title);
+      bridges.forEach((bridge, i) => {
+        const row = document.createElement("div");
+        row.className = "bridge-row";
+        row.dataset.bridgeId = bridge.id;
+        const label = document.createElement("span");
+        label.textContent = `Bridge ${i + 1} · gap ${Number(bridge.gap_mm).toFixed(1)} mm · `;
+        const state = document.createElement("span");
+        state.className = "bridge-state";
+        state.textContent = bridge.decision === "confirmed" ? "Confirmed"
+          : bridge.decision === "rejected" ? "Rejected" : "Unconfirmed";
+        label.appendChild(state);
+        row.appendChild(label);
+        for (const [action, text] of [["goto", "Go to"], ["confirm", "Confirm"], ["reject", "Reject"]]) {
+          if (!bridge.matched) continue;
+          if (readOnly && action !== "goto") continue;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = `bridge-${action}`;
+          button.textContent = text;
+          const decision = action === "confirm" ? "confirmed" : "rejected";
+          button.disabled = action !== "goto" && (bridgeBusy || bridge.decision === decision);
+          button.onclick = () => {
+            if (action === "goto") sharedPos.set(bridge.midpoint_ras_mm, "bridge");
+            else decideBridge(bridge, decision);
+          };
+          row.appendChild(button);
+        }
+        bridgeList.appendChild(row);
+      });
+    }
+
+    async function loadBridges() {
+      const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/bridges`);
+      if (!res.ok) throw new Error(`bridges ${res.status}`);
+      bridges = (await res.json()).bridges;
+      renderBridges();
+      drawAll();
+    }
+
+    async function decideBridge(bridge, decision) {
+      if (readOnly || bridgeBusy) return;
+      bridgeBusy = true;
+      renderBridges();
+      try {
+        if (ensureClinician && !(await ensureClinician())) return;
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/bridges/${encodeURIComponent(bridge.id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || `bridge ${res.status}`);
+        await onBridgeChange();
+        await loadBridges();
+      } catch (err) {
+        statusMessage(String(err.message || err));
+      } finally {
+        bridgeBusy = false;
+        renderBridges();
+      }
+    }
 
     const grid = document.createElement("div");
     grid.className = "ct-grid";
@@ -1012,6 +1091,28 @@ window.CtPanes = (function () {
       }
 
       drawLesionGlyph(ctx, key, map, fit, fixed);
+      bridgeDraw[key] = [];
+      for (const bridge of bridges) {
+        const ijk = worldToVoxelCont(bridge.midpoint_ras_mm);
+        if (Math.abs(ijk[map.fixedAxis] - fixed) > 0.5) continue;
+        const uv = map.uvFromIjk(...ijk);
+        const x = fit.ox + uv.u * fit.drawW;
+        const y = fit.oy + uv.v * fit.drawH;
+        const color = bridge.decision === "confirmed" ? "#3a3"
+          : bridge.decision === "rejected" ? "#888" : "#d99520";
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(x, y, 9, 0, 2 * Math.PI);
+        if (bridge.decision === "rejected") {
+          ctx.moveTo(x - 7, y + 7);
+          ctx.lineTo(x + 7, y - 7);
+        }
+        ctx.stroke();
+        ctx.restore();
+        bridgeDraw[key].push({ id: bridge.id, color, x, y });
+      }
       routeTargetDraw[key] = { marker: false, gapDashed: false };
       if (airway.route_start && airway.route_start.ras_mm) {
         drawMarker(airway.route_start.ras_mm, "#B4522F", "RouteStart");
@@ -1362,6 +1463,7 @@ window.CtPanes = (function () {
         }
         loaded = true;
         setCrosshairWorld(start, "ct-init");
+        await loadBridges();
       } catch (err) {
         loadError = String(err.message || err);
         console.error(err);
@@ -1401,6 +1503,7 @@ window.CtPanes = (function () {
     }
 
     const api = {
+      getBridgeDraw: () => structuredClone(bridgeDraw),
       drawAll,
       getSlices: () => ({ ...state.slices }),
       getCrosshair: () => (crosshair ? [...crosshair] : null),
