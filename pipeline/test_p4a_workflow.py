@@ -1,3 +1,4 @@
+# Changes: use eligible full-thorax Series in import override coverage.
 # Phase 4a review-fix tests: ordering-aware workflow, series/confirm,
 # register-existing, /records 403, jobs restart/timeout/redaction, import
 # isolation under fake HOME. Never writes ~/.lungnav* or /tmp/lungnav-*.
@@ -372,7 +373,7 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
     pydicom = pytest.importorskip("pydicom")
     from pydicom.dataset import Dataset, FileDataset
 
-    def _write_series(folder: Path, series_number: int, uid: str, n: int = 100):
+    def _write_series(folder: Path, series_number: int, uid: str, n: int = 251):
         folder.mkdir(parents=True, exist_ok=True)
         for i in range(n):
             path = folder / f"IM{i:04d}.dcm"
@@ -388,7 +389,8 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
             ds.Modality = "CT"
             ds.SeriesNumber = series_number
             ds.SeriesDescription = "AXIAL STANDARD"
-            ds.ConvolutionKernel = "STANDARD"
+            ds.ConvolutionKernel = ["Bf37f", "3"]
+            ds.Manufacturer = "SIEMENS"
             ds.SliceThickness = 1.0
             ds.PixelSpacing = [1.0, 1.0]
             ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
@@ -409,11 +411,11 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
             ds.save_as(path)
 
     src = fake_home / "dicom_src"
-    _write_series(src / "THIN", 1, "1.2.840.10008.1.2.1.100", n=100)
-    # THICK: 5 mm IPP gaps so auto-pick prefers THIN (1 mm).
+    _write_series(src / "THIN", 1, "1.2.840.10008.1.2.1.100", n=251)
+    # Alternate usable Series has 1.5 mm steps; auto-pick prefers 1 mm.
     thick = src / "THICK"
     thick.mkdir(parents=True, exist_ok=True)
-    for i in range(100):
+    for i in range(200):
         path = thick / f"IM{i:04d}.dcm"
         file_meta = pydicom.dataset.Dataset()
         file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.2"
@@ -428,12 +430,13 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
         ds.StudyInstanceUID = "1.2.3.4.5"
         ds.Modality = "CT"
         ds.SeriesNumber = 2
-        ds.SeriesDescription = "AXIAL THICK"
+        ds.SeriesDescription = "AXIAL"
+        ds.Manufacturer = "SIEMENS"
         ds.ConvolutionKernel = "STANDARD"
-        ds.SliceThickness = 5.0
+        ds.SliceThickness = 1.5
         ds.PixelSpacing = [1.0, 1.0]
         ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
-        ds.ImagePositionPatient = [0.0, 0.0, float(i) * 5.0]
+        ds.ImagePositionPatient = [0.0, 0.0, float(i) * 1.5]
         ds.Rows = 8
         ds.Columns = 8
         ds.BitsAllocated = 16
@@ -452,6 +455,9 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
     scan = client.post("/api/imports/scan", json={"src_dir": str(src)})
     assert scan.status_code == 200, scan.text
     assert scan.json()["proposed"]["folder"] == "THIN"
+    assert scan.json()["proposed"]["kernel"] == "Bf37f"
+    assert scan.json()["proposed"]["status"] == "recommended"
+    assert scan.json()["proposed"]["z_span_mm"] == 250.0
 
     # Override with folder (unique).
     res = client.post("/api/imports", json={
@@ -460,6 +466,8 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
     assert res.status_code == 200, res.text
     assert res.json()["record"]["data"]["overridden"] is True
     assert res.json()["record"]["data"]["folder"] == "THICK"
+    assert res.json()["source"]["status"] == "usable"
+    assert res.json()["record"]["data"]["override_reason"]
     case_id = res.json()["case_id"]
 
     # Duplicate → 409
@@ -471,7 +479,7 @@ def test_import_happy_duplicate_and_override(client, harness, fake_home, monkeyp
 
     # Happy non-override path on a fresh series tree.
     src2 = fake_home / "dicom_src2"
-    _write_series(src2 / "ONLY", 3, "1.2.840.10008.1.2.1.300", n=100)
+    _write_series(src2 / "ONLY", 3, "1.2.840.10008.1.2.1.300", n=251)
     ok = client.post("/api/imports", json={
         "src_dir": str(src2), "series": "ONLY", "confirm": True,
     })
@@ -672,3 +680,51 @@ def test_missing_radius_mm_422(client, harness):
     res = client.get("/api/cases/local-001/route-start/candidates")
     assert res.status_code == 422
     assert "radius_mm" in res.json()["detail"]
+
+
+def test_scan_status_and_rejected_override(client, fake_home, monkeypatch):
+    from test_series_rule import survivor
+
+    _set_clinician(client)
+    rows = {
+        "a": survivor(series_uid_sha256="a" * 64),
+        "b": survivor(number=9, spacing=5.0, series_uid_sha256="b" * 64),
+    }
+    monkeypatch.setattr("app.imports.read_series", lambda root: (rows, 0))
+    scan = client.post("/api/imports/scan", json={"src_dir": str(fake_home)})
+    assert scan.status_code == 200
+    result = scan.json()
+    assert result["proposed"]["status"] == "recommended"
+    assert result["proposed"]["kernel_class"] == "soft"
+    assert result["proposed"]["z_span_mm"] >= 250
+    assert result["proposed"]["contrast"] is False
+    assert result["series"][1]["status"] == "not_usable"
+    refused = client.post("/api/imports", json={
+        "src_dir": str(fake_home), "series": "b" * 64, "confirm": True,
+    })
+    assert refused.status_code == 422
+    assert "step" in refused.json()["detail"]
+
+    rows.pop("b")
+    rows["a"]["manufacturer"] = "GE"
+    result = client.post("/api/imports/scan", json={"src_dir": str(fake_home)}).json()
+    assert result["proposed"] is None
+    assert result["series"][0]["status"] == "usable"
+    assert result["series"][0]["skip_reason"] is None
+
+    rows["a"]["z_span_mm"] = 190
+    result = client.post("/api/imports/scan", json={"src_dir": str(fake_home)}).json()
+    assert result["proposed"] is None
+    assert result["series"][0]["status"] == "not_usable"
+
+
+def test_existing_series_confirmation_rechecks_facts(client, harness):
+    from test_series_rule import survivor
+
+    _set_clinician(client)
+    case = json.loads(harness["case"].read_text())
+    case["source"]["series_facts"] = survivor(z_span_mm=190)
+    harness["case"].write_text(json.dumps(case))
+    res = client.post("/api/cases/local-001/series/confirm", json={})
+    assert res.status_code == 422
+    assert "coverage" in res.json()["detail"]

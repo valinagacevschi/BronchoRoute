@@ -1,3 +1,4 @@
+# Changes: an ineligible Series remains visible with its rejection reason.
 # Changes: uses build_tmp_pipeline (per-file ts_out symlinks, never dir links).
 # Phase 4a playwright: local-001 step-1 confirmable; synthetic DICOM scan under
 # fake HOME (never ~/Downloads/dicom). Screenshots → out/p4a_shots/.
@@ -189,7 +190,7 @@ def test_p4a_import_panel_and_workflow(server):
         page.fill("#import-src", str(dicom))
         cprint(f"scan synthetic {dicom}", "cyan")
         page.click("#import-scan")
-        # Tiny series → 422 (no eligible CT); message shown in the panel.
+        # Tiny Series remains visible but cannot be chosen.
         page.wait_for_function(
             """() => {
               const m = document.querySelector('#import-msg');
@@ -199,7 +200,9 @@ def test_p4a_import_panel_and_workflow(server):
             timeout=60_000,
         )
         msg = page.locator("#import-msg").inner_text().lower()
-        assert "eligible" in msg or "series" in msg or "found" in msg
+        assert "series" in msg.lower()
+        assert page.locator("#import-confirm").is_disabled()
+        assert "Not usable" in page.locator("#import-table-wrap").inner_text()
         page.screenshot(path=str(SHOTS / "import_scan_synthetic.png"), full_page=True)
 
         errors = [

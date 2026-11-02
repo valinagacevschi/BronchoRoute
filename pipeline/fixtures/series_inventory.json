@@ -1,0 +1,694 @@
+[
+ {
+  "study": "STUDY1",
+  "folder": "SERIES12",
+  "number": 502,
+  "description": "Patient Protocol",
+  "modality": "CT",
+  "sop_class": "Secondary Capture Image Storage",
+  "kernel": "",
+  "slice_thickness": 0.0,
+  "spacing": 0.0,
+  "count": 1,
+  "uniform": false,
+  "axial": false,
+  "size": [
+   0,
+   0,
+   1
+  ],
+  "z_span_mm": 0.0,
+  "current_skip": "not a CT image (Secondary Capture Image Storage)",
+  "image_type": [
+   "DERIVED",
+   "SECONDARY",
+   "OTHER",
+   "CT_SOM5 PROT"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.0,
+   0.0
+  ],
+  "body_part": ""
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES5",
+  "number": 6,
+  "description": "Gat Nativ  1.5  Br60",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Br60f', '1']",
+  "slice_thickness": 1.5,
+  "spacing": 1.0,
+  "count": 190,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   190
+  ],
+  "z_span_mm": 189.0,
+  "current_skip": null,
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.5625,
+   0.5625
+  ],
+  "body_part": "ABDOMEN"
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES2",
+  "number": 3,
+  "description": "Gat Nativ  0.6  Br38",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Br38f', '3']",
+  "slice_thickness": 0.6,
+  "spacing": 0.39999999999997726,
+  "count": 475,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   475
+  ],
+  "z_span_mm": 189.60000000000002,
+  "current_skip": null,
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.6171875,
+   0.6171875
+  ],
+  "body_part": "ABDOMEN"
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES3",
+  "number": 4,
+  "description": "Gat Nativ  5.0  Br38 iMAR",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "Br38f",
+  "slice_thickness": 5.0,
+  "spacing": 5.0,
+  "count": 38,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   38
+  ],
+  "z_span_mm": 185.0,
+  "current_skip": "fewer than 100 slices",
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.55859375,
+   0.55859375
+  ],
+  "body_part": "ABDOMEN"
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES4",
+  "number": 5,
+  "description": "Gat Nativ  1.5  Br38 iMAR",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "Br38f",
+  "slice_thickness": 1.5,
+  "spacing": 1.5,
+  "count": 127,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   127
+  ],
+  "z_span_mm": 189.0,
+  "current_skip": null,
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.517578125,
+   0.517578125
+  ],
+  "body_part": "ABDOMEN"
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES10",
+  "number": 100,
+  "description": "Venos TAP  1.5  Br38 Report Rayscape",
+  "modality": "CT",
+  "sop_class": "Secondary Capture Image Storage",
+  "kernel": "['Br38f', '3']",
+  "slice_thickness": 1.5,
+  "spacing": 1.5,
+  "count": 629,
+  "uniform": false,
+  "axial": false,
+  "size": [
+   0,
+   0,
+   629
+  ],
+  "z_span_mm": 0.0,
+  "current_skip": "not a CT image (Secondary Capture Image Storage)",
+  "image_type": [
+   "DERIVED",
+   "PRIMARY"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.77734375,
+   0.77734375
+  ],
+  "body_part": "ABDOMEN"
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES11",
+  "number": 501,
+  "description": "Dose Report",
+  "modality": "SR",
+  "sop_class": "X-Ray Radiation Dose SR Storage",
+  "kernel": "",
+  "slice_thickness": 0.0,
+  "spacing": 0.0,
+  "count": 1,
+  "uniform": false,
+  "axial": false,
+  "size": [
+   0,
+   0,
+   1
+  ],
+  "z_span_mm": 0.0,
+  "current_skip": "not a CT image (X-Ray Radiation Dose SR Storage)",
+  "image_type": [],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.0,
+   0.0
+  ],
+  "body_part": ""
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES1",
+  "number": 1,
+  "description": "Topograma  1.0  Tr20",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "Tr20f",
+  "slice_thickness": 0.0,
+  "spacing": 0.0,
+  "count": 0,
+  "uniform": false,
+  "axial": false,
+  "size": [
+   0,
+   0,
+   0
+  ],
+  "z_span_mm": 0.0,
+  "current_skip": "not axial",
+  "image_type": [],
+  "manufacturer": "",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0,
+   0
+  ],
+  "body_part": "",
+  "note": "no readable files"
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES6",
+  "number": 7,
+  "description": "A Nativ  5.0  Br38  3",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Br38f', '3']",
+  "slice_thickness": 5.0,
+  "spacing": 5.0,
+  "count": 51,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   51
+  ],
+  "z_span_mm": 250.0,
+  "current_skip": "fewer than 100 slices",
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.78515625,
+   0.78515625
+  ],
+  "body_part": "ABDOMEN"
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES8",
+  "number": 11,
+  "description": "Venos TAP  1.5  Br38",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Br38f', '3']",
+  "slice_thickness": 1.5,
+  "spacing": 1.0,
+  "count": 629,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   629
+  ],
+  "z_span_mm": 628.0,
+  "current_skip": null,
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.77734375,
+   0.77734375
+  ],
+  "body_part": "ABDOMEN"
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES9",
+  "number": 12,
+  "description": "Venos TAP  1.5  Br60",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Br60f', '2']",
+  "slice_thickness": 1.5,
+  "spacing": 1.0,
+  "count": 301,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   301
+  ],
+  "z_span_mm": 300.0,
+  "current_skip": null,
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.767578125,
+   0.767578125
+  ],
+  "body_part": "ABDOMEN"
+ },
+ {
+  "study": "STUDY1",
+  "folder": "SERIES7",
+  "number": 9,
+  "description": "Arterial AP  1.5  Br38",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Br38f', '3']",
+  "slice_thickness": 1.5,
+  "spacing": 1.0,
+  "count": 258,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   258
+  ],
+  "z_span_mm": 257.0,
+  "current_skip": null,
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.7890625,
+   0.7890625
+  ],
+  "body_part": "ABDOMEN"
+ },
+ {
+  "study": "STUDY2",
+  "folder": "SERIES5",
+  "number": 5,
+  "description": "Lung 1.5  Br60  3",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Br60f', '3']",
+  "slice_thickness": 1.5,
+  "spacing": 1.0,
+  "count": 368,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   368
+  ],
+  "z_span_mm": 367.0,
+  "current_skip": null,
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.828125,
+   0.828125
+  ],
+  "body_part": "CHEST"
+ },
+ {
+  "study": "STUDY2",
+  "folder": "SERIES2",
+  "number": 2,
+  "description": "TAP  5.0  Bf37",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "Bf37f",
+  "slice_thickness": 5.0,
+  "spacing": 5.0,
+  "count": 74,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   74
+  ],
+  "z_span_mm": 365.0,
+  "current_skip": "fewer than 100 slices",
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.81640625,
+   0.81640625
+  ],
+  "body_part": "CHEST"
+ },
+ {
+  "study": "STUDY2",
+  "folder": "SERIES3",
+  "number": 3,
+  "description": "TAP  1.5  Bf37  3",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Bf37f', '3']",
+  "slice_thickness": 1.5,
+  "spacing": 1.0,
+  "count": 369,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   369
+  ],
+  "z_span_mm": 368.0,
+  "current_skip": null,
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.82421875,
+   0.82421875
+  ],
+  "body_part": "CHEST"
+ },
+ {
+  "study": "STUDY2",
+  "folder": "SERIES4",
+  "number": 4,
+  "description": "TAP  1.5  Br60  3",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Br60f', '3']",
+  "slice_thickness": 1.5,
+  "spacing": 1.0,
+  "count": 369,
+  "uniform": true,
+  "axial": true,
+  "size": [
+   512,
+   512,
+   369
+  ],
+  "z_span_mm": 368.0,
+  "current_skip": null,
+  "image_type": [
+   "ORIGINAL",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 SPI"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.82421875,
+   0.82421875
+  ],
+  "body_part": "CHEST"
+ },
+ {
+  "study": "STUDY2",
+  "folder": "SERIES1",
+  "number": 1,
+  "description": "Topogram  1.0  Tr20",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "Tr20f",
+  "slice_thickness": 0.0,
+  "spacing": 0.0,
+  "count": 0,
+  "uniform": false,
+  "axial": false,
+  "size": [
+   0,
+   0,
+   0
+  ],
+  "z_span_mm": 0.0,
+  "current_skip": "not axial",
+  "image_type": [],
+  "manufacturer": "",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0,
+   0
+  ],
+  "body_part": "",
+  "note": "no readable files"
+ },
+ {
+  "study": "STUDY2",
+  "folder": "SERIES6",
+  "number": 6,
+  "description": "TAP  1.5  MPR  sag",
+  "modality": "CT",
+  "sop_class": "CT Image Storage",
+  "kernel": "['Br60f', '3']",
+  "slice_thickness": 1.5,
+  "spacing": 1.0,
+  "count": 424,
+  "uniform": false,
+  "axial": false,
+  "size": [
+   512,
+   747,
+   424
+  ],
+  "z_span_mm": 422.0,
+  "current_skip": "not axial",
+  "image_type": [
+   "DERIVED",
+   "PRIMARY",
+   "AXIAL",
+   "CT_SOM5 MPR"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.82463186077644,
+   0.82421875
+  ],
+  "body_part": "CHEST"
+ },
+ {
+  "study": "STUDY2",
+  "folder": "SERIES8",
+  "number": 501,
+  "description": "Dose Report",
+  "modality": "SR",
+  "sop_class": "X-Ray Radiation Dose SR Storage",
+  "kernel": "",
+  "slice_thickness": 0.0,
+  "spacing": 0.0,
+  "count": 1,
+  "uniform": false,
+  "axial": false,
+  "size": [
+   0,
+   0,
+   1
+  ],
+  "z_span_mm": 0.0,
+  "current_skip": "not a CT image (X-Ray Radiation Dose SR Storage)",
+  "image_type": [],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.0,
+   0.0
+  ],
+  "body_part": ""
+ },
+ {
+  "study": "STUDY2",
+  "folder": "SERIES9",
+  "number": 502,
+  "description": "Patient Protocol",
+  "modality": "CT",
+  "sop_class": "Secondary Capture Image Storage",
+  "kernel": "",
+  "slice_thickness": 0.0,
+  "spacing": 0.0,
+  "count": 1,
+  "uniform": false,
+  "axial": false,
+  "size": [
+   0,
+   0,
+   1
+  ],
+  "z_span_mm": 0.0,
+  "current_skip": "not a CT image (Secondary Capture Image Storage)",
+  "image_type": [
+   "DERIVED",
+   "SECONDARY",
+   "OTHER",
+   "CT_SOM5 PROT"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.0,
+   0.0
+  ],
+  "body_part": ""
+ },
+ {
+  "study": "STUDY2",
+  "folder": "SERIES7",
+  "number": 100,
+  "description": "TAP  1.5  Bf37  3 Report Rayscape",
+  "modality": "CT",
+  "sop_class": "Secondary Capture Image Storage",
+  "kernel": "['Bf37f', '3']",
+  "slice_thickness": 1.5,
+  "spacing": 1.5,
+  "count": 371,
+  "uniform": false,
+  "axial": false,
+  "size": [
+   0,
+   0,
+   371
+  ],
+  "z_span_mm": 0.0,
+  "current_skip": "not a CT image (Secondary Capture Image Storage)",
+  "image_type": [
+   "DERIVED",
+   "PRIMARY"
+  ],
+  "manufacturer": "SIEMENS",
+  "contrast_agent": false,
+  "pixel_spacing": [
+   0.82421875,
+   0.82421875
+  ],
+  "body_part": "CHEST"
+ }
+]

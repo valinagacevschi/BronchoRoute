@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- # Changes: show Series status and allow explicit choice without a recommendation. -->
 <!-- Phase 4d review fixes: Start walk-through fly+pauses; No derived (no ack-return);
      sign-off + freeze + report from snapshot.
      Lesion-changed from renderer iframe → reload workflow (Segment enable).
@@ -530,12 +531,12 @@
     const wrap = document.getElementById("import-table-wrap");
     clearEl(wrap);
     clearEl(importSeries);
-    importSeries.appendChild(el("option", { value: "" }, "Proposed"));
+    importSeries.appendChild(el("option", { value: "" }, "Recommended / choose Series"));
     if (!result) return;
     const table = el("table", { className: "series-table" });
     const thead = el("thead");
     const hr = el("tr");
-    for (const h of ["Folder", "No.", "Description", "Kernel", "Spacing", "Reason"]) {
+    for (const h of ["Folder", "No.", "Description", "Kernel", "Thickness / spacing", "Contrast", "Coverage", "Slices", "Status / reason"]) {
       hr.appendChild(el("th", null, h));
     }
     thead.appendChild(hr);
@@ -546,21 +547,28 @@
       tr.appendChild(el("td", null, row.folder));
       tr.appendChild(el("td", null, String(row.series_number)));
       tr.appendChild(el("td", null, row.description || ""));
-      tr.appendChild(el("td", null, row.kernel || ""));
-      tr.appendChild(el("td", null, `${row.spacing_mm} mm`));
-      tr.appendChild(el("td", { className: "skip" }, row.skip_reason || (row.proposed ? "proposed" : "")));
+      tr.appendChild(el("td", null, `${row.kernel || ""} (${row.kernel_class})`));
+      tr.appendChild(el("td", null, `${row.slice_thickness_mm} / ${row.spacing_mm} mm`));
+      tr.appendChild(el("td", null, row.contrast ? "Yes" : "No"));
+      tr.appendChild(el("td", null, `${Math.round(row.z_span_mm)} mm`));
+      tr.appendChild(el("td", null, String(row.count)));
+      const status = { recommended: "Recommended", usable: "Usable", not_usable: "Not usable" }[row.status];
+      tr.appendChild(el("td", { className: "skip" }, `${status}${row.reason ? `: ${row.reason}` : ""}`));
       tbody.appendChild(tr);
-      if (!row.skip_reason) {
+      if (row.status !== "not_usable") {
         importSeries.appendChild(el(
           "option",
-          { value: String(row.folder) },
+          { value: row.series_key },
           `${row.folder} / ${row.series_number}`,
         ));
       }
     }
     table.appendChild(tbody);
     wrap.appendChild(table);
-    document.getElementById("import-confirm").disabled = false;
+    importSeries.onchange = () => {
+      document.getElementById("import-confirm").disabled = !importSeries.value && !result.proposed;
+    };
+    importSeries.onchange();
   }
 
   document.getElementById("toggle-import").onclick = () => {
@@ -760,13 +768,17 @@
       return;
     }
     scanResult = body;
-    importMsg.textContent = `Proposed: ${body.proposed.folder} / SeriesNumber ${body.proposed.series_number}`;
+    importMsg.textContent = body.proposed
+      ? `Recommended: SeriesNumber ${body.proposed.series_number}`
+      : (body.series.some(row => row.status === "usable")
+        ? "No Recommended Series. Choose a Usable Series."
+        : "No usable CT Series.");
     renderScanTable(body);
   };
 
   document.getElementById("import-confirm").onclick = async () => {
     const src = document.getElementById("import-src").value.trim();
-    const series = importSeries.value || (scanResult && scanResult.proposed.folder);
+    const series = importSeries.value || (scanResult && scanResult.proposed && scanResult.proposed.series_key);
     importMsg.textContent = "Importing…";
     const res = await fetch("/api/imports", {
       method: "POST",
