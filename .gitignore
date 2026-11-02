@@ -4,6 +4,8 @@ pipeline/ts_out/
 pipeline/out/
 pipeline/.venv/
 pipeline/app_state/
+pipeline/tmp/
+pipeline/logs/
 __pycache__/
 .DS_Store
 

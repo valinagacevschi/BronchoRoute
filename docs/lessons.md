@@ -25,3 +25,7 @@
   Hiding legacy review endpoints alone still lets Lesion and route edits create
   versions. Guard the shared version hooks and test both empty and frozen state
   with the flag off.
+- Sidecar recovery must resolve saved job paths even if Case metadata is gone.
+  Validate the saved Case key without requiring the Case to exist. Read the stdin
+  watchdog with `os.read` so a blocked daemon cannot hold a buffered-reader lock
+  during interpreter shutdown. Cover both with a real subprocess lifecycle test.

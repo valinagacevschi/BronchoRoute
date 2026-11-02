@@ -1,4 +1,6 @@
 # Changes: hide legacy review behind the default-off feature flag.
+# Changes: blank BRONCHOROUTE_TOKEN counts as unset so the launch guard stays off.
+# Changes: guarded sidecar token, socket handoff, stdin lifecycle and recovery.
 # Changes: deploy env — LUNGNAV_VIEWER_ONLY / CASES / HOST / PORT / ALLOWED_HOSTS;
 # GET /healthz; TrustedHost from env; bind 0.0.0.0 when LUNGNAV_HOST set.
 # Phase 4d review fixes — CSP on report; VersionAlreadyFrozen /
@@ -14,9 +16,13 @@ Phase 4d: walk-through, tracing, sign-off freeze, printable report.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import math
 import os
+import socket
+import sys
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -26,7 +32,6 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
-from termcolor import cprint
 
 from app.caseref import CaseRef
 from app.cases import (
@@ -48,6 +53,8 @@ from app.ct_crop import build_ct_crop, read_ct_bytes
 from app.imports import ImportDuplicate, confirm_import, scan_series
 from app.jobs import (
     JobConflict,
+    initialize_sidecar,
+    close_sidecar_log,
     latest_job,
     register_segment_artifacts,
     start_segment_job,
@@ -110,6 +117,10 @@ class _DeployGuards(BaseHTTPMiddleware):
     """TrustedHost + viewer-only ( /workflow 404, non-GET /api/* 403 )."""
 
     async def dispatch(self, request: Request, call_next):
+        token = os.environ.get("BRONCHOROUTE_TOKEN", "").strip()
+        supplied = request.headers.get("X-BronchoRoute-Token", "")
+        if token and not hmac.compare_digest(supplied.encode(), token.encode()):
+            return Response("Unauthorized", status_code=401)
         host = (request.headers.get("host") or "").split(":", 1)[0]
         allowed = _allowed_hosts()
         if "*" not in allowed and host not in allowed:
@@ -141,8 +152,12 @@ class _DeployGuards(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    yield
-    terminate_all_jobs()
+    log_handler = initialize_sidecar()
+    try:
+        yield
+    finally:
+        terminate_all_jobs()
+        close_sidecar_log(log_handler)
 
 
 app = FastAPI(title="Lung Navigator", docs_url=None, redoc_url=None, lifespan=_lifespan)
@@ -834,6 +849,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Lung Navigator local app server")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--exit-on-stdin-close", action="store_true")
     args = parser.parse_args(argv)
     env_host = os.environ.get("LUNGNAV_HOST", "").strip()
     env_port = os.environ.get("LUNGNAV_PORT", "").strip()
@@ -843,8 +859,28 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("refusing to bind a non-local host")
     import uvicorn
 
-    cprint(f"Lung Navigator on http://{host}:{port}/", "cyan")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
+    server = uvicorn.Server(config)
+
+    def watch_stdin() -> None:
+        while os.read(sys.stdin.fileno(), 4096):
+            pass
+        terminate_all_jobs()
+        server.should_exit = True
+
+    sock = None
+    try:
+        if port == 0:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(("127.0.0.1", 0))
+            sock.listen(128)
+            print(f"BRONCHOROUTE_PORT={sock.getsockname()[1]}", flush=True)
+        if args.exit_on_stdin_close:
+            threading.Thread(target=watch_stdin, daemon=True).start()
+        server.run(sockets=[sock] if sock is not None else None)
+    finally:
+        if sock is not None:
+            sock.close()
 
 
 if __name__ == "__main__":
