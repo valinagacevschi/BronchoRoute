@@ -1,3 +1,4 @@
+# Changes: bump PIPELINE_VERSION so Cases processed before estimated airway reprocess.
 # Changes: PIPELINE_VERSION stamped on each Case when processing finishes.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: sidecar temporary and rotating log directories.
@@ -49,7 +50,7 @@ def legacy_review() -> bool:
 
 
 # Bump when a processed Case should be offered for reprocess. Missing stamps count as outdated.
-PIPELINE_VERSION = "1"
+PIPELINE_VERSION = "2"
 
 
 def viewer_only() -> bool:

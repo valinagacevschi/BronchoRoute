@@ -1,3 +1,4 @@
+# Changes: graph step receives the same-run pulmonary artery mask.
 # Changes: no-lungs and empty-graph reasons keep their own step names.
 # Changes: one plain failure sentence naming the step that stopped.
 # Changes: stamp pipeline_version when processing finishes; reprocess skips the import gate.
@@ -384,6 +385,7 @@ def _segment_commands(ref: CaseRef) -> list[list[str]]:
             "--airways", str(ref.airways),
             "--lobes", str(ref.lobes),
             "--bridges", str(ref.bridges),
+            "--arteries", str(ref.ts_out / "airways_source" / "lung_arteries.nii.gz"),
             "-o", str(out_dir),
         ],
     ]

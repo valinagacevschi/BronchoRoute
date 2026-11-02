@@ -1,3 +1,4 @@
+# Changes: payload carries estimated airway beside edges, never merged into them.
 # Changes: payload lesion includes diameter_mm (10 when the record omits it).
 # Changes: Phase 4c review — build_payload routes from start_node; truncates at
 # last original ≤ sample arc then appends exact end_ras_mm; optional stored gap.
@@ -72,6 +73,25 @@ def decimated_indices(point_count: int, step: int) -> list[int]:
     if point_count and indices[-1] != point_count - 1:
         indices.append(point_count - 1)
     return indices
+
+
+def estimated_mapping(graph: dict, rel) -> list[dict]:
+    """Decimate graph['estimated'] into payload rows. Never folded into edges."""
+    rows = []
+    for segment in graph.get("estimated") or []:
+        points = segment.get("points_mm") or []
+        distances = segment.get("distance_mm") or []
+        if len(points) < 2 or len(distances) != len(points):
+            continue
+        indices = decimated_indices(len(points), KEEP_EVERY)
+        rows.append({
+            "id": segment.get("id"),
+            "from_edge": segment.get("from_edge"),
+            "prov": "estimated",
+            "c": [rel(points[index]) for index in indices],
+            "d": [round(float(distances[index]), 3) for index in indices],
+        })
+    return rows
 
 
 def interpolated_segments(points: list, indices: list[int], spans: list[list[float]]) -> list[int]:
@@ -464,6 +484,7 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
         "nodes": {str(k): {"p": rel(v["position_mm"]), "r": v["radius_mm"]}
                   for k, v in nodes.items()},
         "edges": out_edges,
+        "estimated": estimated_mapping(graph, rel),
         "route": route,
         "target": target_node,
         "poi": rel(poi_ras) if poi_ras is not None else None,
