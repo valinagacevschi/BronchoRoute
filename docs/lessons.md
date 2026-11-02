@@ -1,3 +1,4 @@
+<!-- Changes: public snapshot keeps renderer.html for the splice tests; scanner waives registry UIDs, the .999 test branch, path-redaction lines, the pygltflib URL, and "Patient Protocol". -->
 <!-- Changes: PNG stills redraw at 2× CSS size; strip text chunks; do not log the save path. -->
 <!-- Changes: estimated airway is shifted into patient RAS and stored off the graph. -->
 <!-- Changes: verify default viewer routes as well as selectable RouteTarget routes. -->
@@ -9,6 +10,14 @@
 <!-- Changes: retain Settings persistence and subprocess isolation lessons after rebase. -->
 # Lessons Learned
 
+- Public snapshot (#49): the server serves `renderer.template.html`, but
+  `desktop/lib.test.js` and `test_template_splice` read `prototype/renderer.html`
+  (that template plus the anonymized AeroPath graph, no name, UID, or date), so
+  the snapshot keeps the file. The scanner has to waive DICOM root
+  `1.2.840.10008`, the synthetic `.10.999` Series branch, `/Users/` only on
+  lines that reject or redact absolute paths, the pygltflib `gitlab.com` URL,
+  and the header-inventory description "Patient Protocol". A private host in
+  code aborts; the only host comment is stripped from `pipeline/paths.py`.
 - PNG stills (#42): redraw the current view into an offscreen canvas at 2× the
   CSS size with the same draw functions, then burn in. The anatomical scale bar
   uses look-at mm-per-pixel in that CSS space. Canvas PNGs can carry text
