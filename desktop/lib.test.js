@@ -1,3 +1,4 @@
+// Changes: default Pictures and Movies paths are built at runtime, with no home-directory literal.
 // Changes: Record name, JPEG signature, ffmpeg resolution, and injected Movies directory.
 // Changes: Save image name, PNG signature, and injected Pictures directory.
 // Changes: FileVault Off is the only status that asks for the one-time note.
@@ -281,6 +282,7 @@ test("png bytes require the signature and stay under 50 MB", () => {
 test("save image default path uses an injected pictures directory", () => {
   const name = "local-007_anatomical_20261101-2350.png";
   const injected = path.join(os.tmpdir(), "bronchoroute-42-pics");
+  const pictures = path.join(os.tmpdir(), "bronchoroute-42-pictures-base", "Pictures");
   const base = resolveSaveImageBaseDir(`  ${injected}  `, "/unused/Pictures");
   assert.equal(base, path.resolve(injected));
   assert.equal(
@@ -288,12 +290,12 @@ test("save image default path uses an injected pictures directory", () => {
     path.join(path.resolve(injected), "BronchoRoute", name),
   );
   assert.equal(
-    resolveSaveImageBaseDir("   ", "/Users/someone/Pictures"),
-    "/Users/someone/Pictures",
+    resolveSaveImageBaseDir("   ", pictures),
+    pictures,
   );
   assert.equal(
-    saveImageDefaultPath("/Users/someone/Pictures", "local-001_endoluminal_20261102-0001.png"),
-    path.join("/Users/someone/Pictures", "BronchoRoute", "local-001_endoluminal_20261102-0001.png"),
+    saveImageDefaultPath(pictures, "local-001_endoluminal_20261102-0001.png"),
+    path.join(pictures, "BronchoRoute", "local-001_endoluminal_20261102-0001.png"),
   );
   assert.throws(() => saveImageDefaultPath(base, "local-001_ct_20261101-2350.png"), /invalid save image name/);
   assert.throws(() => saveImageDefaultPath("  ", name), /base directory/);
@@ -430,6 +432,7 @@ test("resolveFfmpeg prefers env, then PATH, then the packaged binary", () => {
 test("save video default path uses an injected movies directory", () => {
   const name = "local-007_anatomical_20261101-2350.mp4";
   const injected = path.join(os.tmpdir(), "bronchoroute-43-movies");
+  const movies = path.join(os.tmpdir(), "bronchoroute-43-pictures-base", "Movies");
   const base = resolveSaveVideoBaseDir(`  ${injected}  `, "/unused/Movies");
   assert.equal(base, path.resolve(injected));
   assert.equal(
@@ -437,12 +440,12 @@ test("save video default path uses an injected movies directory", () => {
     path.join(path.resolve(injected), "BronchoRoute", name),
   );
   assert.equal(
-    resolveSaveVideoBaseDir("   ", "/Users/someone/Movies"),
-    "/Users/someone/Movies",
+    resolveSaveVideoBaseDir("   ", movies),
+    movies,
   );
   assert.equal(
-    saveVideoDefaultPath("/Users/someone/Movies", "local-001_endoluminal_20261102-0001.mp4"),
-    path.join("/Users/someone/Movies", "BronchoRoute", "local-001_endoluminal_20261102-0001.mp4"),
+    saveVideoDefaultPath(movies, "local-001_endoluminal_20261102-0001.mp4"),
+    path.join(movies, "BronchoRoute", "local-001_endoluminal_20261102-0001.mp4"),
   );
   assert.throws(() => saveVideoDefaultPath(base, "local-001_anatomical_20261101-2350.png"), /invalid save video name/);
   assert.throws(() => saveVideoDefaultPath("  ", name), /base directory/);
