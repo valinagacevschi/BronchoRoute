@@ -1,3 +1,4 @@
+# Changes: pass mask and RAS geometry to graph repair and tracheal rooting.
 """Score a predicted airway mask against AeroPath's expert mask.
 
 Voxel Dice is the usual number but it is not the one that matters here: a
@@ -37,8 +38,8 @@ def tree_stats(mask_path: Path, label: str) -> dict:
     """Run the real pipeline over a mask and report what a learner would get."""
     mask, affine, spacing = bg.load_mask(mask_path)
     skel = bg.skeletonise(mask, spacing)
-    g = bg.to_graph(skel)
-    root = bg.find_root(g)
+    g = bg.to_graph(skel, mask, spacing)
+    root = bg.find_root(g, spacing, affine)
     branches = bg.prune(bg.trace_branches(g, root), bg.MIN_BRANCH_MM)
     return {
         "label": label,
