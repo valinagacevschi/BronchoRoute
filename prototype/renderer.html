@@ -1,3 +1,4 @@
+<!-- Changes: local IBM Plex faces and the research-tool footer. -->
 <!-- # Changes: topology geometry rotation with upright markers and time-based spin. -->
 <!-- Changes: hide legacy review behind the default-off feature flag. -->
 <!-- Dual-mode data: embedded airway payload or fetch /api/cases/<id>/payload.
@@ -9,11 +10,51 @@
      Lesion confirm/clear posts lesion-changed to parent shell (workflow refresh).
      Drop stale draw() calls in postMessage handlers (rAF frame() redraws). -->
 <title>Bronchial Tree Renderer</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500&display=swap">
-
 <style>
+/* Vendored IBM Plex (offline). Weights match the old Google Fonts request. */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/IBMPlexSans-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/IBMPlexSans-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans Condensed";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/IBMPlexSansCondensed-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans Condensed";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("fonts/IBMPlexSansCondensed-SemiBold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/IBMPlexMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/IBMPlexMono-Medium.woff2") format("woff2");
+}
+
 :root {
   --ground:  #EDF1F3;
   --surface: #FFFFFF;
@@ -82,9 +123,24 @@ canvas.dragging { cursor: grabbing; }
   background: color-mix(in srgb, var(--surface) 88%, transparent);
   backdrop-filter: blur(12px);
   border-right: 1px solid var(--edge);
-  padding: 20px 18px;
+  padding: 20px 18px 72px;
   display: flex; flex-direction: column; gap: 22px;
   overflow-y: auto;
+}
+/* Sits in the rail so it never covers the switcher or the right-hand panels. */
+.research-footer {
+  position: fixed;
+  z-index: 6;
+  left: 0;
+  bottom: 0;
+  width: 236px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 8px 14px 10px;
+  background: var(--surface);
+  border-top: 1px solid var(--edge);
+  color: var(--muted);
+  font: 400 10px/1.35 "IBM Plex Sans", sans-serif;
 }
 .brand {
   font-family: "IBM Plex Sans Condensed", sans-serif;
@@ -232,7 +288,11 @@ body.ct-panes-active .limitations-panel.collapsed h2::after { content: " ▸"; }
     border-bottom: 1px solid var(--edge); }
   .rail .group-depth,
   .rail .group-question { display: none; }
-  .switcher { left: 50%; bottom: 14px; }
+  .switcher { left: 50%; bottom: 40px; }
+  .research-footer { width: auto; right: 0; text-align: center; }
+  body.ct-panes-active .limitations-panel,
+  body.ct-panes-active .proto,
+  body.walkthrough-active .proto { bottom: 40px; }
 }
 
 /* Phase 3 — CT panes ---------------------------------------------------- */
@@ -378,6 +438,8 @@ body.walkthrough-active .walk-sim-label { display: block; }
   </div>
 
 </aside>
+
+<p class="research-footer" role="contentinfo">Research and education tool. Not a medical device. Not for diagnosis or treatment decisions.</p>
 
 <div class="proto">Prototype</div>
 <div class="review-banner" id="review-banner" role="alert" hidden>

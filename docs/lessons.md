@@ -29,3 +29,6 @@
   Validate the saved Case key without requiring the Case to exist. Read the stdin
   watchdog with `os.read` so a blocked daemon cannot hold a buffered-reader lock
   during interpreter shutdown. Cover both with a real subprocess lifecycle test.
+- Electron dev entry (GitLab #26): `electron .` puts the app directory in `argv`,
+  so `require.main === module` is false and the shell never starts. Treat that
+  directory as the entry, and launch with `electron .` as well as the smoke script.
