@@ -1,3 +1,4 @@
+// Changes: builder publish feed, dmg+zip targets, and updater.js in the pack list.
 // Changes: usage stats stay off, including a config that omitted the key.
 // Changes: default Pictures and Movies paths are built at runtime, with no home-directory literal.
 // Changes: Record name, JPEG signature, ffmpeg resolution, and injected Movies directory.
@@ -233,9 +234,22 @@ test("builder includes only runtime resources and targets unsigned arm64 macOS",
   assert.equal(scripts["sign:adhoc"], "IDENTITY=- bash scripts/sign-and-notarize.sh");
   assert.equal(build.mac.identity, null);
   assert.equal(build.mac.minimumSystemVersion, "14.0");
-  assert.deepEqual(build.mac.target, [{ target: "dir", arch: ["arm64"] }]);
+  assert.deepEqual(build.mac.target, [
+    { target: "dir", arch: ["arm64"] },
+    { target: "dmg", arch: ["arm64"] },
+    { target: "zip", arch: ["arm64"] },
+  ]);
   assert.ok(build.files.includes("weights.js"));
   assert.ok(build.files.includes("weights-manifest.json"));
+  assert.ok(build.files.includes("updater.js"));
+  assert.deepEqual(build.publish, [{
+    provider: "github",
+    owner: "valinagacevschi",
+    repo: "BronchoRoute",
+    releaseType: "release",
+  }]);
+  assert.equal(build.artifactName.includes(" "), false);
+  assert.match(scripts.pack, /--publish never/);
   assert.match(devDependencies["electron-builder"], /^\d+\.\d+\.\d+$/);
   const pipeline = build.extraResources.find((row) => row.to === "app/pipeline");
   assert.ok(pipeline.filter.includes("repo_root.py"));

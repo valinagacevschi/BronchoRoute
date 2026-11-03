@@ -1,3 +1,4 @@
+<!-- Changes: document GitHub Releases auto-update (ask before download; Settings switch). -->
 <!-- Changes: document npm run build:ffmpeg and the packaged LGPL binary path. -->
 # BronchoRoute desktop shell
 
@@ -34,6 +35,19 @@ still open. Set `BRONCHOROUTE_FORCE_WEIGHTS=1` to show that download in dev, and
 
 `scripts/mirror-weights.py --pack --dry-run` lists the datasets. `--pack` writes stored zips
 and updates the manifest. `--upload` prints `gh release` commands and does not run them.
+
+## Updates
+
+A packaged app checks GitHub Releases for `valinagacevschi/BronchoRoute` once after the
+viewer loads, only when Settings → "Check for updates at launch" is on (default).
+Changing that switch applies on the next launch. Dev/`npm start` never checks.
+When an update is found, a native dialog asks before downloading; after download,
+another dialog asks before restarting to install. Offline or missing-release errors
+are logged once and do not block the app.
+
+`npm run pack` still builds the unpacked `dir` target with `--publish never`. Release
+artifacts are arm64 `dmg` and `zip` (plus `dir` for smoke tests), named without spaces,
+and must stay under 2 GiB.
 
 ## Signing and notarization
 
