@@ -1,4 +1,4 @@
-// Changes: keep send_usage_stats false, and point weights at nnUNet results.
+// Changes: save-video names allow anatomical-orbit and topology-spin (#45).
 // Changes: validate Record names and JPEG frames, resolve ffmpeg, and the Movies/BronchoRoute path.
 // Changes: validate Save image names, PNG bytes, and the Pictures/BronchoRoute path.
 // Changes: FileVault status line used by the one-time first-run note.
@@ -268,7 +268,7 @@ function saveImageDefaultPath(baseDir, defaultName) {
 
 const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
 const JPEG_MAX_BYTES = 5 * 1024 * 1024;
-const SAVE_VIDEO_NAME_RE = /^local-\d{3}_(anatomical|topology|endoluminal)_\d{8}-\d{4}\.mp4$/;
+const SAVE_VIDEO_NAME_RE = /^local-\d{3}_(anatomical|anatomical-orbit|topology|topology-spin|endoluminal)_\d{8}-\d{4}\.mp4$/;
 
 function isSaveVideoName(name) {
   return typeof name === "string" && SAVE_VIDEO_NAME_RE.test(name);

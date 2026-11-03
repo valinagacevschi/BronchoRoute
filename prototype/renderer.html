@@ -1,3 +1,5 @@
+<!-- Changes: video JPEG via toDataURL (not headless-throttled toBlob); yieldEvery (#45). -->
+<!-- Changes: anatomical 360 orbit and topology spin reuse Record IPC with posed draws. -->
 <!-- Changes: fly-through fork hold looks ahead of the junction; drop on-plane orifice hacks. -->
 <!-- Changes: orifice placement uses the rolled view basis; no patient-clock placeholders. -->
 <!-- Changes: video lumen at fork/end; export HUD clocks inset 24 px without the rail. -->
@@ -519,21 +521,24 @@ body.walkthrough-active .walk-sim-label { display: block; }
 #save-image-btn:disabled { opacity: .55; cursor: progress; }
 #save-image-btn:focus-visible, #save-image-options:focus-visible,
 #record-btn:focus-visible, #record-stop:focus-visible,
-#flythrough-btn:focus-visible, #flythrough-cancel:focus-visible {
+#flythrough-btn:focus-visible, #orbit-btn:focus-visible, #spin-btn:focus-visible,
+#flythrough-cancel:focus-visible {
   outline: 2px solid var(--steel); outline-offset: 2px;
 }
-#record-btn, #record-stop, #flythrough-btn, #flythrough-cancel {
+#record-btn, #record-stop, #flythrough-btn, #orbit-btn, #spin-btn, #flythrough-cancel {
   font: 500 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
   letter-spacing: .03em;
   border: 1px solid var(--edge); border-radius: 6px;
   padding: 7px 10px; background: var(--ground); color: var(--ink); cursor: pointer;
 }
 #record-stop { background: #9d2c2c; border-color: #9d2c2c; color: #fff; }
-#record-btn:disabled, #record-stop:disabled, #flythrough-btn:disabled, #flythrough-cancel:disabled {
+#record-btn:disabled, #record-stop:disabled, #flythrough-btn:disabled, #orbit-btn:disabled,
+#spin-btn:disabled, #flythrough-cancel:disabled {
   opacity: .55; cursor: progress;
 }
 #record-btn[hidden], #record-stop[hidden], #record-indicator[hidden], #record-size-label[hidden],
-#flythrough-btn[hidden], #flythrough-cancel[hidden], #flythrough-progress[hidden], #flythrough-reason[hidden] {
+#flythrough-btn[hidden], #orbit-btn[hidden], #spin-btn[hidden], #flythrough-cancel[hidden],
+#flythrough-progress[hidden], #flythrough-reason[hidden] {
   display: none;
 }
 #record-indicator {
@@ -643,6 +648,8 @@ body.walkthrough-active .walk-sim-label { display: block; }
       <button type="button" id="record-stop" hidden>Stop</button>
       <span id="record-indicator" hidden role="status" aria-live="polite">● REC 00:00</span>
       <button type="button" id="flythrough-btn" hidden aria-describedby="flythrough-reason">Export fly-through</button>
+      <button type="button" id="orbit-btn" hidden>Export orbit</button>
+      <button type="button" id="spin-btn" hidden>Export spin</button>
       <button type="button" id="flythrough-cancel" hidden>Cancel</button>
       <button type="button" id="save-image-options" popovertarget="save-image-popover"
         aria-controls="save-image-popover">Options</button>
@@ -1207,6 +1214,36 @@ function syncPresetButtons() {
 
 applyPreset("radiologist");
 
+let exportPose = null;
+let anatomicalDrawCam = null;
+let topologyDrawRot = null;
+
+function viewCam() {
+  return anatomicalDrawCam || cam;
+}
+
+function viewTopoRot() {
+  return topologyDrawRot == null ? topoRot : topologyDrawRot;
+}
+
+function anatomicalPoseCam(pose) {
+  if (!(pose && Number.isFinite(pose.yaw) && Number.isFinite(pose.pitch))) return null;
+  const roll = Number.isFinite(pose.roll) ? pose.roll : 0;
+  const b = basisFromYawPitch(pose.yaw, pose.pitch, roll);
+  return {
+    yaw: pose.yaw,
+    pitch: pose.pitch,
+    roll,
+    forward: b.forward,
+    up: b.up,
+    right: b.right,
+    dist: Number.isFinite(pose.dist) ? pose.dist : cam.dist,
+    panX: Number.isFinite(pose.panX) ? pose.panX : cam.panX,
+    panY: Number.isFinite(pose.panY) ? pose.panY : cam.panY,
+    preset: "free",
+  };
+}
+
 function orbitCamera(dx, dy) {
   // Orbit in the same yaw/pitch parameterisation as the presets so the first
   // drag after a preset cannot jump, flip or mirror. Pitch is clamped to ±89°.
@@ -1279,7 +1316,7 @@ function drawAnatomicalLesion() {
   const origin = A.origin_mm || [0, 0, 0];
   const ras = A.lesion.ras_mm;
   const rel = [ras[0] - origin[0], ras[1] - origin[1], ras[2] - origin[2]];
-  const p = project(rel, cam);
+  const p = project(rel, viewCam());
   if (!p) return;
   // p.f is px per mm at this depth, the same scale as branch radius.
   const radiusMm = lesionRadiusMm(A.lesion);
@@ -1334,8 +1371,8 @@ function drawEstimatedAirway() {
     const d = seg.d || [];
     let dashAlong = 0;
     for (let i = 1; i < c.length; i++) {
-      const p = project(c[i - 1], cam);
-      const q = project(c[i], cam);
+      const p = project(c[i - 1], viewCam());
+      const q = project(c[i], viewCam());
       if (!p || !q) continue;
       const dist = Number(d[i] != null ? d[i] : d[i - 1]);
       const t = Number.isFinite(dist) ? Math.max(0, Math.min(1, dist / 15)) : 0;
@@ -1353,21 +1390,25 @@ function drawEstimatedAirway() {
   ctx.restore();
 }
 
-function drawAnatomical() {
+function drawAnatomical(pose) {
+  const prevCam = anatomicalDrawCam;
+  anatomicalDrawCam = anatomicalPoseCam(pose) || anatomicalPoseCam(exportPose);
+  try {
   anatomicalHighlightDraws = 0;
   lastAnatomicalRouteTarget = null;
   lastAnatomicalGap = null;
+  const c = viewCam();
   const segs = [];
   for (const e of A.edges) {
     for (let i = 1; i < e.c.length; i++) {
-      const p = project(e.c[i - 1], cam), q = project(e.c[i], cam);
+      const p = project(e.c[i - 1], c), q = project(e.c[i], c);
       if (!p || !q) continue;
       segs.push({ p, q, e, interpolated: (e.ci || []).includes(i - 1), z: (p.z + q.z) / 2, ghost: false });
     }
   }
   for (const e of (A.removed || [])) {
     for (let i = 1; i < (e.c || []).length; i++) {
-      const p = project(e.c[i - 1], cam), q = project(e.c[i], cam);
+      const p = project(e.c[i - 1], c), q = project(e.c[i], c);
       if (!p || !q) continue;
       segs.push({ p, q, e, interpolated: false, z: (p.z + q.z) / 2, ghost: true });
     }
@@ -1408,7 +1449,7 @@ function drawAnatomical() {
   }
   // Target marker (deepest node only when no RouteTarget/lesion poi)
   const t = (A.poi || A.endpoint) ? null : A.nodes[String(A.target)];
-  const tp = t && project(t.p, cam);
+  const tp = t && project(t.p, c);
   if (tp) {
     ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.arc(tp.x, tp.y, 9, 0, 7); ctx.stroke();
@@ -1418,7 +1459,7 @@ function drawAnatomical() {
   if (A.route_start && A.route_start.ras_mm && A.origin_mm) {
     const rs = A.route_start.ras_mm;
     const rel = [rs[0] - A.origin_mm[0], rs[1] - A.origin_mm[1], rs[2] - A.origin_mm[2]];
-    const rsp = project(rel, cam);
+    const rsp = project(rel, c);
     if (rsp) {
       ctx.strokeStyle = tok("--steel"); ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(rsp.x, rsp.y, 10, 0, 7); ctx.stroke();
@@ -1428,7 +1469,7 @@ function drawAnatomical() {
   }
   // RouteTarget endpoint (separate from Lesion)
   if (A.endpoint) {
-    const end = project(A.endpoint, cam);
+    const end = project(A.endpoint, c);
     if (end) {
       ctx.strokeStyle = "#2E6E88"; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(end.x, end.y, 8, 0, 7); ctx.stroke();
@@ -1438,8 +1479,8 @@ function drawAnatomical() {
     }
   }
   if (A.poi) {
-    const p = project(A.poi, cam);
-    const end = A.endpoint && project(A.endpoint, cam);
+    const p = project(A.poi, c);
+    const end = A.endpoint && project(A.endpoint, c);
     if (p) {
       if (end && A.target_gap_mm > 0) {
         ctx.strokeStyle = "#727d84";
@@ -1471,18 +1512,22 @@ function drawAnatomical() {
   drawPatientEdgeLabels();
   drawSharedPositionMarker3d();
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
+  } finally {
+    anatomicalDrawCam = prevCam;
+  }
 }
 
 /** Screen-edge R/L/S/I from the live camera basis (must match the gizmo). */
 function drawPatientEdgeLabels() {
+  const c = viewCam();
   const pairs = [
     { axis: [1, 0, 0], pos: "R", neg: "L" },
     { axis: [0, 0, 1], pos: "S", neg: "I" },
   ];
   const sx = { left: null, right: null }, sy = { top: null, bottom: null };
   for (const p of pairs) {
-    const rx = dot(p.axis, cam.right);
-    const uy = dot(p.axis, cam.up);
+    const rx = dot(p.axis, c.right);
+    const uy = dot(p.axis, c.up);
     if (Math.abs(rx) >= Math.abs(uy)) {
       if (rx >= 0) { sx.right = p.pos; sx.left = p.neg; }
       else { sx.left = p.pos; sx.right = p.neg; }
@@ -1517,7 +1562,7 @@ function drawSharedPositionMarker3d() {
     ? nearestHighlight.world
     : pos;
   const rel = [show[0] - originMm[0], show[1] - originMm[1], show[2] - originMm[2]];
-  const pr = project(rel, cam);
+  const pr = project(rel, viewCam());
   if (!pr) {
     marker.style.display = "none";
     return;
@@ -1528,6 +1573,7 @@ function drawSharedPositionMarker3d() {
 }
 
 function drawOrientationGizmo() {
+  const c = viewCam();
   const ox = W - 54, oy = H - 54, len = 28;
   const axes = [
     { v: [1, 0, 0], label: "R", color: tok("--axis-r") },
@@ -1537,9 +1583,9 @@ function drawOrientationGizmo() {
   ];
   // Far-to-near (descending depth) so nearer axes paint on top.
   const projectedAxes = axes.map(axis => {
-    const x = dot(axis.v, cam.right) * len;
-    const y = -dot(axis.v, cam.up) * len;
-    return { ...axis, x, y, depth: dot(axis.v, cam.forward) };
+    const x = dot(axis.v, c.right) * len;
+    const y = -dot(axis.v, c.up) * len;
+    return { ...axis, x, y, depth: dot(axis.v, c.forward) };
   }).sort((a, b) => b.depth - a.depth);
   ctx.save();
   ctx.strokeStyle = tok("--edge");
@@ -3326,7 +3372,7 @@ function drawTopologyEstimated() {
 }
 
 function topoToScreen(p) {
-  const angle = topoRot * Math.PI / 180;
+  const angle = viewTopoRot() * Math.PI / 180;
   const s = DEFAULT_DIST / cam.dist;
   return {
     x: W / 2 + cam.panX + (p.x * Math.cos(angle) - p.y * Math.sin(angle)) * s,
@@ -3334,7 +3380,12 @@ function topoToScreen(p) {
   };
 }
 
-function drawTopology() {
+function drawTopology(pose) {
+  const prevRot = topologyDrawRot;
+  if (pose && Number.isFinite(pose.topoRot)) topologyDrawRot = pose.topoRot;
+  else if (exportPose && Number.isFinite(exportPose.topoRot)) topologyDrawRot = exportPose.topoRot;
+  else topologyDrawRot = null;
+  try {
   topologyHighlightDraws = 0;
   if (!topoLayout) buildTopology();
   const ox = W / 2 + cam.panX, oy = H / 2 + cam.panY;
@@ -3416,6 +3467,9 @@ function drawTopology() {
     }
   }
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
+  } finally {
+    topologyDrawRot = prevRot;
+  }
 }
 
 /* ------------------------------------------------------------- plumbing */
@@ -4346,30 +4400,30 @@ function gateHud(fn) {
 }
 
 const drawAnatomicalLive = drawAnatomical;
-drawAnatomical = function () {
-  if (!(exportFrame.active && exportFrame.hud === false)) return drawAnatomicalLive();
+drawAnatomical = function (...args) {
+  if (!(exportFrame.active && exportFrame.hud === false)) return drawAnatomicalLive(...args);
   const fill = ctx.fillText;
-  ctx.fillText = function (text, ...args) {
-    if (typeof text === "string" && text.includes("Lesion")) return fill.call(ctx, text, ...args);
+  ctx.fillText = function (text, ...rest) {
+    if (typeof text === "string" && text.includes("Lesion")) return fill.call(ctx, text, ...rest);
     return undefined;
   };
   try {
-    return drawAnatomicalLive();
+    return drawAnatomicalLive(...args);
   } finally {
     ctx.fillText = fill;
   }
 };
 
 const drawTopologyLive = drawTopology;
-drawTopology = function () {
-  if (!(exportFrame.active && exportFrame.hud === false)) return drawTopologyLive();
+drawTopology = function (...args) {
+  if (!(exportFrame.active && exportFrame.hud === false)) return drawTopologyLive(...args);
   const fill = ctx.fillText;
-  ctx.fillText = function (text, ...args) {
+  ctx.fillText = function (text, ...rest) {
     if (typeof text === "string" && text.startsWith("Radial map:")) return undefined;
-    return fill.call(ctx, text, ...args);
+    return fill.call(ctx, text, ...rest);
   };
   try {
-    return drawTopologyLive();
+    return drawTopologyLive(...args);
   } finally {
     ctx.fillText = fill;
   }
@@ -4399,8 +4453,9 @@ drawOrientationGizmo = gateHud(drawOrientationGizmo);
 
 function anatomicalMmPerCssPixel() {
   const span = Math.min(W, H) * 0.9;
-  if (!(span > 0) || !(cam.dist > 0)) return null;
-  return cam.dist / span;
+  const dist = viewCam().dist;
+  if (!(span > 0) || !(dist > 0)) return null;
+  return dist / span;
 }
 
 function chooseScaleBar(mmPerPx) {
@@ -4517,15 +4572,13 @@ function exportPaintOptions(options) {
   return { hud, lesion, when, viewKey, viewName };
 }
 
-let exportPose = null;
-
 function paintExportView(viewKey, when, viewName) {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = tok("--ground");
   ctx.fillRect(0, 0, W, H);
-  if (viewKey === "anatomical") drawAnatomical();
+  if (viewKey === "anatomical") drawAnatomical(exportPose);
   else if (viewKey === "endoluminal") drawEndoluminal(exportPose);
-  else drawTopology();
+  else drawTopology(exportPose);
   drawBurnIn(viewKey, when, viewName);
 }
 
@@ -4574,6 +4627,12 @@ function recordFrameSize(width, height) {
   return (width === 1920 && height === 1080) || (width === 1280 && height === 720);
 }
 
+// Offline check renders may use a smaller letterboxed size; Record IPC stays 1080/720.
+function offlineFrameSize(width, height) {
+  return recordFrameSize(width, height)
+    || (width === 640 && height === 360);
+}
+
 function paintDeferredVideoHud(width, height) {
   if (!lastEndoHudPaint) return null;
   const model = lastEndoHudPaint;
@@ -4609,7 +4668,7 @@ function renderVideoCanvas(options) {
   if (!viewKey || !Object.prototype.hasOwnProperty.call(EXPORT_VIEW_NAMES, viewKey)) {
     throw new Error("Record is not available for this view");
   }
-  if (!recordFrameSize(width, height)) throw new Error("Unsupported record size");
+  if (!offlineFrameSize(width, height)) throw new Error("Unsupported record size");
   const cssW = cv.clientWidth;
   const cssH = cv.clientHeight;
   if (!(cssW > 0) || !(cssH > 0)) throw new Error("Canvas has no CSS size");
@@ -4735,15 +4794,13 @@ let flythroughSession = null;
 let flythroughUiKey = "";
 
 function canvasJpegBytes(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        reject(new Error("Could not encode video frame"));
-        return;
-      }
-      blob.arrayBuffer().then((buf) => resolve(new Uint8Array(buf)), reject);
-    }, "image/jpeg", 0.92);
-  });
+  // toDataURL is sync; headless toBlob waits on a throttled rAF (~1 fps) and
+  // made offline exports take ~1 s/frame in Playwright.
+  try {
+    return Promise.resolve(dataUrlToBytes(canvas.toDataURL("image/jpeg", 0.92)));
+  } catch (err) {
+    return Promise.reject(err || new Error("Could not encode video frame"));
+  }
 }
 
 function cloneEndoCamera(camera) {
@@ -4775,7 +4832,7 @@ function createVideoFrameSource(options) {
   if (!view || !Object.prototype.hasOwnProperty.call(EXPORT_VIEW_NAMES, view)) {
     throw new Error("Record is not available for this view");
   }
-  if (!recordFrameSize(width, height)) throw new Error("Unsupported record size");
+  if (!offlineFrameSize(width, height)) throw new Error("Unsupported record size");
   const shot = { camera: null, guidance: null, burn: null, orifices: null };
   return {
     view,
@@ -5028,7 +5085,7 @@ async function finishRecording(reason) {
 }
 
 async function startRecording() {
-  if (recordSession) return;
+  if (recordSession || flythroughSession) return;
   const api = recordApi();
   if (!api) return;
   const view = exportViewKey();
@@ -5209,21 +5266,35 @@ function clearFlythroughProgress() {
 }
 
 function syncFlythroughUi() {
-  const onEndo = exportViewKey() === "endoluminal";
+  const view = exportViewKey();
+  const onEndo = view === "endoluminal";
+  const onAnat = view === "anatomical";
+  const onTopo = view === "topology";
   const running = flythroughSession != null;
   const reason = onEndo ? flythroughBlockReason() : "";
   const recording = recordSession != null;
-  const key = `${onEndo}|${running}|${reason}|${recording}`;
+  const key = `${view}|${running}|${reason}|${recording}`;
   if (key === flythroughUiKey) return;
   flythroughUiKey = key;
   const btn = document.getElementById("flythrough-btn");
+  const orbitBtn = document.getElementById("orbit-btn");
+  const spinBtn = document.getElementById("spin-btn");
   const cancel = document.getElementById("flythrough-cancel");
   const reasonEl = document.getElementById("flythrough-reason");
   const progress = document.getElementById("flythrough-progress");
+  const busy = running || recording;
   if (btn) {
     btn.hidden = !onEndo;
-    btn.disabled = running || !!reason || recording;
+    btn.disabled = busy || !!reason;
     btn.title = reason;
+  }
+  if (orbitBtn) {
+    orbitBtn.hidden = !onAnat;
+    orbitBtn.disabled = busy;
+  }
+  if (spinBtn) {
+    spinBtn.hidden = !onTopo;
+    spinBtn.disabled = busy;
   }
   if (reasonEl) {
     reasonEl.hidden = !onEndo || running || !reason;
@@ -5234,8 +5305,8 @@ function syncFlythroughUi() {
 }
 
 function yieldToEventLoop() {
-  // Prefer setTimeout so headless still progresses if rAF is throttled; also
-  // schedule one rAF so a live counter can prove the page stayed responsive.
+  // Macrotask so the progress bar can paint during offline export. Tests pass
+  // yieldEvery≫1; headless toBlob was the real 1 s/frame cost (now toDataURL).
   return new Promise((resolve) => {
     let settled = false;
     const done = () => {
@@ -5255,7 +5326,7 @@ async function renderFlythrough(options) {
   const size = opts.size || {};
   const width = size.width;
   const height = size.height;
-  if (!recordFrameSize(width, height)) throw new Error("Unsupported record size");
+  if (!offlineFrameSize(width, height)) throw new Error("Unsupported record size");
   const hud = opts.hud !== false;
   const lesion = opts.lesion !== false;
   const when = opts.when instanceof Date && !Number.isNaN(opts.when.getTime())
@@ -5264,6 +5335,8 @@ async function renderFlythrough(options) {
   const signal = opts.signal || null;
   const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
   const sink = typeof opts.sink === "function" ? opts.sink : null;
+  const yieldEvery = Number.isFinite(opts.yieldEvery) && opts.yieldEvery > 0
+    ? Math.floor(opts.yieldEvery) : 1;
   const length = flyPathLength();
   const forks = flythroughForkList(length);
   const poses = flythroughPoses(length, forks);
@@ -5313,7 +5386,7 @@ async function renderFlythrough(options) {
       sent += 1;
       setFlythroughProgress(sent, total);
       if (onProgress) onProgress(sent, total);
-      await yieldToEventLoop();
+      if (sent % yieldEvery === 0) await yieldToEventLoop();
     }
   } finally {
     pose = null;
@@ -5360,7 +5433,7 @@ async function startFlythrough() {
     return;
   }
   const controller = new AbortController();
-  flythroughSession = { controller, id: started.recordingId };
+  flythroughSession = { controller, id: started.recordingId, kind: "flythrough" };
   flythroughUiKey = "";
   syncFlythroughUi();
   let sent = 0;
@@ -5441,8 +5514,292 @@ document.getElementById("record-btn").addEventListener("click", () => {
 document.getElementById("record-stop").addEventListener("click", () => {
   finishRecording("save");
 });
+
+const ORBIT_SPIN_FPS = 30;
+const ORBIT_SPIN_FRAMES = 12 * ORBIT_SPIN_FPS;
+
+function exportOrbitFileName(when) {
+  return `${exportCaseId()}_anatomical-orbit_${exportStamp(when).file}.mp4`;
+}
+
+function exportSpinFileName(when) {
+  return `${exportCaseId()}_topology-spin_${exportStamp(when).file}.mp4`;
+}
+
+function orbitPoses(start) {
+  const yaw0 = Number(start && start.yaw);
+  const pitch = Number(start && start.pitch);
+  const roll = Number(start && start.roll);
+  const dist = Number(start && start.dist);
+  const panX = Number(start && start.panX);
+  const panY = Number(start && start.panY);
+  if (![yaw0, pitch, roll, dist, panX, panY].every(Number.isFinite)) {
+    throw new Error("Orbit needs a camera pose");
+  }
+  const poses = [];
+  for (let k = 0; k < ORBIT_SPIN_FRAMES; k += 1) {
+    poses.push({
+      yaw: yaw0 + (k * 2 * Math.PI) / ORBIT_SPIN_FRAMES,
+      pitch,
+      roll,
+      dist,
+      panX,
+      panY,
+    });
+  }
+  return poses;
+}
+
+function spinPoses(startRot) {
+  const rot0 = Number(startRot);
+  if (!Number.isFinite(rot0)) throw new Error("Spin needs a topology rotation");
+  const poses = [];
+  for (let k = 0; k < ORBIT_SPIN_FRAMES; k += 1) {
+    poses.push({ topoRot: rot0 + (k * 360) / ORBIT_SPIN_FRAMES });
+  }
+  return poses;
+}
+
+function currentOrbitStart() {
+  return {
+    yaw: cam.yaw,
+    pitch: cam.pitch,
+    roll: cam.roll,
+    dist: cam.dist,
+    panX: cam.panX,
+    panY: cam.panY,
+  };
+}
+
+async function renderOrbit(options) {
+  const opts = options && typeof options === "object" ? options : {};
+  const size = opts.size || {};
+  const width = size.width;
+  const height = size.height;
+  if (!offlineFrameSize(width, height)) throw new Error("Unsupported record size");
+  const hud = opts.hud !== false;
+  const lesion = opts.lesion !== false;
+  const when = opts.when instanceof Date && !Number.isNaN(opts.when.getTime())
+    ? opts.when
+    : new Date();
+  const signal = opts.signal || null;
+  const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+  const sink = typeof opts.sink === "function" ? opts.sink : null;
+  const yieldEvery = Number.isFinite(opts.yieldEvery) && opts.yieldEvery > 0
+    ? Math.floor(opts.yieldEvery) : 1;
+  const start = opts.start && typeof opts.start === "object" ? opts.start : currentOrbitStart();
+  const poses = orbitPoses(start);
+  const total = poses.length;
+  setFlythroughProgress(0, total);
+  resize();
+  let pose = null;
+  const source = createVideoFrameSource({
+    view: "anatomical",
+    viewName: "Anatomical 360\u00b0 orbit",
+    width,
+    height,
+    hud,
+    lesion,
+    pose() { return pose; },
+  });
+  let sent = 0;
+  let cancelled = false;
+  try {
+    for (let i = 0; i < poses.length; i += 1) {
+      if (signal && signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      pose = poses[i];
+      const bytes = await source.frame(when);
+      if (signal && signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      if (sink) {
+        await sink(bytes, {
+          index: i,
+          yaw: pose.yaw,
+          pitch: pose.pitch,
+          roll: pose.roll,
+          dist: pose.dist,
+          panX: pose.panX,
+          panY: pose.panY,
+          burn: source.lastBurn,
+        });
+      }
+      sent += 1;
+      setFlythroughProgress(sent, total);
+      if (onProgress) onProgress(sent, total);
+      if (sent % yieldEvery === 0) await yieldToEventLoop();
+    }
+  } finally {
+    pose = null;
+    if (!flythroughSession) {
+      const status = document.getElementById("flythrough-status");
+      if (status && status.textContent === "Export in progress") status.textContent = "";
+    }
+  }
+  return { frames: sent, total, cancelled, kind: "orbit" };
+}
+
+async function renderSpin(options) {
+  const opts = options && typeof options === "object" ? options : {};
+  const size = opts.size || {};
+  const width = size.width;
+  const height = size.height;
+  if (!offlineFrameSize(width, height)) throw new Error("Unsupported record size");
+  const hud = opts.hud !== false;
+  const lesion = opts.lesion !== false;
+  const when = opts.when instanceof Date && !Number.isNaN(opts.when.getTime())
+    ? opts.when
+    : new Date();
+  const signal = opts.signal || null;
+  const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+  const sink = typeof opts.sink === "function" ? opts.sink : null;
+  const yieldEvery = Number.isFinite(opts.yieldEvery) && opts.yieldEvery > 0
+    ? Math.floor(opts.yieldEvery) : 1;
+  const startRot = Number.isFinite(opts.startRot) ? opts.startRot : topoRot;
+  const poses = spinPoses(startRot);
+  const total = poses.length;
+  setFlythroughProgress(0, total);
+  resize();
+  let pose = null;
+  const source = createVideoFrameSource({
+    view: "topology",
+    viewName: "Topology spin",
+    width,
+    height,
+    hud,
+    lesion,
+    pose() { return pose; },
+  });
+  let sent = 0;
+  let cancelled = false;
+  try {
+    for (let i = 0; i < poses.length; i += 1) {
+      if (signal && signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      pose = poses[i];
+      const bytes = await source.frame(when);
+      if (signal && signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      if (sink) {
+        await sink(bytes, {
+          index: i,
+          topoRot: pose.topoRot,
+          burn: source.lastBurn,
+        });
+      }
+      sent += 1;
+      setFlythroughProgress(sent, total);
+      if (onProgress) onProgress(sent, total);
+      if (sent % yieldEvery === 0) await yieldToEventLoop();
+    }
+  } finally {
+    pose = null;
+    if (!flythroughSession) {
+      const status = document.getElementById("flythrough-status");
+      if (status && status.textContent === "Export in progress") status.textContent = "";
+    }
+  }
+  return { frames: sent, total, cancelled, kind: "spin" };
+}
+
+async function startOfflineVideo(kind) {
+  if (flythroughSession || recordSession) return;
+  const view = exportViewKey();
+  if (kind === "orbit" && view !== "anatomical") return;
+  if (kind === "spin" && view !== "topology") return;
+  if (kind === "flythrough") return startFlythrough();
+  const api = recordApi();
+  const status = document.getElementById("flythrough-status");
+  if (!api) {
+    if (status) status.textContent = "Video export needs the desktop app";
+    return;
+  }
+  const when = new Date();
+  const name = kind === "orbit" ? exportOrbitFileName(when) : exportSpinFileName(when);
+  const size = recordSize();
+  const hud = document.getElementById("save-image-hud").checked;
+  const lesion = document.getElementById("save-image-lesion").checked;
+  if (status) status.textContent = "";
+  let started;
+  try {
+    started = await api.recordStart({
+      defaultName: name,
+      width: size.width,
+      height: size.height,
+    });
+  } catch (err) {
+    if (status) status.textContent = recordErrorText(err);
+    return;
+  }
+  if (!started || started.saved === false || !started.recordingId) return;
+  const expectView = kind === "orbit" ? "anatomical" : "topology";
+  if (exportViewKey() !== expectView) {
+    try { await api.recordCancel({ recordingId: started.recordingId }); } catch (err) { /* view changed */ }
+    return;
+  }
+  const controller = new AbortController();
+  flythroughSession = { controller, id: started.recordingId, kind };
+  flythroughUiKey = "";
+  syncFlythroughUi();
+  let sent = 0;
+  const render = kind === "orbit" ? renderOrbit : renderSpin;
+  try {
+    const result = await render({
+      size,
+      hud,
+      lesion,
+      when,
+      signal: controller.signal,
+      onProgress(done) { sent = done; },
+      sink(bytes) {
+        const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        return api.recordFrame({ recordingId: started.recordingId, bytes: payload });
+      },
+    });
+    sent = result.frames;
+    if (controller.signal.aborted || sent < 1) {
+      await api.recordCancel({ recordingId: started.recordingId });
+    } else {
+      await api.recordStop({ recordingId: started.recordingId });
+    }
+  } catch (err) {
+    try { await api.recordCancel({ recordingId: started.recordingId }); } catch (ignore) { /* already closed */ }
+    if (status) status.textContent = recordErrorText(err);
+  } finally {
+    flythroughSession = null;
+    flythroughUiKey = "";
+    clearFlythroughProgress();
+    syncFlythroughUi();
+    syncSaveImageControl();
+    if (variant === 0) drawAnatomical();
+    else if (variant === 2) drawTopology();
+  }
+}
+
+async function startOrbit() {
+  return startOfflineVideo("orbit");
+}
+
+async function startSpin() {
+  return startOfflineVideo("spin");
+}
+
 document.getElementById("flythrough-btn").addEventListener("click", () => {
   startFlythrough();
+});
+document.getElementById("orbit-btn").addEventListener("click", () => {
+  startOrbit();
+});
+document.getElementById("spin-btn").addEventListener("click", () => {
+  startSpin();
 });
 document.getElementById("flythrough-cancel").addEventListener("click", () => {
   if (flythroughSession) flythroughSession.controller.abort();
@@ -5552,7 +5909,7 @@ if (DEBUG) {
     cam: () => ({
       forward: [...cam.forward], up: [...cam.up], right: [...cam.right],
       yaw: cam.yaw, pitch: cam.pitch, roll: cam.roll,
-      dist: cam.dist, preset: cam.preset,
+      dist: cam.dist, panX: cam.panX, panY: cam.panY, preset: cam.preset,
     }),
     radiologistCheck() {
       applyPreset("radiologist");
@@ -5658,8 +6015,39 @@ if (DEBUG) {
     createVideoFrameSource,
     createRecordScheduler,
     renderFlythrough,
+    renderOrbit,
+    renderSpin,
+    orbitPoses,
+    spinPoses,
     flythroughBlockReason,
     flyState: () => ({ s: fly.s, phi: fly.phi, playing: fly.playing }),
+    topoState: () => ({
+      topoRot,
+      topoSpin,
+      branches: A.edges.length,
+      gens: maxGen,
+      lengthCm: totalLen / 10,
+    }),
+    setTopoRot(degrees) {
+      setTopoRotation(degrees, true);
+      return { topoRot };
+    },
+    setCamPose(next) {
+      const pose = next && typeof next === "object" ? next : {};
+      if (Number.isFinite(pose.yaw)) cam.yaw = pose.yaw;
+      if (Number.isFinite(pose.pitch)) cam.pitch = pose.pitch;
+      if (Number.isFinite(pose.roll)) cam.roll = pose.roll;
+      if (Number.isFinite(pose.dist)) cam.dist = pose.dist;
+      if (Number.isFinite(pose.panX)) cam.panX = pose.panX;
+      if (Number.isFinite(pose.panY)) cam.panY = pose.panY;
+      cam.preset = "free";
+      syncBasis();
+      syncPresetButtons();
+      return {
+        yaw: cam.yaw, pitch: cam.pitch, roll: cam.roll,
+        dist: cam.dist, panX: cam.panX, panY: cam.panY, preset: cam.preset,
+      };
+    },
     setFly(state) {
       const next = state && typeof state === "object" ? state : {};
       if (Number.isFinite(next.s)) {
