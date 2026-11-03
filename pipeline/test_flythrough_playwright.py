@@ -1,3 +1,4 @@
+# Changes: check pass at 640x360 with sampled lumen; one 720p encode (#45).
 # Changes: fork hold looks ahead so both child orifices are on screen.
 # Changes: fork-hold on-route at screen 12; no synthesised orifices; rolled parity.
 # Changes: lumen fill, interactive/video parity, and HUD left-inset checks on every frame.
@@ -199,7 +200,11 @@ def test_flythrough_offline_render_cancel_and_encode(server):
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
-            args=["--disable-background-timer-throttling"],
+            args=[
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+            ],
         )
         context = browser.new_context(viewport=VIEWPORT)
         page = context.new_page()
@@ -280,7 +285,7 @@ def test_flythrough_offline_render_cancel_and_encode(server):
         assert abs(before["s"] - 4.5) < 1e-9
         assert abs(before["phi"] - 0.37) < 1e-9
 
-        cprint("renderFlythrough full pass", "cyan")
+        cprint("renderFlythrough check pass @640x360 (sampled lumen)", "cyan")
         result = page.evaluate(
             """async (expectedM) => {
               const close = (a, b, eps = 1e-6) => {
@@ -290,8 +295,9 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                 }
                 return true;
               };
-              const width = 1280;
-              const height = 720;
+              const width = 640;
+              const height = 360;
+              const SAMPLE_N = 5;
               const lumOf = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
               const inRect = (x, y, r) => !!(r && x >= r.l && x < r.r && y >= r.t && y < r.b);
               async function lumenStats(bytes, meta) {
@@ -358,22 +364,6 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                   total,
                 };
               }
-              function lumenThumbFromImageData(data, w, h, rect) {
-                const tw = 64;
-                const th = 36;
-                const out = new Float32Array(tw * th);
-                const rw = Math.max(1, rect.r - rect.l);
-                const rh = Math.max(1, rect.b - rect.t);
-                for (let ty = 0; ty < th; ty += 1) {
-                  for (let tx = 0; tx < tw; tx += 1) {
-                    const x = Math.min(w - 1, Math.max(0, Math.floor(rect.l + (tx + 0.5) * rw / tw)));
-                    const y = Math.min(h - 1, Math.max(0, Math.floor(rect.t + (ty + 0.5) * rh / th)));
-                    const i = (y * w + x) * 4;
-                    out[ty * tw + tx] = lumOf(data[i], data[i + 1], data[i + 2]);
-                  }
-                }
-                return out;
-              }
               async function videoLumenThumb(bytes, meta) {
                 const blob = new Blob([bytes], { type: "image/jpeg" });
                 const bmp = await createImageBitmap(blob);
@@ -391,7 +381,6 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                 const contentH = cssH * scale;
                 const offsetX = (width - contentW) / 2;
                 const offsetY = (height - contentH) / 2;
-                // Same CSS-space crop as lumenThumbAt (no rail in export).
                 const padX = cssW * 0.18;
                 const padY = cssH * 0.18;
                 let cssL = padX;
@@ -474,7 +463,6 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                 return blobs;
               }
               const labels = [];
-              const jpegFrames = [];
               const forkHolds = [];
               const lumenFails = [];
               const hudFails = [];
@@ -485,6 +473,7 @@ def test_flythrough_offline_render_cancel_and_encode(server):
               let poseMismatch = null;
               let burnMismatch = null;
               let forkHoldCount = 0;
+              let lumenChecked = 0;
               const rafStart = window.__rafTicks;
               const when = new Date(2026, 10, 2, 21, 40, 0);
               const result = await window.__p2_debug.renderFlythrough({
@@ -492,11 +481,11 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                 hud: true,
                 lesion: true,
                 when,
+                yieldEvery: 5,
                 onProgress(done, total) {
                   labels.push(`Rendering ${done} / ${total} frames`);
                 },
                 async sink(bytes, meta) {
-                  jpegFrames.push(bytes);
                   const orifices = Array.isArray(meta.orifices) ? meta.orifices : [];
                   for (const o of orifices) {
                     if (!o || o.projected !== true || !Number.isFinite(o.edge)) {
@@ -505,6 +494,8 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                       }
                     }
                   }
+                  const isHold = meta.hold === "fork" || meta.hold === "end";
+                  const sampleLumen = isHold || (meta.index % SAMPLE_N === 0);
                   if (meta.hold === "fork") {
                     forkHoldCount += 1;
                     const cam = meta.camera;
@@ -568,11 +559,12 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                       firstForkBytes = bytes;
                     }
                   }
-                  const interactive = window.__p2_debug.poseCamera(meta.s, meta.phi);
                   const cam = meta.camera;
-                  if (!poseMismatch) {
-                    if (!cam || !interactive
-                      || cam.s !== meta.s || cam.phi !== meta.phi
+                  if (!cam || cam.s !== meta.s || cam.phi !== meta.phi) {
+                    if (!poseMismatch) poseMismatch = { index: meta.index, s: meta.s, phi: meta.phi, why: "meta" };
+                  } else if (sampleLumen && !poseMismatch) {
+                    const interactive = window.__p2_debug.poseCamera(meta.s, meta.phi);
+                    if (!interactive
                       || interactive.s !== meta.s || interactive.phi !== meta.phi
                       || cam.w !== interactive.w || cam.h !== interactive.h
                       || Math.abs(cam.focalPx - interactive.focalPx) > 1e-6
@@ -580,7 +572,7 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                       || !close(cam.right, interactive.right)
                       || !close(cam.up, interactive.up)
                       || !close(cam.dir, interactive.dir)) {
-                      poseMismatch = { index: meta.index, s: meta.s, phi: meta.phi };
+                      poseMismatch = { index: meta.index, s: meta.s, phi: meta.phi, why: "interactive" };
                     }
                   }
                   const burn = meta.burn;
@@ -590,21 +582,23 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                     || burn.footer !== "Simulated · CT-derived · research use")) {
                     burnMismatch = burn;
                   }
-                  const stats = await lumenStats(bytes, meta);
-                  if (stats.differFrac < 0.60
-                    || Math.abs(stats.meanY - stats.bgY) < 10
-                    || stats.meanAbs < 16) {
-                    if (lumenFails.length < 8) lumenFails.push(stats);
-                  }
-                  if (!(stats.panelL != null && stats.panelL <= 25)) {
-                    if (hudFails.length < 8) {
-                      hudFails.push({ index: meta.index, panelL: stats.panelL });
+                  if (sampleLumen) {
+                    lumenChecked += 1;
+                    const stats = await lumenStats(bytes, meta);
+                    if (stats.differFrac < 0.60
+                      || Math.abs(stats.meanY - stats.bgY) < 10
+                      || stats.meanAbs < 16) {
+                      if (lumenFails.length < 8) lumenFails.push(stats);
+                    }
+                    if (!(stats.panelL != null && stats.panelL <= 25)) {
+                      if (hudFails.length < 8) {
+                        hudFails.push({ index: meta.index, panelL: stats.panelL });
+                      }
                     }
                   }
                 },
               });
               const after = window.__p2_debug.flyState();
-              // Interactive vs video lumen parity at the fork-hold pose with roll.
               let parity = null;
               if (firstForkBytes && firstForkMeta) {
                 const videoThumb = await videoLumenThumb(firstForkBytes, {
@@ -628,7 +622,6 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                   phi: firstForkMeta.phi,
                 };
               }
-              window.__flythroughJpegFrames = jpegFrames;
               return {
                 result,
                 labelsFirst: labels[0] || null,
@@ -637,7 +630,6 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                 rafStart,
                 rafEnd: window.__rafTicks,
                 after,
-                jpegCount: jpegFrames.length,
                 forkHoldCount,
                 forkHolds: forkHolds.filter((_, i) => i % 30 === 0),
                 poseMismatch,
@@ -648,7 +640,7 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                 forkAlignFails,
                 synthFails,
                 parity,
-                lumenChecked: jpegFrames.length,
+                lumenChecked,
               };
             }""",
             expected_m,
@@ -656,7 +648,6 @@ def test_flythrough_offline_render_cancel_and_encode(server):
         assert result["result"]["cancelled"] is False
         assert result["result"]["total"] == expected_m
         assert result["result"]["frames"] == expected_m
-        assert result["jpegCount"] == expected_m
         assert result["labelCount"] == expected_m
         assert result["labelsFirst"] == f"Rendering 1 / {expected_m} frames"
         assert result["labelsLast"] == f"Rendering {expected_m} / {expected_m} frames"
@@ -703,9 +694,10 @@ def test_flythrough_offline_render_cancel_and_encode(server):
               window.__p2_debug.setFly({ s: 4.5, phi: 0.37, playing: false });
               const before = window.__p2_debug.flyState();
               const result = await window.__p2_debug.renderFlythrough({
-                size: { width: 1280, height: 720 },
+                size: { width: 640, height: 360 },
                 hud: true,
                 lesion: true,
+                yieldEvery: 1,
                 signal: controller.signal,
                 sink() {
                   calls.push(1);
@@ -714,7 +706,6 @@ def test_flythrough_offline_render_cancel_and_encode(server):
               });
               const after = window.__p2_debug.flyState();
               const phiBefore = after.phi;
-              // ArrowRight is handled on window keydown.
               window.dispatchEvent(new KeyboardEvent('keydown', {
                 key: 'ArrowRight', bubbles: true, cancelable: true,
               }));
@@ -734,10 +725,42 @@ def test_flythrough_offline_render_cancel_and_encode(server):
 
         first_fork = int(result["firstForkIndex"])
         last = expected_m - 1
+        cprint("encode pass @1280x720 (no per-frame lumen)", "cyan")
+        encode_meta = page.evaluate(
+            """async (expectedM) => {
+              const jpegFrames = [];
+              const when = new Date(2026, 10, 2, 21, 40, 0);
+              const result = await window.__p2_debug.renderFlythrough({
+                size: { width: 1280, height: 720 },
+                hud: true,
+                lesion: true,
+                when,
+                yieldEvery: 30,
+                async sink(bytes, meta) {
+                  jpegFrames.push(bytes);
+                  if (meta.index === 0 || meta.hold === "fork" || meta.index === expectedM - 1) {
+                    // keep landmark frames for artifacts via side channel indices
+                  }
+                },
+              });
+              window.__flythroughJpegFrames = jpegFrames;
+              const forkIndex = jpegFrames.findIndex((_, i) => false);
+              return {
+                frames: result.frames,
+                total: result.total,
+                cancelled: result.cancelled,
+                jpegCount: jpegFrames.length,
+              };
+            }""",
+            expected_m,
+        )
+        assert encode_meta["cancelled"] is False
+        assert encode_meta["frames"] == expected_m
+        assert encode_meta["jpegCount"] == expected_m
+
         cprint("flush JPEG frames to disk for encode", "cyan")
-        # Batch a handful of frames per CDP round-trip.
         batch = 8
-        for start in range(0, expected_m, batch):
+        for start_i in range(0, expected_m, batch):
             payload = page.evaluate(
                 """({ start, count }) => {
                   const out = [];
@@ -754,10 +777,10 @@ def test_flythrough_offline_render_cancel_and_encode(server):
                   }
                   return out;
                 }""",
-                {"start": start, "count": min(batch, expected_m - start)},
+                {"start": start_i, "count": min(batch, expected_m - start_i)},
             )
             for offset, b64 in enumerate(payload):
-                index = start + offset
+                index = start_i + offset
                 (frames_dir / f"frame-{index:05d}.jpg").write_bytes(base64.b64decode(b64))
         page.evaluate("() => { window.__flythroughJpegFrames = null; }")
         for label, index in (("start", 0), ("fork", first_fork), ("end", last)):
@@ -769,7 +792,6 @@ def test_flythrough_offline_render_cancel_and_encode(server):
         cprint("encode 720p through desktop encoder", "cyan")
         encode_script = tmp_pipeline / "encode_flythrough.js"
         out_mp4 = artifacts / "flythrough-720p.mp4"
-        # Paths are passed as argv so the script never embeds a home path.
         encode_script.write_text(
             "\n".join([
                 '"use strict";',

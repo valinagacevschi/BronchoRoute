@@ -1,3 +1,4 @@
+// Changes: accept anatomical-orbit and topology-spin video names (#45).
 // Changes: builder publish feed, dmg+zip targets, and updater.js in the pack list.
 // Changes: usage stats stay off, including a config that omitted the key.
 // Changes: default Pictures and Movies paths are built at runtime, with no home-directory literal.
@@ -340,6 +341,8 @@ test("save video names accept only local-NNN view mp4s", () => {
     "local-001_topology_20261102-0000.mp4",
     "local-999_endoluminal_19990101-0000.mp4",
     "local-001_anatomical_00000000-0000.mp4",
+    "local-001_anatomical-orbit_20261103-0140.mp4",
+    "local-001_topology-spin_20261103-0140.mp4",
   ];
   for (const name of ok) assert.equal(isSaveVideoName(name), true, name);
   const bad = [

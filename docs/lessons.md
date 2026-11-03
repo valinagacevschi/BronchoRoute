@@ -1,3 +1,4 @@
+<!-- Changes: headless toBlob is rAF-throttled; video JPEG uses toDataURL (#45). -->
 <!-- Changes: missing updates settings defaults on; unreadable settings skip the update check. -->
 <!-- Changes: LGPL ffmpeg needs protocol fd as well as pipe for stdin `-`. -->
 <!-- Changes: fly-through fork hold is look-ahead of the junction; roll easing ends at holdS. -->
@@ -18,6 +19,7 @@
 <!-- Changes: retain Settings persistence and subprocess isolation lessons after rebase. -->
 # Lessons Learned
 
+- Offline video JPEG (#45): headless Chromium throttles `canvas.toBlob` to the background rAF rate (~1 fps), so Playwright offline exports took ~1 s/frame. `canvas.toDataURL("image/jpeg")` is synchronous and keeps Record / fly-through / orbit / spin at tens of ms/frame. `yieldEvery` lets tests skip most `yieldToEventLoop` ticks during bulk encode.
 - Auto-update settings (#50): missing `app_state/settings.json` (or a
   missing `updates_enabled` key) means checks stay on. Unreadable or corrupt
   JSON means checks stay off for that launch — do not treat parse failure as
