@@ -1,3 +1,5 @@
+# Changes: roll easing finishes at the fly-through fork look-ahead (holdS), not at fork.s.
+# Changes: align_angle is the camera-frame video target; angle stays the mean-frame clock.
 # Changes: patient and scope clocks for manual endoluminal roll.
 """Pure geometry for a transported airway navigation frame."""
 
@@ -7,8 +9,11 @@ import numpy as np
 
 STEP_MM = 1.0
 LOOK_AHEAD_MM = 6.0
-ROLL_START_MM = 10.0
-ROLL_END_MM = 6.0  # finish rolling before the pause point so the paused view is already steered
+# Video fork hold sits FLYTHROUGH_FORK_LOOK_MM before fork.s (renderer). Roll must
+# reach align_angle by that station and stay locked through the junction.
+FLYTHROUGH_FORK_LOOK_MM = 12.0
+ROLL_END_MM = FLYTHROUGH_FORK_LOOK_MM
+ROLL_START_MM = FLYTHROUGH_FORK_LOOK_MM + 10.0  # ~10 mm ease into the hold pose
 PAUSE_BEFORE_MM = 5.0
 # Below this, a clock hour is the direction of a small miss, not a takeoff.
 AHEAD_FRACTION = 0.15
@@ -264,6 +269,28 @@ def fork_clock_line(fork_n, distance_mm, theta, psi, ahead=False):
     )
 
 
+def _camera_roll_angle(edge, tangent, up):
+    """Roll, in degrees, that puts this child at scope 12 in the camera frame.
+
+    The camera at ``fork.s`` rolls ``ups[sample]`` about ``tangents[sample]``.
+    A 5 mm mean tangent is a different plane once the centreline bends, so the
+    video profile has to ease to this sample-frame angle. ``None`` means the
+    child is straight ahead in that frame (no hour to chase). The second value
+    is False when the child has no usable direction.
+    """
+    centreline = None if edge is None else edge.get("centreline_mm", edge.get("c"))
+    direction = direction_along(centreline) if centreline is not None else None
+    if direction is None:
+        return None, False
+    tangent = _unit(np.asarray(tangent, dtype=float))
+    screen_up = np.asarray(up, dtype=float)
+    screen_up = screen_up - tangent * float(np.dot(screen_up, tangent))
+    if float(np.linalg.norm(screen_up)) < 1e-8:
+        return None, False
+    _, angle = clock_of(direction, tangent, _unit(screen_up))
+    return (None if angle is None else float(angle)), True
+
+
 def forks(graph_edges, route, points, s, tangents, ups):
     """Describe route forks using full-resolution source edge centrelines."""
     points, s, tangents, ups = map(np.asarray, (points, s, tangents, ups))
@@ -308,7 +335,7 @@ def forks(graph_edges, route, points, s, tangents, ups):
             fork_children.append({
                 "edge": child_index,
                 "clock": clock,
-                "angle": angle,
+                "angle": None if angle is None else float(angle),
                 "r": child.get("radius_mm", child.get("r")),
                 "generation": child.get("generation", child.get("g")),
                 "on_route": child_index == route[route_position + 1],
@@ -316,26 +343,53 @@ def forks(graph_edges, route, points, s, tangents, ups):
             })
 
         chosen = next((child for child in fork_children if child["on_route"]), None)
+        # Mean-frame angle stays the interactive/clock field. Video auto-align
+        # needs the sample-frame angle at fork.s (see align_angle / roll_profile).
+        mean_angle = chosen["angle"] if chosen else None
+        align_angle = mean_angle
+        if chosen is not None:
+            camera_angle, have_direction = _camera_roll_angle(
+                graph_edges[chosen["edge"]], tangents[sample_index], ups[sample_index]
+            )
+            if have_direction:
+                align_angle = camera_angle
         result.append({
             "node": node,
             "s": fork_s,
             "chosen": route[route_position + 1],
             "clock": chosen["clock"] if chosen else None,
-            "angle": chosen["angle"] if chosen else None,
+            "angle": mean_angle,
+            "align_angle": align_angle,
             "children": fork_children,
         })
     return result
 
 
+def fork_hold_s(fork_s, prev_fork_s=None, look_mm=FLYTHROUGH_FORK_LOOK_MM):
+    """Station for the video fork hold: look_mm before the junction, not on it."""
+    hold = float(fork_s) - float(look_mm)
+    if prev_fork_s is not None and np.isfinite(prev_fork_s):
+        hold = max(hold, float(prev_fork_s))
+    return max(0.0, hold)
+
+
 def roll_profile(s, forks, roll_start_mm=ROLL_START_MM, roll_end_mm=ROLL_END_MM):
-    """Ease between fork headings without overlapping ramps jumping the roll."""
+    """Ease between fork headings without overlapping ramps jumping the roll.
+
+    Each ramp ends at ``fork.s - roll_end_mm`` (the fly-through hold station when
+    ``roll_end_mm`` is ``FLYTHROUGH_FORK_LOOK_MM``), then stays locked through the
+    junction. The next ramp starts only after that end (and not before
+    ``fork.s - roll_start_mm``).
+    """
     s = np.asarray(s, dtype=float)
     result = np.zeros(len(s))
     locked = 0.0
     previous_end = 0.0
 
     for fork in forks:
-        target = fork.get("angle")
+        # Video uses camera-frame align_angle when present; angle is the fallback
+        # for unit fixtures that only set the mean-frame clock.
+        target = fork.get("align_angle", fork.get("angle"))
         if target is None:
             continue
 
@@ -357,7 +411,9 @@ def roll_profile(s, forks, roll_start_mm=ROLL_START_MM, roll_end_mm=ROLL_END_MM)
             result[s >= end] = locked + delta
 
         locked += delta
-        previous_end = end
+        # Hold the align through the junction; the next ramp may only start
+        # after this fork is passed (not at holdS, which is still upstream).
+        previous_end = max(end, float(fork["s"]))
 
     result[s >= previous_end] = locked
     return result
