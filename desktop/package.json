@@ -1,0 +1,135 @@
+{
+  "name": "bronchoroute",
+  "productName": "BronchoRoute",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BronchoRoute desktop shell",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "smoke": "node scripts/smoke.js",
+    "build:python": "bash scripts/build-python.sh",
+    "build:ffmpeg": "bash scripts/build-ffmpeg.sh",
+    "pack": "electron-builder --mac dir --arm64 --publish never",
+    "smoke:packaged": "node scripts/smoke-packaged.js",
+    "sign": "bash scripts/sign-and-notarize.sh",
+    "sign:adhoc": "IDENTITY=- bash scripts/sign-and-notarize.sh"
+  },
+  "build": {
+    "appId": "ro.appcenter.bronchoroute",
+    "productName": "BronchoRoute",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "lib.js",
+      "encoder.js",
+      "preload.js",
+      "weights.js",
+      "weights-manifest.json",
+      "updater.js"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "valinagacevschi",
+        "repo": "BronchoRoute",
+        "releaseType": "release"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "minimumSystemVersion": "14.0",
+      "identity": null
+    },
+    "extraResources": [
+      {
+        "from": "build/python",
+        "to": "python",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/ffmpeg",
+        "to": "ffmpeg",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../app",
+        "to": "app/app",
+        "filter": [
+          "*.py"
+        ]
+      },
+      {
+        "from": "../pipeline",
+        "to": "app/pipeline",
+        "filter": [
+          "app_server.py",
+          "atomic_json.py",
+          "build_graph.py",
+          "import_dicom.py",
+          "make_prototype_data.py",
+          "paths.py",
+          "repo_root.py",
+          "review_signoff.py",
+          "route_frame.py",
+          "run_totalsegmentator.py",
+          "series_rule.py",
+          "snomed.py",
+          "pyproject.toml"
+        ]
+      },
+      {
+        "from": "../prototype",
+        "to": "app/prototype",
+        "filter": [
+          "renderer.template.html",
+          "ct_panes.js",
+          "import.js",
+          "import.css",
+          "fonts/*.woff2",
+          "fonts/OFL*.txt"
+        ]
+      },
+      {
+        "from": "..",
+        "to": "app",
+        "filter": [
+          "LICENSE",
+          "THIRD_PARTY_NOTICES.md",
+          "sponsors.json"
+        ]
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  }
+}
