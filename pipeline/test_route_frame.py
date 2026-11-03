@@ -1,17 +1,22 @@
+# Changes: roll_profile reaches align_angle at the fly-through fork hold station.
+# Changes: align_angle drives video roll; fork.angle stays the mean-frame clock.
 # Changes: angle tests for the manual endoluminal clocks.
 import math
 from pathlib import Path
 
 import numpy as np
+from termcolor import cprint
 
 from route_frame import (
     AP_DEGENERACY,
+    FLYTHROUGH_FORK_LOOK_MM,
     apply_roll,
     branch_angle,
     clock_hour,
     clock_of,
     direction_along,
     fork_clock_line,
+    fork_hold_s,
     forks,
     in_plane_fraction,
     patient_angle,
@@ -175,6 +180,142 @@ def test_ap_axis_degeneracy_is_strictly_under_a_tenth():
     assert on_edge["degenerate"] is False
     inside = 0.099
     assert patient_frame([0.0, math.sqrt(1.0 - inside * inside), inside])["degenerate"] is True
+
+
+def _polyline(start, end, step=1.0):
+    start = np.asarray(start, dtype=float)
+    end = np.asarray(end, dtype=float)
+    count = max(1, int(math.ceil(float(np.linalg.norm(end - start)) / step)))
+    return [((1.0 - i / count) * start + (i / count) * end).tolist() for i in range(count + 1)]
+
+
+def _join_route(edges, route):
+    points = []
+    for edge_index in route:
+        line = edges[edge_index]["centreline_mm"]
+        if points:
+            line = line[1:]
+        points.extend(line)
+    return points
+
+
+def _frame_at(distances, tangents, ups, distance, step_mm=1.0):
+    sample = max(0.0, min(len(distances) - 1, float(distance) / step_mm))
+    before = int(math.floor(sample))
+    after = min(before + 1, len(distances) - 1)
+    fraction = sample - before
+    tangent = tangents[before] * (1.0 - fraction) + tangents[after] * fraction
+    tangent = tangent / np.linalg.norm(tangent)
+    raw_up = ups[before] * (1.0 - fraction) + ups[after] * fraction
+    raw_up = raw_up - tangent * float(np.dot(raw_up, tangent))
+    up = raw_up / np.linalg.norm(raw_up)
+    return tangent, up, before, after, fraction
+
+
+def _scope_delta(tangent, up, phi, direction):
+    right = np.cross(tangent, up)
+    right = right / np.linalg.norm(right)
+    screen_up = apply_roll(up, right, phi)
+    theta = patient_angle(tangent, direction)
+    psi = scope_angle(tangent, screen_up)
+    if theta is None or psi is None:
+        return None
+    return wrap_deg(math.degrees(theta - psi))
+
+
+def _synthetic_fork_route():
+    edges = [
+        {"from": 0, "to": 1, "centreline_mm": _polyline([0, 0, 0], [0, 0, -20]),
+         "radius_mm": 6, "generation": 0, "airway_name": "trachea"},
+        {"from": 1, "to": 2, "centreline_mm": _polyline([0, 0, -20], [16, 0, -20]),
+         "radius_mm": 4, "generation": 1, "airway_name": "right"},
+        {"from": 1, "to": 3, "centreline_mm": _polyline([0, 0, -20], [-12, 0, -26]),
+         "radius_mm": 4, "generation": 1, "airway_name": "left"},
+        {"from": 2, "to": 4, "centreline_mm": _polyline([16, 0, -20], [16, 12, -30]),
+         "radius_mm": 3, "generation": 2, "airway_name": "anterior"},
+        {"from": 2, "to": 5, "centreline_mm": _polyline([16, 0, -20], [16, -8, -28]),
+         "radius_mm": 3, "generation": 2, "airway_name": "posterior"},
+    ]
+    route = [0, 1, 3]
+    points, distances, _labels = resample(_join_route(edges, route))
+    tangent_samples = tangents(points)
+    ups = transport_frame(tangent_samples)
+    found = forks(edges, route, points, distances, tangent_samples, ups)
+    return edges, found, distances, tangent_samples, ups
+
+
+def test_roll_profile_aligns_on_route_child_to_scope_12():
+    """Video auto-align only. Manual roll stays apply_roll(up, right, phi)."""
+    cprint("synthetic forks: scope 12 after roll_profile", "cyan")
+    edges, found, distances, tangent_samples, ups = _synthetic_fork_route()
+    assert len(found) == 2
+    assert all(fork["align_angle"] is not None for fork in found)
+    # Interactive mean-frame angle stays on the child / fork.angle fields.
+    for fork in found:
+        chosen = next(child for child in fork["children"] if child["on_route"])
+        assert fork["angle"] == chosen["angle"]
+    assert any(
+        abs(float(fork["angle"]) - float(fork["align_angle"])) > 1.0
+        for fork in found
+    ), "bent fork must diverge mean-frame angle from camera align_angle"
+    profile = roll_profile(distances, found)
+    saw_unaligned = False
+    for fork in found:
+        tangent, up, before, after, fraction = _frame_at(
+            distances, tangent_samples, ups, fork["s"]
+        )
+        phi = float(profile[before] + (profile[after] - profile[before]) * fraction)
+        chosen = next(child for child in fork["children"] if child["on_route"])
+        direction = direction_along(edges[chosen["edge"]]["centreline_mm"])
+        rolled = _scope_delta(tangent, up, phi, direction)
+        manual = _scope_delta(tangent, up, 0.0, direction)
+        cprint(
+            f"fork s={fork['s']:.1f} angle={fork['angle']:.2f} "
+            f"align={fork['align_angle']:.2f} phi={math.degrees(phi):.2f}° "
+            f"scope={rolled:.3f}° manual={manual:.3f}°",
+            "cyan",
+        )
+        assert rolled is not None and manual is not None
+        assert abs(rolled) <= 1.0
+        if abs(manual) > 1.0:
+            saw_unaligned = True
+        assert clock_hour(math.radians(rolled)) == 12
+    assert saw_unaligned
+
+
+def test_roll_profile_reaches_align_at_fork_hold_s():
+    """Easing finishes by holdS = fork.s - FLYTHROUGH_FORK_LOOK_MM, then locks."""
+    cprint("roll_profile locked at fly-through holdS", "cyan")
+    _edges, found, distances, _t, _u = _synthetic_fork_route()
+    profile = roll_profile(distances, found)
+    prev_s = None
+    locked_deg = 0.0
+    for fork in found:
+        hold_s = fork_hold_s(fork["s"], prev_s)
+        assert abs(hold_s - max(0.0, fork["s"] - FLYTHROUGH_FORK_LOOK_MM, prev_s or 0.0)) < 1e-9
+        before = int(np.searchsorted(distances, hold_s, side="right") - 1)
+        before = max(0, min(before, len(distances) - 1))
+        after = min(before + 1, len(distances) - 1)
+        if after == before or distances[after] == distances[before]:
+            phi = float(profile[before])
+        else:
+            frac = (hold_s - distances[before]) / (distances[after] - distances[before])
+            phi = float(profile[before] + (profile[after] - profile[before]) * frac)
+        target = float(fork["align_angle"])
+        delta = wrap_deg(target - locked_deg)
+        locked_deg = wrap_deg(locked_deg + delta)
+        phi_deg = wrap_deg(math.degrees(phi))
+        cprint(
+            f"holdS={hold_s:.2f} fork.s={fork['s']:.1f} "
+            f"phi={phi_deg:.2f}° expect={locked_deg:.2f}° align={target:.2f}",
+            "cyan",
+        )
+        assert abs(wrap_deg(phi_deg - locked_deg)) <= 1.0
+        # Still locked at the junction itself.
+        junction_before = int(np.searchsorted(distances, fork["s"], side="right") - 1)
+        junction_before = max(0, min(junction_before, len(distances) - 1))
+        assert abs(wrap_deg(math.degrees(float(profile[junction_before])) - locked_deg)) <= 1.0
+        prev_s = fork["s"]
 
 
 def test_local_001_carina_and_rul_takeoff_clocks():

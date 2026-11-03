@@ -1,3 +1,8 @@
+<!-- Changes: fly-through fork hold looks ahead of the junction; drop on-plane orifice hacks. -->
+<!-- Changes: orifice placement uses the rolled view basis; no patient-clock placeholders. -->
+<!-- Changes: video lumen at fork/end; export HUD clocks inset 24 px without the rail. -->
+<!-- Changes: debug hook sets the interactive fly pose around an offline fly-through. -->
+<!-- Changes: offline endoluminal fly-through reuses Record frames and auto-aligns each fork. -->
 <!-- Changes: live Record to MP4 at 1080p30 or 720p30 with the still burn-in. -->
 <!-- Changes: estimated airway in topology and CT panes shares one session toggle. -->
 <!-- Changes: PNG stills at 2× CSS size with burn-in, HUD and Lesion toggles, and Save image. -->
@@ -513,18 +518,22 @@ body.walkthrough-active .walk-sim-label { display: block; }
 #save-image-btn { background: var(--steel); border-color: var(--steel); color: #fff; }
 #save-image-btn:disabled { opacity: .55; cursor: progress; }
 #save-image-btn:focus-visible, #save-image-options:focus-visible,
-#record-btn:focus-visible, #record-stop:focus-visible {
+#record-btn:focus-visible, #record-stop:focus-visible,
+#flythrough-btn:focus-visible, #flythrough-cancel:focus-visible {
   outline: 2px solid var(--steel); outline-offset: 2px;
 }
-#record-btn, #record-stop {
+#record-btn, #record-stop, #flythrough-btn, #flythrough-cancel {
   font: 500 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
   letter-spacing: .03em;
   border: 1px solid var(--edge); border-radius: 6px;
   padding: 7px 10px; background: var(--ground); color: var(--ink); cursor: pointer;
 }
 #record-stop { background: #9d2c2c; border-color: #9d2c2c; color: #fff; }
-#record-btn:disabled, #record-stop:disabled { opacity: .55; cursor: progress; }
-#record-btn[hidden], #record-stop[hidden], #record-indicator[hidden], #record-size-label[hidden] {
+#record-btn:disabled, #record-stop:disabled, #flythrough-btn:disabled, #flythrough-cancel:disabled {
+  opacity: .55; cursor: progress;
+}
+#record-btn[hidden], #record-stop[hidden], #record-indicator[hidden], #record-size-label[hidden],
+#flythrough-btn[hidden], #flythrough-cancel[hidden], #flythrough-progress[hidden], #flythrough-reason[hidden] {
   display: none;
 }
 #record-indicator {
@@ -536,6 +545,13 @@ body.walkthrough-active .walk-sim-label { display: block; }
   margin: 0; color: var(--muted); font-size: 12px; line-height: 1.35;
 }
 #record-status:empty { display: none; }
+#flythrough-reason, #flythrough-status, #flythrough-count {
+  margin: 0; color: var(--muted); font-size: 12px; line-height: 1.35;
+}
+#flythrough-status:empty { display: none; }
+#flythrough-progress { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+#flythrough-count { display: block; white-space: nowrap; min-width: 28ch; }
+#flythrough-bar { width: 100%; height: 8px; }
 #record-size {
   font: inherit; color: var(--ink); background: var(--ground);
   border: 1px solid var(--edge); border-radius: 4px; margin-left: 6px;
@@ -626,10 +642,18 @@ body.walkthrough-active .walk-sim-label { display: block; }
       <button type="button" id="record-btn" hidden>Record</button>
       <button type="button" id="record-stop" hidden>Stop</button>
       <span id="record-indicator" hidden role="status" aria-live="polite">● REC 00:00</span>
+      <button type="button" id="flythrough-btn" hidden aria-describedby="flythrough-reason">Export fly-through</button>
+      <button type="button" id="flythrough-cancel" hidden>Cancel</button>
       <button type="button" id="save-image-options" popovertarget="save-image-popover"
         aria-controls="save-image-popover">Options</button>
     </div>
     <p id="record-status" role="status"></p>
+    <p id="flythrough-reason" hidden></p>
+    <p id="flythrough-status" role="status"></p>
+    <div id="flythrough-progress" hidden>
+      <progress id="flythrough-bar" value="0" max="1"></progress>
+      <span id="flythrough-count"></span>
+    </div>
     <div id="save-image-popover" class="save-image-popover" popover>
       <label><input type="checkbox" id="save-image-hud" checked> Include HUD</label>
       <label><input type="checkbox" id="save-image-lesion" checked> Show Lesion</label>
@@ -978,7 +1002,8 @@ if (A.signoff && A.signoff.length) {
 }
 const cv = document.getElementById("c");
 let ctx = cv.getContext("2d");
-let exportFrame = { active: false, hud: true, lesion: true };
+let exportFrame = { active: false, hud: true, lesion: true, deferHud: false };
+let lastEndoHudPaint = null;
 let lastBurnIn = null;
 const css = getComputedStyle(document.documentElement);
 const tok = n => css.getPropertyValue(n).trim();
@@ -1671,14 +1696,21 @@ function clearOfChrome(x, y, hud) {
 }
 
 function guidanceLayout(textWidth) {
-  const canvasRect = cv.getBoundingClientRect();
-  const railEl = document.querySelector(".rail");
-  const switcher = document.getElementById("switcher").getBoundingClientRect();
-  const railBox = railEl ? railEl.getBoundingClientRect() : canvasRect;
-  const railRight = Math.max(0, railBox.right - canvasRect.left);
-  const left = railRight + 12;
-  const switcherTop = switcher.top - canvasRect.top;
-  const bottom = Math.min(H - 12, (Number.isFinite(switcherTop) ? switcherTop : H - 22) - 8);
+  // Export/video frames have no side rail: pin the clocks to a 24 px inset.
+  const exportHud = !!(exportFrame && exportFrame.active);
+  let railRight = 0;
+  let left = 24;
+  let bottom = H - 24;
+  if (!exportHud) {
+    const canvasRect = cv.getBoundingClientRect();
+    const railEl = document.querySelector(".rail");
+    const switcher = document.getElementById("switcher").getBoundingClientRect();
+    const railBox = railEl ? railEl.getBoundingClientRect() : canvasRect;
+    railRight = Math.max(0, railBox.right - canvasRect.left);
+    left = railRight + 12;
+    const switcherTop = switcher.top - canvasRect.top;
+    bottom = Math.min(H - 12, (Number.isFinite(switcherTop) ? switcherTop : H - 22) - 8);
+  }
   const radius = 26;
   const gap = 116;
   const cx = left + 50;
@@ -1727,8 +1759,13 @@ function forkSurvey() {
   });
 }
 
-function endoHudModel(right, up, dir) {
-  const next = A.forks.find(fork => fork.s >= fly.s - 1e-6);
+function endoHudModel(right, up, dir, pose) {
+  const s = pose && Number.isFinite(pose.s) ? pose.s : fly.s;
+  const phi = pose && Number.isFinite(pose.phi) ? pose.phi : fly.phi;
+  const pausedFork = pose && Object.prototype.hasOwnProperty.call(pose, "pausedFork")
+    ? pose.pausedFork
+    : fly.pausedFork;
+  const next = A.forks.find(fork => fork.s >= s - 1e-6);
   const parentT = next ? flyAt(next.s).t : dir;
   const frame = patientFrame(parentT);
   const degenerate = frame.degenerate;
@@ -1754,11 +1791,11 @@ function endoHudModel(right, up, dir) {
   else if (ahead) hint = "straight ahead";
   else if (theta != null && psi != null) hint = rotateHint(delta);
   else if (next) hint = "straight ahead";
-  const phiDeg = wrapDeg(fly.phi * 180 / Math.PI);
+  const phiDeg = wrapDeg(phi * 180 / Math.PI);
   const rollText = `Scope roll: ${jsFixed0(phiDeg)}°`;
   let forkText = "";
   if (next) {
-    const distance = Math.max(0, next.s - fly.s);
+    const distance = Math.max(0, next.s - s);
     const mark = next.prov === "interpolated" ? " · interp" : "";
     const stem = `Fork ${next.fork} · ${jsFixed0(distance)} mm — `;
     if (degenerate) forkText = `${stem}degenerate AP axis${mark}`;
@@ -1769,14 +1806,14 @@ function endoHudModel(right, up, dir) {
   }
   const lines = [];
   if (forkText) lines.push({ text: forkText, color: "#f4f7f8" });
-  if (fly.pausedFork) {
-    lines.push({ text: `Paused at fork ${fly.pausedFork} — Space / ↑`, color: "#f4f7f8" });
+  if (pausedFork) {
+    lines.push({ text: `Paused at fork ${pausedFork} — Space / ↑`, color: "#f4f7f8" });
   }
-  if (flyAt(fly.s).prov === "interpolated") {
+  if (flyAt(s).prov === "interpolated") {
     lines.push({ text: "Interpolated — not CT-demonstrated", color: "#ffd166" });
   }
   if (A.target_gap_mm > 0 && !A.target_inside_airway
-      && A.fly.s[A.fly.s.length - 1] - fly.s <= 10) {
+      && A.fly.s[A.fly.s.length - 1] - s <= 10) {
     lines.push({ text: `Target ${A.target_gap_mm.toFixed(1)} mm beyond airway`, color: "#f4f7f8" });
   }
   if (degenerate && !forkText) lines.push({ text: "degenerate AP axis", color: "#f4f7f8" });
@@ -1816,9 +1853,9 @@ function endoHudModel(right, up, dir) {
     degenerate,
     patientClock: theta == null ? null : clockHour(theta),
     scopeClock: theta == null || psi == null ? null : clockHour(theta - psi),
-    routeRollDeg: routeRollAt(fly.s) * 180 / Math.PI,
-    s: fly.s,
-    pausedFork: fly.pausedFork,
+    routeRollDeg: routeRollAt(s) * 180 / Math.PI,
+    s,
+    pausedFork,
     lastPause: fly.lastPause,
     nextPause: next ? next.pause_s : null,
     scopeDial: { ...rigDial },
@@ -2432,22 +2469,47 @@ function flyAt(s) {
   };
 }
 
-function drawEndoluminal() {
-  const here = flyAt(fly.s);
+function drawEndoluminal(pose) {
+  // Interactive navigation omits pose and keeps the manual roll in fly.phi.
+  // Offline fly-through passes {s, phi} and does not write those globals.
+  const posed = !!(pose && Number.isFinite(pose.s) && Number.isFinite(pose.phi));
+  const station = posed ? pose.s : fly.s;
+  const phi = posed ? pose.phi : fly.phi;
+  const here = flyAt(station);
   const pos = here.p;
   const right0 = norm(cross(here.t, here.up));
-  const up = norm(applyRoll(here.up, right0, fly.phi));
+  const up = norm(applyRoll(here.up, right0, phi));
   const right = norm(cross(here.t, up));
   const dir = here.t;
   lastEndoCamera = {
     pos: [...pos], right: [...right], up: [...up], dir: [...dir],
     origin: [...(A.origin_mm || [0, 0, 0])],
-    w: W, h: H, focalPx: Math.min(W, H) * 0.62, s: fly.s,
+    w: W, h: H, focalPx: Math.min(W, H) * 0.62, s: station, phi,
   };
-  const aheadEnd = Math.min(A.fly.s[A.fly.s.length - 1], fly.s + 90);
+  const pathEnd = A.fly.s[A.fly.s.length - 1];
+  const aheadEnd = Math.min(pathEnd, station + 90);
   const ahead = [];
-  for (let s = fly.s; s <= aheadEnd; s += 1) {
-    ahead.push(flyAt(s));
+  for (let s = station; s <= aheadEnd + 1e-9; s += 1) {
+    ahead.push(flyAt(Math.min(pathEnd, s)));
+  }
+  // At the path tip there are no samples ahead; extend along the last tangent
+  // so the lumen still fills the view (video end-hold and near-end poses).
+  const tip = flyAt(pathEnd);
+  let extend = 0;
+  while (ahead.length < 12 || (pathEnd - station < 8 && extend < 12)) {
+    extend += 1;
+    ahead.push({
+      p: [
+        tip.p[0] + tip.t[0] * extend,
+        tip.p[1] + tip.t[1] * extend,
+        tip.p[2] + tip.t[2] * extend,
+      ],
+      t: tip.t,
+      up: tip.up,
+      r: tip.r,
+      g: tip.g,
+      prov: tip.prov,
+    });
   }
   if (ahead.length < 2) {
     lastEndoluminalLesion = null;
@@ -2471,16 +2533,31 @@ function drawEndoluminal() {
   // When a fork is in view, stop the parent lumen tube at the junction so
   // child orifices read as separate openings inside the parent wall.
   const orificeFork = A.forks.find(
-    f => f.s >= fly.s && f.s - fly.s <= FORK_ORIFICE_AHEAD_MM
+    f => f.s >= station - 1e-6 && f.s - station <= FORK_ORIFICE_AHEAD_MM
       && f.children && f.children.length >= 2,
   );
-  const ringCutoff = orificeFork
-    ? Math.max(1, Math.round(orificeFork.s - fly.s) + 1)
-    : ahead.length;
+  let ringCutoff = ahead.length;
+  if (orificeFork) {
+    const gap = orificeFork.s - station;
+    // Within ~2 mm of the junction a short parent stub draws off-canvas;
+    // leave the face to orifices / near-field wall rings.
+    ringCutoff = gap < 2 ? 0 : Math.max(1, Math.round(gap) + 1);
+  }
   const rings = [];
   for (let i = Math.min(ahead.length - 1, ringCutoff); i >= 1; i--) {
     const point = project(toView(ahead[i].p));
     if (point) rings.push({ point, radius: ahead[i].r, generation: ahead[i].g, i });
+  }
+  // When the parent tube is cut away at a fork (or the path tip has no
+  // samples), paint the usual near-field wall rings from the real local
+  // radius along the view axis — same mucosa discs as the lumen wall, not
+  // synthetic child openings.
+  if (rings.length === 0) {
+    const fallbackR = here.r > 0 ? here.r : tip.r;
+    for (const z of [2.2, 4.5, 8]) {
+      const point = project([0, 0, z]);
+      if (point) rings.push({ point, radius: fallbackR, generation: here.g, i: 1 });
+    }
   }
   for (const ring of rings) {
     const pixels = ring.radius * ring.point.f;
@@ -2491,7 +2568,7 @@ function drawEndoluminal() {
       ring.point.x, ring.point.y, pixels,
     );
     gradient.addColorStop(0, "rgba(0,0,0,0)");
-    gradient.addColorStop(1, ahead[ring.i].prov === "interpolated"
+    gradient.addColorStop(1, ahead[ring.i] && ahead[ring.i].prov === "interpolated"
       ? `rgba(217,149,32,${depth})` : mucosa(depth));
     ctx.fillStyle = gradient;
     ctx.beginPath();
@@ -2506,10 +2583,10 @@ function drawEndoluminal() {
     }
   }
 
-  const nextFork = A.forks.find(fork => fork.s >= fly.s);
+  const nextFork = A.forks.find(fork => fork.s >= station);
   let guideSample = Math.min(20, ahead.length - 1);
   if (nextFork && nextFork.s + 5 <= aheadEnd) {
-    guideSample = Math.round(nextFork.s + 5 - fly.s);
+    guideSample = Math.round(nextFork.s + 5 - station);
   }
   // Hide the route guide ring when orifices own the fork plane.
   if (!orificeFork) {
@@ -2525,21 +2602,28 @@ function drawEndoluminal() {
     }
   }
 
-  const hud = endoHudModel(right, up, dir);
-  drawForkOrifices(toView, project, lastGuidance);
-  drawAnteriorTick(rings, right, up, dir, lastGuidance);
+  const hud = endoHudModel(
+    right, up, dir, posed ? { s: station, phi, pausedFork: null } : null,
+  );
+  lastEndoHudPaint = hud;
+  drawForkOrifices(toView, project, lastGuidance, station);
+  drawAnteriorTick(rings, right, up, dir, lastGuidance, station);
   drawEndoluminalLesion(toView);
-
-  const remaining = Math.max(0, A.fly.s[A.fly.s.length - 1] - fly.s);
-  setReadout({
-    gen: here.g.toFixed(0),
-    rad: here.r.toFixed(2) + " mm",
-    togo: remaining.toFixed(0) + " mm",
-    turns: A.forks.filter(fork => fork.s > fly.s).length,
-  });
-  paintEndoHud(hud);
-  // Endoluminal fly camera drives the shared world position continuously.
-  SharedPos.set(toWorld(here.p), "endoluminal");
+  // Video frames paint the clocks in output pixels after letterboxing so the
+  // panel sits on the frame's bottom-left inset, not the on-screen rail.
+  if (!(exportFrame.active && exportFrame.deferHud)) paintEndoHud(hud);
+  if (!posed) {
+    const remaining = Math.max(0, A.fly.s[A.fly.s.length - 1] - station);
+    setReadout({
+      gen: here.g.toFixed(0),
+      rad: here.r.toFixed(2) + " mm",
+      togo: remaining.toFixed(0) + " mm",
+      turns: A.forks.filter(fork => fork.s > station).length,
+    });
+    // Endoluminal fly camera drives the shared world position continuously.
+    SharedPos.set(toWorld(here.p), "endoluminal");
+    syncFlythroughUi();
+  }
 }
 
 /** Sample a point ~mm along an edge centreline (arc length). */
@@ -2566,8 +2650,9 @@ function pointAlongCentreline(c, mm) {
 }
 
 /** Dark lumen openings for each child when a fork is within ~40 mm ahead. */
-function drawForkOrifices(toView, projectFn, hud) {
-  const fork = A.forks.find(f => f.s >= fly.s && f.s - fly.s <= FORK_ORIFICE_AHEAD_MM);
+function drawForkOrifices(toView, projectFn, hud, station) {
+  const at = Number.isFinite(station) ? station : fly.s;
+  const fork = A.forks.find(f => f.s >= at - 1e-6 && f.s - at <= FORK_ORIFICE_AHEAD_MM);
   if (!fork || !fork.children || fork.children.length < 2) {
     lastForkOrifices = [];
     lastForkLabels = [];
@@ -2579,32 +2664,46 @@ function drawForkOrifices(toView, projectFn, hud) {
   for (const child of fork.children) {
     const edge = A.edges[child.edge];
     if (!edge || !edge.c || !edge.c.length) continue;
-    // Project a few mm past the fork along the child centreline into the camera.
+    // Project a few mm past the fork along the child centreline into the
+    // camera. toView already includes fly.phi / posed roll — same basis as
+    // the rings. A sibling behind the camera is simply omitted (no fake
+    // patient-clock placeholder).
     const mid = pointAlongCentreline(edge.c, FORK_ORIFICE_DEPTH_MM);
     if (!mid) continue;
     const view = toView(mid);
     const scr = projectFn(view);
     if (!scr) continue;
     const radiusMm = child.r != null ? child.r : edge.r;
-    const pixels = Math.max(6, radiusMm * scr.f);
     openings.push({
       child,
       name: child.name || "branch",
       clock: child.clock,
       on_route: !!child.on_route,
-      x: scr.x, y: scr.y, pixels, z: scr.z,
+      x: scr.x,
+      y: scr.y,
+      pixels: Math.max(6, radiusMm * scr.f),
+      z: scr.z,
       radiusMm,
+      viewX: view[0],
+      viewY: view[1],
+      projected: true,
     });
   }
-  if (openings.length < 2) {
+  if (openings.length < 1) {
     lastForkOrifices = [];
     lastForkLabels = [];
     return;
   }
 
-  // Parent lumen face at the fork — openings stay inside it.
+  // Parent lumen face at the fork — openings stay inside it. Travel frames
+  // (not the look-ahead hold) can sit almost on the junction; nudge a few mm
+  // along the view so project() still returns a screen position.
   const forkHere = flyAt(fork.s);
-  const parentScr = projectFn(toView(forkHere.p));
+  let parentView = toView(forkHere.p);
+  if (parentView[2] < 0.8) {
+    parentView = [parentView[0], parentView[1], 1.6];
+  }
+  const parentScr = projectFn(parentView);
   if (!parentScr) {
     lastForkOrifices = [];
     lastForkLabels = [];
@@ -2616,31 +2715,28 @@ function drawForkOrifices(toView, projectFn, hud) {
   // Size orifices from child radius, but fit them inside the parent face
   // with a visible mucosal spur between siblings.
   const n = openings.length;
-  const fitR = Math.max(8, (parentR * 0.88 - RIDGE_GAP_PX * 0.5 * (n - 1)) / n);
+  const fitR = Math.max(8, (parentR * 0.88 - RIDGE_GAP_PX * 0.5 * Math.max(0, n - 1)) / n);
   for (const o of openings) {
     // Prefer true child scale, but never larger than the face budget.
     const preferred = Math.min(o.pixels, fitR);
     o.pixels = Math.max(8, preferred);
   }
 
-  // Place centres around the parent, spaced by radius + ridge gap.
-  // Prefer projected direction; fall back to even angular layout.
+  // Place centres around the parent from the rolled view-space direction
+  // (+viewY = screen up). That is the same basis applyRoll built for rings —
+  // never re-place by the stored patient clock hour.
   {
     const dirs = openings.map(o => {
+      const vh = Math.hypot(o.viewX, o.viewY);
+      if (vh > 1e-6) return { ux: o.viewX / vh, uy: -o.viewY / vh };
       const dx = o.x - parentCx, dy = o.y - parentCy;
       const d = Math.hypot(dx, dy);
       if (d > 1e-3) return { ux: dx / d, uy: dy / d };
-      return null;
+      return { ux: 0, uy: -1 };
     });
-    if (dirs.some(d => !d)) {
-      for (let i = 0; i < n; i++) {
-        const ang = -Math.PI / 2 + (i * 2 * Math.PI) / n;
-        dirs[i] = { ux: Math.cos(ang), uy: Math.sin(ang) };
-      }
-    }
     // Radial offset so circles sit side-by-side with a spur, inside parent.
     const meanR = openings.reduce((s, o) => s + o.pixels, 0) / n;
-    let radial = meanR + RIDGE_GAP_PX * 0.5;
+    let radial = n === 1 ? Math.min(meanR * 0.35, parentR * 0.35) : meanR + RIDGE_GAP_PX * 0.5;
     const maxRadial = Math.max(0, parentR - meanR - 3);
     if (radial > maxRadial) radial = maxRadial;
     for (let i = 0; i < n; i++) {
@@ -2858,6 +2954,9 @@ function drawForkOrifices(toView, projectFn, hud) {
     on_route: o.on_route,
     edge: o.child.edge,
     x: o.x, y: o.y, pixels: o.pixels,
+    projected: true,
+    viewX: o.viewX,
+    viewY: o.viewY,
   }));
   lastForkLabels = labels.map(lab => {
     ctx.font = `600 ${lab.on_route ? 12 : 11}px "IBM Plex Sans Condensed", sans-serif`;
@@ -2870,15 +2969,16 @@ function drawForkOrifices(toView, projectFn, hud) {
   });
 }
 
-function drawAnteriorTick(rings, right, up, dir, hud) {
+function drawAnteriorTick(rings, right, up, dir, hud, station) {
   // Always-on "A" on the visible lumen edge; rotates with camera roll.
   // Hidden when anterior is within 10° of the view axis. Prefer ~8 mm
   // look-ahead, but skip a ring whose tick or label would sit under the
   // side rail or the clock panel (the canvas is full-bleed behind both).
+  const at = Number.isFinite(station) ? station : fly.s;
   const screen = anteriorInView(dir, right, up);
   const remember = (visible, extra = {}) => {
     lastAnteriorTick = {
-      visible, s: fly.s, x: null, y: null, cx: null, cy: null,
+      visible, s: at, x: null, y: null, cx: null, cy: null,
       angleFrom12Deg: null,
       screen: screen ? { x: screen.x, y: screen.y } : null,
       ...extra,
@@ -4225,8 +4325,9 @@ function syncSaveImageControl() {
   if (recordSession && !recordSession.stopping && exportViewKey() !== recordSession.view) {
     finishRecording("save");
   }
-  box.hidden = !on;
-  if (!on) {
+  const exporting = flythroughSession != null;
+  box.hidden = !on && !exporting;
+  if (!on && !exporting) {
     const pop = document.getElementById("save-image-popover");
     if (pop && typeof pop.hidePopover === "function" && pop.matches(":popover-open")) {
       pop.hidePopover();
@@ -4234,6 +4335,7 @@ function syncSaveImageControl() {
   }
   const mode = !recordSession ? "idle" : (recordSession.stopping ? "stopping" : "recording");
   setRecordUi(mode);
+  syncFlythroughUi();
 }
 
 function gateHud(fn) {
@@ -4274,16 +4376,16 @@ drawTopology = function () {
 };
 
 const drawForkOrificesLive = drawForkOrifices;
-drawForkOrifices = function (toView, projectFn, hud) {
+drawForkOrifices = function (toView, projectFn, hud, station) {
   if (!(exportFrame.active && exportFrame.hud === false)) {
-    return drawForkOrificesLive(toView, projectFn, hud);
+    return drawForkOrificesLive(toView, projectFn, hud, station);
   }
   const fill = ctx.fillText;
   const stroke = ctx.strokeText;
   ctx.fillText = function () { return undefined; };
   ctx.strokeText = function () { return undefined; };
   try {
-    return drawForkOrificesLive(toView, projectFn, hud);
+    return drawForkOrificesLive(toView, projectFn, hud, station);
   } finally {
     ctx.fillText = fill;
     ctx.strokeText = stroke;
@@ -4347,10 +4449,10 @@ function drawScaleBar(mm, px) {
   return label;
 }
 
-function drawBurnIn(viewKey, when) {
+function drawBurnIn(viewKey, when, viewNameOverride) {
   const stamp = exportStamp(when);
   const caseId = exportCaseId();
-  const viewName = EXPORT_VIEW_NAMES[viewKey];
+  const viewName = viewNameOverride || EXPORT_VIEW_NAMES[viewKey];
   const header = `${viewName} \u00b7 ${caseId} \u00b7 ${stamp.label}`;
   const review = reviewWarningLines(A);
   const footer = "Simulated \u00b7 CT-derived \u00b7 research use";
@@ -4411,17 +4513,20 @@ function exportPaintOptions(options) {
   const lesion = opts.lesion !== false;
   const when = opts.when instanceof Date && !Number.isNaN(opts.when.getTime()) ? opts.when : new Date();
   const viewKey = opts.view || exportViewKey();
-  return { hud, lesion, when, viewKey };
+  const viewName = typeof opts.viewName === "string" && opts.viewName ? opts.viewName : null;
+  return { hud, lesion, when, viewKey, viewName };
 }
 
-function paintExportView(viewKey, when) {
+let exportPose = null;
+
+function paintExportView(viewKey, when, viewName) {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = tok("--ground");
   ctx.fillRect(0, 0, W, H);
   if (viewKey === "anatomical") drawAnatomical();
-  else if (viewKey === "endoluminal") drawEndoluminal();
+  else if (viewKey === "endoluminal") drawEndoluminal(exportPose);
   else drawTopology();
-  drawBurnIn(viewKey, when);
+  drawBurnIn(viewKey, when, viewName);
 }
 
 function withExportFrame(hud, lesion, paint) {
@@ -4437,6 +4542,7 @@ function withExportFrame(hud, lesion, paint) {
     exportFrame.active = false;
     exportFrame.hud = true;
     exportFrame.lesion = true;
+    exportFrame.deferHud = false;
     ctx = screenCtx;
     W = screenW;
     H = screenH;
@@ -4468,10 +4574,38 @@ function recordFrameSize(width, height) {
   return (width === 1920 && height === 1080) || (width === 1280 && height === 720);
 }
 
+function paintDeferredVideoHud(width, height) {
+  if (!lastEndoHudPaint) return null;
+  const model = lastEndoHudPaint;
+  ctx.save();
+  ctx.font = "11px system-ui";
+  let natural = 80;
+  for (const line of model.lines) natural = Math.max(natural, ctx.measureText(line.text).width);
+  ctx.restore();
+  const layout = guidanceLayout(Math.min(420, natural));
+  const painted = {
+    ...model,
+    layout,
+  };
+  paintEndoHud(painted);
+  lastEndoHudPaint = painted;
+  if (lastGuidance) {
+    lastGuidance.panel = { ...layout.panel };
+    lastGuidance.railRight = layout.railRight;
+    lastGuidance.scopeDial = {
+      x: layout.dials[1].x,
+      y: layout.dials[1].y,
+      radius: layout.dials[1].radius,
+    };
+  }
+  return layout;
+}
+
 function renderVideoCanvas(options) {
-  const { hud, lesion, when, viewKey } = exportPaintOptions(options);
+  const { hud, lesion, when, viewKey, viewName } = exportPaintOptions(options);
   const width = options && options.width;
   const height = options && options.height;
+  const pose = options && options.pose ? options.pose : null;
   if (!viewKey || !Object.prototype.hasOwnProperty.call(EXPORT_VIEW_NAMES, viewKey)) {
     throw new Error("Record is not available for this view");
   }
@@ -4490,23 +4624,35 @@ function renderVideoCanvas(options) {
   const offsetX = (width - contentW) / 2;
   const offsetY = (height - contentH) / 2;
   withExportFrame(hud, lesion, () => {
-    ctx = offCtx;
-    W = cssW;
-    H = cssH;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = tok("--ground");
-    ctx.fillRect(0, 0, width, height);
-    ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
-    paintExportView(viewKey, when);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = tok("--ground");
-    if (offsetY > 0.5) {
-      ctx.fillRect(0, 0, width, offsetY);
-      ctx.fillRect(0, offsetY + contentH, width, height - (offsetY + contentH));
-    }
-    if (offsetX > 0.5) {
-      ctx.fillRect(0, 0, offsetX, height);
-      ctx.fillRect(offsetX + contentW, 0, width - (offsetX + contentW), height);
+    exportPose = pose;
+    exportFrame.deferHud = !!(hud && viewKey === "endoluminal");
+    try {
+      ctx = offCtx;
+      W = cssW;
+      H = cssH;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = tok("--ground");
+      ctx.fillRect(0, 0, width, height);
+      ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+      paintExportView(viewKey, when, viewName);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = tok("--ground");
+      if (offsetY > 0.5) {
+        ctx.fillRect(0, 0, width, offsetY);
+        ctx.fillRect(0, offsetY + contentH, width, height - (offsetY + contentH));
+      }
+      if (offsetX > 0.5) {
+        ctx.fillRect(0, 0, offsetX, height);
+        ctx.fillRect(offsetX + contentW, 0, width - (offsetX + contentW), height);
+      }
+      if (exportFrame.deferHud) {
+        W = width;
+        H = height;
+        paintDeferredVideoHud(width, height);
+      }
+    } finally {
+      exportFrame.deferHud = false;
+      exportPose = null;
     }
   });
   return off;
@@ -4585,6 +4731,8 @@ const RECORD_FPS = 30;
 const RECORD_MAX_MS = 10 * 60 * 1000;
 const RECORD_AUTO_STOP = "Recording stopped at 10 minutes.";
 let recordSession = null;
+let flythroughSession = null;
+let flythroughUiKey = "";
 
 function canvasJpegBytes(canvas) {
   return new Promise((resolve, reject) => {
@@ -4598,6 +4746,23 @@ function canvasJpegBytes(canvas) {
   });
 }
 
+function cloneEndoCamera(camera) {
+  if (!camera) return null;
+  const copy = (value) => (Array.isArray(value) ? value.slice() : value);
+  return {
+    pos: copy(camera.pos),
+    right: copy(camera.right),
+    up: copy(camera.up),
+    dir: copy(camera.dir),
+    origin: copy(camera.origin),
+    w: camera.w,
+    h: camera.h,
+    focalPx: camera.focalPx,
+    s: camera.s,
+    phi: camera.phi,
+  };
+}
+
 function createVideoFrameSource(options) {
   const opts = options && typeof options === "object" ? options : {};
   const view = opts.view || exportViewKey();
@@ -4605,22 +4770,41 @@ function createVideoFrameSource(options) {
   const height = opts.height;
   const hud = opts.hud !== false;
   const lesion = opts.lesion !== false;
+  const viewName = typeof opts.viewName === "string" && opts.viewName ? opts.viewName : null;
+  const poseOf = typeof opts.pose === "function" ? opts.pose : null;
   if (!view || !Object.prototype.hasOwnProperty.call(EXPORT_VIEW_NAMES, view)) {
     throw new Error("Record is not available for this view");
   }
   if (!recordFrameSize(width, height)) throw new Error("Unsupported record size");
+  const shot = { camera: null, guidance: null, burn: null, orifices: null };
   return {
     view,
     width,
     height,
     hud,
     lesion,
+    get lastCamera() { return shot.camera; },
+    get lastGuidance() { return shot.guidance; },
+    get lastBurn() { return shot.burn; },
+    get lastOrifices() { return shot.orifices; },
     frame(when) {
       const ready = document.fonts && document.fonts.ready
         ? document.fonts.ready.catch(() => {})
         : Promise.resolve();
       return ready.then(() => {
-        const canvas = renderVideoCanvas({ view, width, height, hud, lesion, when });
+        const pose = poseOf ? poseOf() : null;
+        const canvas = renderVideoCanvas({ view, viewName, width, height, hud, lesion, when, pose });
+        shot.camera = cloneEndoCamera(lastEndoCamera);
+        shot.guidance = lastGuidance ? { ...lastGuidance } : null;
+        // Snapshot before the JPEG await; a live rAF can redraw the interactive
+        // canvas and overwrite lastForkOrifices while encode is in flight.
+        shot.orifices = lastForkOrifices.map(o => ({ ...o }));
+        shot.burn = lastBurnIn ? {
+          viewName: lastBurnIn.viewName,
+          caseId: lastBurnIn.caseId,
+          footer: lastBurnIn.footer,
+          lines: lastBurnIn.lines.slice(),
+        } : null;
         return canvasJpegBytes(canvas);
       });
     },
@@ -4802,12 +4986,13 @@ function setRecordUi(mode) {
   const size = document.getElementById("record-size");
   if (start) {
     start.hidden = !api || !onView || recording || stopping;
-    start.disabled = stopping;
+    start.disabled = stopping || flythroughSession != null;
   }
   if (stop) stop.hidden = !recording;
   if (indicator) indicator.hidden = !recording;
   if (sizeLabel) sizeLabel.hidden = !api || !onView;
-  if (size) size.disabled = recording || stopping;
+  if (size) size.disabled = recording || stopping || flythroughSession != null;
+  syncFlythroughUi();
 }
 
 async function finishRecording(reason) {
@@ -4929,6 +5114,288 @@ async function startRecording() {
   session.scheduler.start();
 }
 
+const FLYTHROUGH_FPS = 30;
+const FLYTHROUGH_MM_PER_FRAME = 10 / FLYTHROUGH_FPS;
+// Hold before the junction so both child orifices stay in view (spec §8:
+// auto-align to 12 *before* each fork). Matches route_frame.FLYTHROUGH_FORK_LOOK_MM.
+const FLYTHROUGH_FORK_LOOK_MM = 12;
+
+function flythroughForkHoldS(fork, prevForkS) {
+  let holdS = fork.s - FLYTHROUGH_FORK_LOOK_MM;
+  if (Number.isFinite(prevForkS)) holdS = Math.max(holdS, prevForkS);
+  return Math.max(0, Math.min(holdS, fork.s));
+}
+
+function flyPathLength() {
+  const samples = A && A.fly && A.fly.s;
+  if (!samples || !samples.length) return 0;
+  const length = Number(samples[samples.length - 1]);
+  return Number.isFinite(length) ? length : 0;
+}
+
+function flythroughForkList(length) {
+  return (A.forks || [])
+    .filter((fork) => Number.isFinite(fork.s) && fork.s >= -1e-6 && fork.s <= length + 1e-6)
+    .slice()
+    .sort((a, b) => a.s - b.s);
+}
+
+function flythroughTravelCount(length) {
+  if (!(length > 0)) return 0;
+  return Math.ceil(length / (10 / 30));
+}
+
+function flythroughPoses(length, forks) {
+  const step = FLYTHROUGH_MM_PER_FRAME;
+  const travel = flythroughTravelCount(length);
+  const poses = [];
+  let forkIndex = 0;
+  for (let i = 0; i < travel; i += 1) {
+    const at = Math.min(length, i * step);
+    while (forkIndex < forks.length) {
+      const prevS = forkIndex > 0 ? forks[forkIndex - 1].s : 0;
+      const holdAt = Math.min(length, flythroughForkHoldS(forks[forkIndex], prevS));
+      if (holdAt > at + 1e-6) break;
+      for (let hold = 0; hold < FLYTHROUGH_FPS; hold += 1) {
+        poses.push({ s: holdAt, hold: "fork" });
+      }
+      forkIndex += 1;
+    }
+    poses.push({ s: at, hold: null });
+  }
+  while (forkIndex < forks.length) {
+    const prevS = forkIndex > 0 ? forks[forkIndex - 1].s : 0;
+    const holdAt = Math.min(length, flythroughForkHoldS(forks[forkIndex], prevS));
+    for (let hold = 0; hold < FLYTHROUGH_FPS; hold += 1) {
+      poses.push({ s: holdAt, hold: "fork" });
+    }
+    forkIndex += 1;
+  }
+  for (let hold = 0; hold < FLYTHROUGH_FPS; hold += 1) poses.push({ s: length, hold: "end" });
+  return poses;
+}
+
+function flythroughBlockReason() {
+  const target = A && A.route_target;
+  if (!target) return "Choose a RouteTarget";
+  if (target.stale) return target.reason ? String(target.reason) : "RouteTarget is stale";
+  if (!A.fly || !Array.isArray(A.fly.s) || !(A.fly.s.length > 1)) return "No route to fly";
+  return "";
+}
+
+function exportFlythroughFileName(when) {
+  return `${exportCaseId()}_endoluminal_${exportStamp(when).file}.mp4`;
+}
+
+function setFlythroughProgress(done, total) {
+  const wrap = document.getElementById("flythrough-progress");
+  const bar = document.getElementById("flythrough-bar");
+  const count = document.getElementById("flythrough-count");
+  const status = document.getElementById("flythrough-status");
+  if (wrap) wrap.hidden = false;
+  if (bar) {
+    bar.max = total;
+    bar.value = done;
+  }
+  if (count) count.textContent = `Rendering ${done} / ${total} frames`;
+  if (status) status.textContent = "Export in progress";
+}
+
+function clearFlythroughProgress() {
+  const wrap = document.getElementById("flythrough-progress");
+  const status = document.getElementById("flythrough-status");
+  if (wrap) wrap.hidden = true;
+  if (status && status.textContent === "Export in progress") status.textContent = "";
+}
+
+function syncFlythroughUi() {
+  const onEndo = exportViewKey() === "endoluminal";
+  const running = flythroughSession != null;
+  const reason = onEndo ? flythroughBlockReason() : "";
+  const recording = recordSession != null;
+  const key = `${onEndo}|${running}|${reason}|${recording}`;
+  if (key === flythroughUiKey) return;
+  flythroughUiKey = key;
+  const btn = document.getElementById("flythrough-btn");
+  const cancel = document.getElementById("flythrough-cancel");
+  const reasonEl = document.getElementById("flythrough-reason");
+  const progress = document.getElementById("flythrough-progress");
+  if (btn) {
+    btn.hidden = !onEndo;
+    btn.disabled = running || !!reason || recording;
+    btn.title = reason;
+  }
+  if (reasonEl) {
+    reasonEl.hidden = !onEndo || running || !reason;
+    reasonEl.textContent = reason;
+  }
+  if (cancel) cancel.hidden = !running;
+  if (progress && !running) progress.hidden = true;
+}
+
+function yieldToEventLoop() {
+  // Prefer setTimeout so headless still progresses if rAF is throttled; also
+  // schedule one rAF so a live counter can prove the page stayed responsive.
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    setTimeout(done, 0);
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => {});
+  });
+}
+
+async function renderFlythrough(options) {
+  const opts = options && typeof options === "object" ? options : {};
+  const blocked = flythroughBlockReason();
+  if (blocked) throw new Error(blocked);
+  const size = opts.size || {};
+  const width = size.width;
+  const height = size.height;
+  if (!recordFrameSize(width, height)) throw new Error("Unsupported record size");
+  const hud = opts.hud !== false;
+  const lesion = opts.lesion !== false;
+  const when = opts.when instanceof Date && !Number.isNaN(opts.when.getTime())
+    ? opts.when
+    : new Date();
+  const signal = opts.signal || null;
+  const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+  const sink = typeof opts.sink === "function" ? opts.sink : null;
+  const length = flyPathLength();
+  const forks = flythroughForkList(length);
+  const poses = flythroughPoses(length, forks);
+  const total = poses.length;
+  const saved = { s: fly.s, phi: fly.phi };
+  // Show the progress row before the first frame so the rail size stays put,
+  // then match the live camera viewport to that CSS size.
+  setFlythroughProgress(0, total);
+  resize();
+  let pose = null;
+  const source = createVideoFrameSource({
+    view: "endoluminal",
+    viewName: "Endoluminal fly-through",
+    width,
+    height,
+    hud,
+    lesion,
+    pose() { return pose; },
+  });
+  let sent = 0;
+  let cancelled = false;
+  try {
+    for (let i = 0; i < poses.length; i += 1) {
+      if (signal && signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      const item = poses[i];
+      pose = { s: item.s, phi: routeRollAt(item.s) };
+      const bytes = await source.frame(when);
+      if (signal && signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      if (sink) {
+        await sink(bytes, {
+          index: i,
+          s: item.s,
+          phi: pose.phi,
+          hold: item.hold,
+          camera: source.lastCamera,
+          guidance: source.lastGuidance,
+          burn: source.lastBurn,
+          orifices: source.lastOrifices,
+        });
+      }
+      sent += 1;
+      setFlythroughProgress(sent, total);
+      if (onProgress) onProgress(sent, total);
+      await yieldToEventLoop();
+    }
+  } finally {
+    pose = null;
+    fly.s = saved.s;
+    fly.phi = saved.phi;
+    if (!flythroughSession) {
+      const status = document.getElementById("flythrough-status");
+      if (status && status.textContent === "Export in progress") status.textContent = "";
+    }
+  }
+  return { frames: sent, total, cancelled, length, forks: forks.length };
+}
+
+async function startFlythrough() {
+  if (flythroughSession || recordSession) return;
+  const blocked = flythroughBlockReason();
+  if (blocked || exportViewKey() !== "endoluminal") return;
+  const api = recordApi();
+  const status = document.getElementById("flythrough-status");
+  if (!api) {
+    if (status) status.textContent = "Video export needs the desktop app";
+    return;
+  }
+  const when = new Date();
+  const name = exportFlythroughFileName(when);
+  const size = recordSize();
+  const hud = document.getElementById("save-image-hud").checked;
+  const lesion = document.getElementById("save-image-lesion").checked;
+  if (status) status.textContent = "";
+  let started;
+  try {
+    started = await api.recordStart({
+      defaultName: name,
+      width: size.width,
+      height: size.height,
+    });
+  } catch (err) {
+    if (status) status.textContent = recordErrorText(err);
+    return;
+  }
+  if (!started || started.saved === false || !started.recordingId) return;
+  if (exportViewKey() !== "endoluminal") {
+    try { await api.recordCancel({ recordingId: started.recordingId }); } catch (err) { /* view changed */ }
+    return;
+  }
+  const controller = new AbortController();
+  flythroughSession = { controller, id: started.recordingId };
+  flythroughUiKey = "";
+  syncFlythroughUi();
+  let sent = 0;
+  try {
+    const result = await renderFlythrough({
+      size,
+      hud,
+      lesion,
+      when,
+      signal: controller.signal,
+      onProgress(done) { sent = done; },
+      sink(bytes) {
+        const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        return api.recordFrame({ recordingId: started.recordingId, bytes: payload });
+      },
+    });
+    sent = result.frames;
+    if (controller.signal.aborted || sent < 1) {
+      await api.recordCancel({ recordingId: started.recordingId });
+    } else {
+      await api.recordStop({ recordingId: started.recordingId });
+    }
+  } catch (err) {
+    try { await api.recordCancel({ recordingId: started.recordingId }); } catch (ignore) { /* already closed */ }
+    if (status) status.textContent = recordErrorText(err);
+  } finally {
+    flythroughSession = null;
+    flythroughUiKey = "";
+    clearFlythroughProgress();
+    syncFlythroughUi();
+    syncSaveImageControl();
+    if (variant === 1 || variant === 4) drawEndoluminal();
+  }
+}
+
 let saveImageBusy = false;
 document.getElementById("save-image-options").addEventListener("click", () => {
   const pop = document.getElementById("save-image-popover");
@@ -4973,6 +5440,12 @@ document.getElementById("record-btn").addEventListener("click", () => {
 });
 document.getElementById("record-stop").addEventListener("click", () => {
   finishRecording("save");
+});
+document.getElementById("flythrough-btn").addEventListener("click", () => {
+  startFlythrough();
+});
+document.getElementById("flythrough-cancel").addEventListener("click", () => {
+  if (flythroughSession) flythroughSession.controller.abort();
 });
 
 if (DEBUG) {
@@ -5040,6 +5513,7 @@ if (DEBUG) {
       h: lastEndoCamera.h,
       focalPx: lastEndoCamera.focalPx,
       s: lastEndoCamera.s,
+      phi: lastEndoCamera.phi,
     }),
     nearestCtSeenSample: (edges, origin, ras) => (
       window.CtPanes && window.CtPanes.nearestCtSeenSample
@@ -5183,6 +5657,76 @@ if (DEBUG) {
     exportStill,
     createVideoFrameSource,
     createRecordScheduler,
+    renderFlythrough,
+    flythroughBlockReason,
+    flyState: () => ({ s: fly.s, phi: fly.phi, playing: fly.playing }),
+    setFly(state) {
+      const next = state && typeof state === "object" ? state : {};
+      if (Number.isFinite(next.s)) {
+        fly.s = Math.max(0, Math.min(A.fly.s.at(-1), next.s));
+      }
+      if (Number.isFinite(next.phi)) fly.phi = next.phi;
+      if (typeof next.playing === "boolean") fly.playing = next.playing;
+      return { s: fly.s, phi: fly.phi, playing: fly.playing };
+    },
+    lumenThumbAt(s, phi) {
+      const prevS = fly.s;
+      const prevPhi = fly.phi;
+      const prevPlaying = fly.playing;
+      fly.s = s;
+      fly.phi = phi;
+      fly.playing = false;
+      if (variant !== 1) setVariant(1);
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = tok("--ground");
+      ctx.fillRect(0, 0, W, H);
+      drawEndoluminal();
+      const { data } = ctx.getImageData(0, 0, W, H);
+      const rig = lastGuidance;
+      // Canvas is full-bleed behind the rail; crop the lumen without the rail
+      // inset so thumbs match export frames (no side rail).
+      const panel = rig && rig.panel ? rig.panel : null;
+      const padX = W * 0.18;
+      const padY = H * 0.18;
+      let left = padX;
+      let top = padY;
+      let right = W - padX;
+      let bottom = H - padY;
+      if (panel) bottom = Math.min(bottom, panel.t - 4);
+      const tw = 64;
+      const th = 36;
+      const out = new Float32Array(tw * th);
+      const rw = Math.max(1, right - left);
+      const rh = Math.max(1, bottom - top);
+      for (let ty = 0; ty < th; ty += 1) {
+        for (let tx = 0; tx < tw; tx += 1) {
+          const x = Math.min(W - 1, Math.max(0, Math.floor(left + (tx + 0.5) * rw / tw)));
+          const y = Math.min(H - 1, Math.max(0, Math.floor(top + (ty + 0.5) * rh / th)));
+          const i = (y * W + x) * 4;
+          out[ty * tw + tx] = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+        }
+      }
+      fly.s = prevS;
+      fly.phi = prevPhi;
+      fly.playing = prevPlaying;
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = tok("--ground");
+      ctx.fillRect(0, 0, W, H);
+      drawEndoluminal();
+      return Array.from(out);
+    },
+    poseCamera(s, phi) {
+      const prevS = fly.s;
+      const prevPhi = fly.phi;
+      fly.s = s;
+      fly.phi = phi;
+      drawEndoluminal();
+      const camera = cloneEndoCamera(lastEndoCamera);
+      fly.s = prevS;
+      fly.phi = prevPhi;
+      drawEndoluminal();
+      return camera;
+    },
     burnIn() {
       if (!lastBurnIn) return null;
       return {

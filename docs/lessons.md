@@ -1,5 +1,8 @@
 <!-- Changes: missing updates settings defaults on; unreadable settings skip the update check. -->
 <!-- Changes: LGPL ffmpeg needs protocol fd as well as pipe for stdin `-`. -->
+<!-- Changes: fly-through fork hold is look-ahead of the junction; roll easing ends at holdS. -->
+<!-- Changes: fly-through fork/end frames need orifice face nudge and tip extrapolation; video HUD paints after letterbox at a 24 px inset. -->
+<!-- Changes: fly-through roll uses the camera frame at the fork, not the 5 mm mean tangent. -->
 <!-- Changes: public snapshot keeps renderer.html for the splice tests; scanner waives registry UIDs, the .999 test branch, path-redaction lines, the pygltflib URL, and "Patient Protocol". -->
 <!-- Changes: TotalSegmentator weights path is nnUNet results; roi_subset still prefetches unused parts. -->
 <!-- Changes: Record at a fixed 30 Hz and encode with h264_videotoolbox, not libx264. -->
@@ -19,6 +22,20 @@
   missing `updates_enabled` key) means checks stay on. Unreadable or corrupt
   JSON means checks stay off for that launch — do not treat parse failure as
   the public default.
+- Fly-through auto-align (#44): the scope rolls the sample frame at `fork.s`, but
+  `fork.angle` is the 5 mm mean-tangent clock used by interactive guidance. Those
+  diverge on a bend, so video roll uses a separate `align_angle` (camera-frame
+  clock at the junction sample). `roll_profile` reads `align_angle`; interactive
+  `fly.phi` never applies that profile. Video passes `{s, phi}` into
+  `drawEndoluminal` and yields each frame. View switches stay enabled during
+  export: frames are offscreen and do not write `fly.s` or `fly.phi`.   Spec §8 auto-aligns before each fork: the video hold is at
+  `fork.s - FLYTHROUGH_FORK_LOOK_MM` (12 mm) so both child orifices stay in
+  view; `roll_profile` finishes easing by that holdS and stays locked through
+  the junction. A sibling behind the camera is omitted (never synthesised from
+  the patient clock). Orifice centres pack from the rolled view-space XY.
+  Snapshot orifices on the frame source before the JPEG await. At path end
+  extend along the tip tangent. Video clocks paint after letterboxing at a
+  24 px left inset.
 - Public snapshot (#49): the server serves `renderer.template.html`, but
   `desktop/lib.test.js` and `test_template_splice` read `prototype/renderer.html`
   (that template plus the anonymized AeroPath graph, no name, UID, or date), so
