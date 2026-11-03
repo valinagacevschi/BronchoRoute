@@ -1,3 +1,4 @@
+<!-- Changes: missing updates settings defaults on; unreadable settings skip the update check. -->
 <!-- Changes: LGPL ffmpeg needs protocol fd as well as pipe for stdin `-`. -->
 <!-- Changes: public snapshot keeps renderer.html for the splice tests; scanner waives registry UIDs, the .999 test branch, path-redaction lines, the pygltflib URL, and "Patient Protocol". -->
 <!-- Changes: TotalSegmentator weights path is nnUNet results; roi_subset still prefetches unused parts. -->
@@ -14,6 +15,10 @@
 <!-- Changes: retain Settings persistence and subprocess isolation lessons after rebase. -->
 # Lessons Learned
 
+- Auto-update settings (#50): missing `app_state/settings.json` (or a
+  missing `updates_enabled` key) means checks stay on. Unreadable or corrupt
+  JSON means checks stay off for that launch — do not treat parse failure as
+  the public default.
 - Public snapshot (#49): the server serves `renderer.template.html`, but
   `desktop/lib.test.js` and `test_template_splice` read `prototype/renderer.html`
   (that template plus the anonymized AeroPath graph, no name, UID, or date), so

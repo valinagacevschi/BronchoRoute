@@ -19,18 +19,40 @@
   "build": {
     "appId": "ro.appcenter.bronchoroute",
     "productName": "BronchoRoute",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
     "files": [
       "main.js",
       "lib.js",
       "encoder.js",
       "preload.js",
       "weights.js",
-      "weights-manifest.json"
+      "weights-manifest.json",
+      "updater.js"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "valinagacevschi",
+        "repo": "BronchoRoute",
+        "releaseType": "release"
+      }
     ],
     "mac": {
       "target": [
         {
           "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "arm64"
           ]
@@ -106,5 +128,8 @@
   "devDependencies": {
     "electron": "45.2.1",
     "electron-builder": "26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
   }
 }

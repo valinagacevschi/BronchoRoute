@@ -1,3 +1,4 @@
+// Changes: check GitHub Releases after load when updates_enabled; ask before download/install.
 // Changes: download mirrored weights before packaged processing.
 // Changes: Record IPC saves an MP4 under Movies/BronchoRoute and cancels if the window closes.
 // Changes: native Save image dialog under Pictures/BronchoRoute; never log the path.
@@ -51,6 +52,12 @@ const {
   weightsRequired,
   weightsStatus,
 } = require("./weights");
+const {
+  configureUpdater,
+  maybeCheckForUpdates,
+  readUpdatesEnabled,
+  settingsFilePath,
+} = require("./updater");
 
 app.setName("BronchoRoute");
 // Chromium's profile is userData. Point it at the override before ready so a
@@ -767,11 +774,32 @@ async function launch() {
   await mainWindow.loadURL(url);
   await showDisclaimer(mainWindow, port, token);
   await showFileVaultNote(mainWindow, port, token);
+  startUpdateCheck(dataRoot);
   return {
     window: mainWindow,
     port,
     sidecarPid: sidecar.pid,
   };
+}
+
+function startUpdateCheck(dataRoot) {
+  const updatesEnabled = readUpdatesEnabled(settingsFilePath(dataRoot));
+  let updater = null;
+  if (app.isPackaged && updatesEnabled === true) {
+    try {
+      updater = configureUpdater(require("electron-updater").autoUpdater);
+    } catch (err) {
+      process.stderr.write("update check skipped: electron-updater unavailable\n");
+      return;
+    }
+  }
+  maybeCheckForUpdates({
+    packaged: app.isPackaged,
+    updatesEnabled,
+    updater,
+    dialog,
+    browserWindow: mainWindow,
+  }).catch(() => {});
 }
 
 async function start() {
