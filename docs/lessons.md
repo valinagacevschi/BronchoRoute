@@ -1,3 +1,4 @@
+<!-- Changes: realistic frame roll uses canvas rotate(-φ) to match applyRoll (#60). -->
 <!-- Changes: desktop extraResources must list estimated_airway.py and realism/* (#63). -->
 <!-- Changes: headless toBlob is rAF-throttled; video JPEG uses toDataURL (#45). -->
 <!-- Changes: missing updates settings defaults on; unreadable settings skip the update check. -->
@@ -20,6 +21,11 @@
 <!-- Changes: retain Settings persistence and subprocess isolation lessons after rebase. -->
 # Lessons Learned
 
+- Realistic fork roll (#60): zero-roll fisheye frames are drawn with
+  `ctx.rotate(-φ)` (and the same matrix for orifice overlays). Positive `fly.phi`
+  matches `applyRoll`; `+φ` alone puts the red-dot clock a quarter-turn off the
+  HUD scope clock. Chromium still logs fetch 404 as a console "error" even when
+  JS only checks `res.ok` — treat that network line as benign in Playwright.
 - Bundle filters (#63): `extraResources` for `../pipeline` is an explicit file list — new pipeline modules (e.g. `estimated_airway.py`) are omitted until listed. `*.py` under `../app` is top-level only, so packages like `app/realism/` need their own `realism/*.py` / `realism/*.json` patterns.
 - Offline video JPEG (#45): headless Chromium throttles `canvas.toBlob` to the background rAF rate (~1 fps), so Playwright offline exports took ~1 s/frame. `canvas.toDataURL("image/jpeg")` is synchronous and keeps Record / fly-through / orbit / spin at tens of ms/frame. `yieldEvery` lets tests skip most `yieldToEventLoop` ticks during bulk encode.
 - Auto-update settings (#50): missing `app_state/settings.json` (or a
