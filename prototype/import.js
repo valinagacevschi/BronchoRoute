@@ -1,3 +1,4 @@
+// Changes: drop Series initials prompt; settings auto-supply initials.
 // Changes: selection summary uses textContent (no Archive description HTML).
 // Changes: focus initials when Series prompt opens so Electron insertText lands.
 // Changes: topbar archive-open, failure note placement, library meta/stats, weights error note.
@@ -110,10 +111,6 @@
         <div id="study-groups"></div>
         <form id="import-confirm">
           <div class="selection-summary" id="selection-summary"></div>
-          <div id="clinician-prompt" hidden>
-            <label class="field">Your initials <input id="clinician-initials" maxlength="12" autocomplete="off"></label>
-            <p>Saved locally for Case records.</p>
-          </div>
           <label class="field" id="override-reason-field" hidden>Reason for choosing this Series
             <input id="override-reason" maxlength="200" autocomplete="off"></label>
           <button id="series-confirm" type="submit">Process Series</button>
@@ -991,8 +988,6 @@
         section.appendChild(wrap);
         groups.appendChild(section);
       }
-      const clinician = await api("/api/settings");
-      get("clinician-prompt").hidden = Boolean(clinician.initials);
       get("series-picker").hidden = false;
       get("archive-view").hidden = true;
       get("archive-drop").hidden = true;
@@ -1000,9 +995,6 @@
       syncProcessButton();
       message("");
       syncIntakeChrome();
-      if (!get("clinician-prompt").hidden) {
-        get("clinician-initials").focus();
-      }
     } catch (error) {
       setDropBusy(false);
       message(error.message);
@@ -1087,12 +1079,6 @@
         message("Model download cancelled.");
         return;
       }
-      if (!get("clinician-prompt").hidden) {
-        await api("/api/settings", {
-          method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ initials: get("clinician-initials").value.trim() }),
-        });
-      }
       get("series-picker").hidden = true;
       get("archive-view").hidden = true;
       get("processing").hidden = false;
@@ -1116,11 +1102,11 @@
     } catch (error) {
       get("processing").hidden = true;
       get("series-picker").hidden = false;
-      if (error.status === 412) {
-        get("clinician-prompt").hidden = false;
-        get("clinician-initials").focus();
-      }
-      message(error.message);
+      message(
+        error.status === 412
+          ? "Set your initials in Settings, then try again."
+          : error.message,
+      );
       syncIntakeChrome();
     } finally {
       busy = false;

@@ -1,3 +1,4 @@
+// Changes: packaged smoke no longer clicks a disclaimer Acknowledge button.
 // Changes: encode a short packaged-ffmpeg clip (h264 / 30 fps) before the viewer smoke.
 // Changes: check packaged viewer lifecycle and TotalSegmentator module without PATH scripts.
 "use strict";
@@ -194,8 +195,9 @@ async function main() {
     }
     await until(async () => {
       const result = await cdp("Runtime.evaluate", { expression: `(() => {
-        const ack = document.getElementById("disclaimer-ack");
-        if (ack) ack.click();
+        if (document.getElementById("disclaimer-overlay")) return false;
+        const footer = document.querySelector(".research-footer");
+        if (!footer || !footer.textContent.includes("Not a medical device")) return false;
         return Boolean(new URL(location.href).searchParams.get("case"))
           && document.querySelectorAll("#switcher button").length > 0
           && Array.from(document.querySelectorAll("canvas")).some((canvas) => {

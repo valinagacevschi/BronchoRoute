@@ -1,3 +1,4 @@
+# Changes: confirm-bar vertical alignment; Process Series without initials field.
 # Changes: Series summary must not execute Archive description HTML.
 # Changes: follow-up tests for hidden, topbar archive-open, library meta, failure layout.
 # Changes: intake redesign theme, row-select, drag-over, failed track, and overflow checks.
@@ -239,7 +240,6 @@ def test_processing_failed_track(lungs_server):
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         page.goto(base)
         _open_archive(page, archive)
-        page.locator("#clinician-initials").fill("AB")
         page.locator("#series-confirm").click()
         page.locator("#processing").wait_for(state="visible")
         page.locator('#processing-steps li[data-state="failed"]').wait_for(timeout=20000)
@@ -267,7 +267,6 @@ def test_intake_screens_no_overflow(library_server, size):
         _open_archive(page, archive)
         assert _no_horizontal_overflow(page)
         assert _confirm_hit(page)
-        page.locator("#clinician-initials").fill("AB")
         page.locator("#series-confirm").click()
         page.locator("#processing").wait_for(state="visible")
         assert _no_horizontal_overflow(page)
@@ -318,8 +317,6 @@ def test_archive_open_in_topbar_on_build_and_library(library_server, size):
         page.goto(base)
         page.locator("#archive-open").click()
         _open_archive(page, archive)
-        if page.locator("#clinician-initials").is_visible():
-            page.locator("#clinician-initials").fill("AB")
         page.locator("#series-confirm").click()
         page.locator("#processing").wait_for(state="visible")
         page.locator("#archive-open").wait_for(state="visible")
@@ -365,7 +362,6 @@ def test_processing_failure_layout(lungs_server):
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         page.goto(base)
         _open_archive(page, archive)
-        page.locator("#clinician-initials").fill("AB")
         page.locator("#series-confirm").click()
         page.locator("#try-another").wait_for(state="visible", timeout=20000)
         assert not page.locator("#processing-cancel").is_visible()
@@ -435,4 +431,35 @@ def test_series_summary_escapes_description_html(intake_server):
         assert '<img src=x onerror="window.__xss=1">' in summary.inner_text()
         assert page.evaluate("() => window.__xss") is None
         assert summary.locator("img").count() == 0
+        browser.close()
+
+
+def _confirm_bar_centre_delta(page) -> float:
+    return page.evaluate(
+        """() => {
+          const summary = document.querySelector('#selection-summary');
+          const button = document.querySelector('#series-confirm');
+          const s = summary.getBoundingClientRect();
+          const b = button.getBoundingClientRect();
+          return Math.abs((s.top + s.height / 2) - (b.top + b.height / 2));
+        }"""
+    )
+
+
+def test_confirm_bar_vertical_alignment(choice_server):
+    base, _root, archive = choice_server
+    with _playwright_or_skip()() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.goto(base)
+        _open_archive(page, archive)
+        assert page.locator("#clinician-initials").count() == 0
+        assert page.locator("#override-reason-field").is_hidden()
+        assert _confirm_bar_centre_delta(page) <= 2
+        page.locator('input[name="series-choice"]').nth(1).click()
+        page.locator("#override-reason").wait_for(state="visible")
+        assert _confirm_bar_centre_delta(page) <= 2
+        page.locator("#override-reason").fill("alignment check")
+        page.locator("#series-confirm").click()
+        page.locator("#processing").wait_for(state="visible")
         browser.close()

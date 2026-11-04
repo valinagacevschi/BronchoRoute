@@ -1,3 +1,4 @@
+// Changes: preload queues Archive IPC until onOpenArchive is registered.
 // Changes: assert orbit/spin reuse Record IPC; no dedicated orbit/spin channels (#45).
 "use strict";
 
@@ -62,6 +63,8 @@ test("orbit and spin use the Record IPC path", () => {
     [...preload.matchAll(/"(bronchoroute:[^"]+)"/g)].some((m) => /fly|orbit|spin/i.test(m[1])),
     false,
   );
+  assert.match(preload, /\bpendingArchive\b/);
+  assert.match(preload, /onOpenArchive\s*\(/);
 
   assert.equal(isSaveVideoName("local-001_anatomical-orbit_20261103-0140.mp4"), true);
   assert.equal(isSaveVideoName("local-001_topology-spin_20261103-0140.mp4"), true);

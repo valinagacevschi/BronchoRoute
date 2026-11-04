@@ -1,3 +1,4 @@
+# Changes: Process Series without the removed Series initials field.
 # Changes: header assertion is case-insensitive (intake redesign uppercases th via CSS).
 # Changes: Case Library clicks, outdated prompt, and instant library-hit open.
 from __future__ import annotations
@@ -127,7 +128,6 @@ def test_library_screen_and_hit(library_server):
             page.locator("#archive-choose").click()
         chooser.value.set_files(str(archive))
         page.locator("#series-picker").wait_for(state="visible")
-        page.locator("#clinician-initials").fill("AB")
         page.locator("#series-confirm").click()
         page.locator("#processing").wait_for(state="visible")
         page.wait_for_url(re.compile(r"\?case=local-002"), timeout=60_000)

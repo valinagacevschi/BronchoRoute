@@ -1,3 +1,5 @@
+// Changes: wait for import bridge; specific child FAIL reasons; Archive queue-safe.
+// Changes: no disclaimer overlay; auto initials; assert research footer stays.
 // Changes: dismiss the one-time FileVault note when FileVault is off.
 // Changes: first-launch acknowledgement and IPC Archive import persist across relaunch.
 // Changes: synthetic Case smoke verifies click acknowledgement and persistence after relaunch.
@@ -106,33 +108,48 @@ async function clickElement(wc, selector) {
     return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
   })()`);
   if (!point) {
-    throw new Error("smoke control is not available");
+    throw new Error(`smoke control is not available: ${selector}`);
   }
   wc.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...point });
   wc.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...point });
+}
+
+async function waitUntil(wc, expression, label, timeoutMs = 60000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      if (await wc.executeJavaScript(expression)) {
+        return;
+      }
+    } catch (err) {
+      lastError = err && err.message ? err.message : String(err);
+    }
+    await delay(100);
+  }
+  throw new Error(lastError ? `${label} (${lastError})` : `${label} timed out`);
 }
 
 async function childMain() {
   const { start, openArchive } = require("../main");
   const launched = await start();
   if (!launched || !launched.window) {
-    return;
+    throw new Error("start() returned no window");
   }
   const wc = launched.window.webContents;
   const relaunch = process.env.BRONCHOROUTE_SMOKE_RELAUNCH === "1";
-  const ack = await wc.executeJavaScript(`(() => {
-    const button = document.getElementById("disclaimer-ack");
-    if (!button) return null;
-    const rect = button.getBoundingClientRect();
-    return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
-  })()`);
-  if (Boolean(ack) === relaunch) {
-    throw new Error(relaunch ? "disclaimer reappeared after relaunch" : "fresh launch has no disclaimer");
-  }
-  if (ack) {
-    wc.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...ack });
-    wc.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...ack });
-  }
+  // import.js registers onOpenArchive when #archive-drop exists; footer is always present.
+  await waitUntil(
+    wc,
+    `(() => {
+      const footer = document.querySelector(".research-footer");
+      const footerOk = Boolean(footer && footer.textContent.includes("Not a medical device"));
+      if (!footerOk || !window.bronchoroute) return false;
+      if (${relaunch ? "true" : "false"}) return true;
+      return Boolean(document.getElementById("archive-drop"));
+    })()`,
+    relaunch ? "viewer UI not ready" : "import UI not ready",
+  );
   const deadline = Date.now() + 180000;
   let ready = false;
   let archiveOpened = false;
@@ -147,11 +164,8 @@ async function childMain() {
         continue;
       }
       if (!relaunch && !archiveOpened) {
-        const acknowledged = await wc.executeJavaScript("!document.getElementById('disclaimer-overlay')");
-        if (acknowledged) {
-          await openArchive({ sender: wc }, path.join(process.env.BRONCHOROUTE_DATA_ROOT, "input.zip"));
-          archiveOpened = true;
-        }
+        await openArchive({ sender: wc }, path.join(process.env.BRONCHOROUTE_DATA_ROOT, "input.zip"));
+        archiveOpened = true;
       }
       if (!relaunch && !pickerConfirmed) {
         const pickerReady = await wc.executeJavaScript(`(() => {
@@ -159,8 +173,6 @@ async function childMain() {
           return Boolean(picker && !picker.hidden);
         })()`);
         if (pickerReady) {
-          await clickElement(wc, "#clinician-initials");
-          await wc.insertText("AB");
           await clickElement(wc, "#series-confirm");
           pickerConfirmed = true;
         }
@@ -200,6 +212,7 @@ async function childMain() {
             break;
           }
         }
+        const footer = document.querySelector(".research-footer");
         return {
           buttons: document.querySelectorAll("#switcher button").length,
           overlay: Boolean(document.getElementById("disclaimer-overlay")),
@@ -207,7 +220,7 @@ async function childMain() {
           imported: new URLSearchParams(location.search).get("case") === "local-001",
           processing: Boolean(document.getElementById("processing") && !document.getElementById("processing").hidden),
           caseListed: (await fetch("/api/cases").then(response => response.json())).some(item => item.id === "local-001" && item.has_graph),
-          ackSaved: (await fetch("/api/settings").then(response => response.json())).disclaimer_ack === true,
+          footer: Boolean(footer && footer.textContent.includes("Not a medical device")),
           filevault: Boolean(document.getElementById("filevault-overlay")),
         };
       })()`);
@@ -215,8 +228,11 @@ async function childMain() {
       await delay(200);
       continue;
     }
+    if (state.overlay) {
+      throw new Error("disclaimer overlay appeared");
+    }
     processingSeen = processingSeen || state.processing;
-    if (state.imported && state.caseListed && state.buttons > 0 && !state.overlay && !state.filevault && state.ackSaved) {
+    if (state.imported && state.caseListed && state.buttons > 0 && !state.filevault && state.footer) {
       if (!readyAt) {
         readyAt = Date.now();
       }
@@ -286,6 +302,7 @@ async function parentMain() {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let buffer = "";
+    let errBuffer = "";
     let shot = null;
     let failed = null;
     const done = new Promise((resolve) => {
@@ -301,16 +318,32 @@ async function parentMain() {
           resolve();
         }
       });
-      // Sidecar logs are intentionally not echoed by this test.
-      child.stderr.resume();
-      child.once("exit", resolve);
-      child.once("error", resolve);
+      // Sidecar logs are intentionally not echoed; keep a tail for fail reasons.
+      child.stderr.on("data", (chunk) => {
+        errBuffer += chunk.toString("utf8");
+        if (errBuffer.length > 4000) {
+          errBuffer = errBuffer.slice(-4000);
+        }
+      });
+      child.once("exit", (code, signal) => {
+        if (!shot && !failed) {
+          const tail = errBuffer.trim().split("\n").slice(-3).join(" | ");
+          failed = `child exited before ready (code=${code}, signal=${signal || "none"})${tail ? `: ${tail}` : ""}`;
+        }
+        resolve();
+      });
+      child.once("error", (err) => {
+        if (!shot && !failed) {
+          failed = `child spawn error: ${err && err.message ? err.message : "unknown"}`;
+        }
+        resolve();
+      });
     });
     const timer = setTimeout(() => killPid(child.pid), 240000);
     try {
       await done;
       if (!shot) {
-        throw new Error(failed || "smoke failed");
+        throw new Error(failed || `${relaunch ? "relaunch" : "fresh launch"} smoke failed with no result`);
       }
       const sidecarPid = Number(fs.readFileSync(path.join(dataRoot, "sidecar.pid"), "utf8").trim());
       if (!Number.isInteger(sidecarPid) || sidecarPid <= 0) {

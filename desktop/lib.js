@@ -1,3 +1,4 @@
+// Changes: drop unused DISCLAIMER constant (footer/About live in the HTML template).
 // Changes: save-video names allow anatomical-orbit and topology-spin (#45).
 // Changes: validate Record names and JPEG frames, resolve ffmpeg, and the Movies/BronchoRoute path.
 // Changes: validate Save image names, PNG bytes, and the Pictures/BronchoRoute path.
@@ -12,7 +13,6 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const DISCLAIMER = "Research and education tool. Not a medical device. Not for diagnosis or treatment decisions.";
 const FILEVAULT_NOTE = "FileVault is off. Turn it on so Cases stored on this Mac stay encrypted.";
 const SPLASH = "Starting the AI stack… (first launch can take about a minute)";
 // os.totalmem() is physical bytes. A 16 GB Mac is not below this line.
@@ -349,7 +349,6 @@ function resolveFfmpeg(options = {}) {
 }
 
 module.exports = {
-  DISCLAIMER,
   FILEVAULT_NOTE,
   SPLASH,
   fileVaultIsOff,

@@ -1,3 +1,4 @@
+// Changes: research footer asserted from template text; DISCLAIMER export gone.
 // Changes: accept anatomical-orbit and topology-spin video names (#45).
 // Changes: builder publish feed, dmg+zip targets, and updater.js in the pack list.
 // Changes: usage stats stay off, including a config that omitted the key.
@@ -15,7 +16,6 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const {
-  DISCLAIMER,
   buildSidecarEnv,
   fileVaultIsOff,
   firstLocalCaseId,
@@ -158,7 +158,10 @@ test("viewer template vendors fonts and the research footer", () => {
   const rendered = fs.readFileSync(path.join(root, "renderer.html"), "utf8");
   const sentinel = "/*__AIRWAY_EMBED__*/";
   assert.equal(template.split(sentinel).length, 2);
-  assert.equal(template.includes(DISCLAIMER), true);
+  assert.equal(
+    template.includes("Research and education tool. Not a medical device. Not for diagnosis or treatment decisions."),
+    true,
+  );
   assert.equal(template.includes('id="library-open"'), true);
   assert.equal(template.includes("fonts.googleapis.com"), false);
   assert.equal(template.includes("fonts/IBMPlexSans-Regular.woff2"), true);
