@@ -1,3 +1,7 @@
+// Changes: selection summary uses textContent (no Archive description HTML).
+// Changes: focus initials when Series prompt opens so Electron insertText lands.
+// Changes: topbar archive-open, failure note placement, library meta/stats, weights error note.
+// Changes: intake shell rail, tokenised screens, drag-over/reading/failed states per design draft.
 // Changes: park #archive-open below/above Limitations so it clears fixed chrome.
 // Changes: download models before processing; existing Cases stay open.
 // Changes: Series override reason and one processing-failure sentence.
@@ -13,51 +17,155 @@
   let busy = false;
   let viewerOnly = false;
   let outdatedDismissed = null;
+  let libraryMeta = null;
+  const CHECK_SVG = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 6.2 5 8.6l4.5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const NOTE_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5v4.2M8 11v.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+  const DROP_ICON = '<div class="drop-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 14v3.5A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>';
+
+  function buildRail() {
+    const rail = document.createElement("aside");
+    rail.className = "intake-rail";
+    rail.setAttribute("aria-label", "BronchoRoute");
+    rail.innerHTML = `
+      <div class="intake-rail-top"><div class="intake-brand"><span>BronchoRoute</span>Airway route viewer</div></div>
+      <p class="intake-rail-label">Steps</p>
+      <ol class="intake-steps">
+        <li class="intake-step" data-step="models"><span class="mark">1</span>Models<span class="meta"></span></li>
+        <li class="intake-step" data-step="archive"><span class="mark">2</span>Archive<span class="meta"></span></li>
+        <li class="intake-step" data-step="series"><span class="mark">3</span>Series<span class="meta"></span></li>
+        <li class="intake-step" data-step="build"><span class="mark">4</span>Build<span class="meta"></span></li>
+      </ol>
+      <p class="intake-rail-label">On this Mac</p>
+      <nav class="intake-rail-nav">
+        <button type="button" data-intake-nav="new" id="import-library-new">New Case</button>
+        <button type="button" data-intake-nav="library" id="import-library">Case Library</button>
+      </nav>
+      <div class="intake-rail-spacer"></div>
+      <div class="intake-rail-local"><span class="dot"></span><span>Processing stays on this Mac</span></div>`;
+    return rail;
+  }
+
+  const sharedRail = buildRail();
+
+  function crumbHtml(parts) {
+    return parts.map((part, index) => {
+      if (index === parts.length - 1) return `<b>${part}</b>`;
+      return `${part}<i>/</i>`;
+    }).join("");
+  }
+
+  function wrapScreen(section, options) {
+    const main = document.createElement("div");
+    main.className = "intake-main";
+    const topbar = document.createElement("header");
+    topbar.className = "intake-topbar";
+    topbar.innerHTML = `<div class="intake-crumb">${crumbHtml(options.crumb)}</div>
+      <div class="intake-topbar-actions"></div>`;
+    const actions = topbar.querySelector(".intake-topbar-actions");
+    for (const action of options.actions || []) actions.appendChild(action);
+    const scroll = document.createElement("div");
+    scroll.className = "intake-scroll";
+    scroll.appendChild(options.panel);
+    main.append(topbar, scroll);
+    section.appendChild(main);
+    return topbar;
+  }
+
   const screen = document.createElement("section");
   screen.id = "import-screen";
   screen.hidden = true;
-  screen.innerHTML = `
-    <div class="import-heading"><span>BronchoRoute</span><span class="import-actions">
-      <button type="button" id="import-library">Library</button>
-      <button type="button" id="archive-back" hidden>Back to Case</button></span></div>
-    <main class="import-panel">
-      <p class="import-eyebrow">LOCAL CT PROCESSING</p>
-      <h1>Open an Archive</h1>
-      <p>Choose a reconstruction, build its airway model, then open the Case.</p>
-      <div id="archive-drop" tabindex="0" aria-label="Drop an Archive">
-        <strong>Drop an Archive here</strong><p>Zip, folder or DICOMDIR · processed on this Mac</p>
-        <button type="button" id="archive-choose">Choose…</button>
-        <input id="archive-file" type="file" accept=".zip" hidden>
+  const importPanel = document.createElement("main");
+  importPanel.className = "import-panel";
+  importPanel.innerHTML = `
+      <div id="archive-view">
+        <p class="import-eyebrow">Local CT processing</p>
+        <h1>Open an Archive</h1>
+        <p class="import-lede">Choose a reconstruction, build its airway model, then open the Case.</p>
+        <div class="drop-grid">
+          <div id="archive-drop" tabindex="0" aria-label="Drop an Archive">
+            <div class="drop-idle" id="drop-idle">
+              ${DROP_ICON}
+              <strong>Drop an Archive here</strong>
+              <p>Zip, folder or DICOMDIR · processed on this Mac</p>
+              <button type="button" id="archive-choose">Choose…</button>
+              <div class="drop-or" id="archive-hotkey" hidden><kbd>⌘</kbd> <kbd>O</kbd> also opens an Archive</div>
+              <input id="archive-file" type="file" accept=".zip" hidden>
+            </div>
+            <div class="drop-busy" id="drop-busy" hidden>
+              <div class="intake-spinner" aria-hidden="true"></div>
+              <strong>Reading Archive…</strong>
+            </div>
+          </div>
+          <ul class="drop-facts">
+            <li><b>Stays on this Mac</b><span>The Archive is read locally. Nothing is uploaded.</span></li>
+            <li><b>You choose the Series</b><span>Each reconstruction is checked for thickness, kernel and coverage.</span></li>
+            <li><b>About 6–7 minutes</b><span>Segmentation, airway model and graph run in the background.</span></li>
+          </ul>
+        </div>
       </div>
-      <p id="import-message" role="status" aria-live="polite"></p>
-      <button type="button" id="try-another" hidden>Try another Series</button>
-      <div id="series-picker" hidden><h2>Choose a Series</h2><div id="study-groups"></div>
-        <form id="import-confirm"><div id="clinician-prompt" hidden>
-          <label>Your initials <input id="clinician-initials" maxlength="12" autocomplete="off"></label>
-          <p>Saved locally for Case records.</p></div>
-          <label id="override-reason-field" hidden>Reason for choosing this Series
+      <div id="series-picker" hidden>
+        <p class="import-eyebrow" id="series-eyebrow">Archive</p>
+        <h1>Choose a Series</h1>
+        <p class="import-lede">The recommended reconstruction is preselected. Thin, sharp-kernel Series with full chest coverage give the best airway model.</p>
+        <div id="study-groups"></div>
+        <form id="import-confirm">
+          <div class="selection-summary" id="selection-summary"></div>
+          <div id="clinician-prompt" hidden>
+            <label class="field">Your initials <input id="clinician-initials" maxlength="12" autocomplete="off"></label>
+            <p>Saved locally for Case records.</p>
+          </div>
+          <label class="field" id="override-reason-field" hidden>Reason for choosing this Series
             <input id="override-reason" maxlength="200" autocomplete="off"></label>
           <button id="series-confirm" type="submit">Process Series</button>
         </form>
       </div>
-      <div id="processing" hidden><h2>Building the Case</h2>
-        <ol id="processing-steps"><li>Reading</li><li>Segmentation</li><li>Airway model</li><li>Graph</li></ol>
-        <p><span id="processing-elapsed">0 s</span> elapsed · Estimated 6–7 min</p>
-        <button type="button" id="processing-cancel">Cancel</button>
+      <div id="processing" hidden>
+        <p class="import-eyebrow">Local CT processing</p>
+        <h1>Building the Case</h1>
+        <p class="import-lede">You can leave this screen open. The Case opens by itself when the graph is ready.</p>
+        <ol id="processing-steps">
+          <li data-state="pending"><div class="track"><i></i></div><div class="n">01</div><div class="t">Reading</div><div class="s"></div></li>
+          <li data-state="pending"><div class="track"><i></i></div><div class="n">02</div><div class="t">Segmentation</div><div class="s"></div></li>
+          <li data-state="pending"><div class="track"><i></i></div><div class="n">03</div><div class="t">Airway model</div><div class="s"></div></li>
+          <li data-state="pending"><div class="track"><i></i></div><div class="n">04</div><div class="t">Graph</div><div class="s"></div></li>
+        </ol>
+        <div class="processing-clock"><span><span id="processing-elapsed">0 s</span> elapsed</span><span>Estimated 6–7 min</span></div>
+        <div class="processing-actions">
+          <button type="button" id="processing-cancel" class="btn-ghost">Cancel</button>
+          <button type="button" id="try-another" hidden>Try another Series</button>
+        </div>
       </div>
-    </main>`;
+      <p id="import-message" role="status" aria-live="polite"></p>`;
+  const archiveBack = document.createElement("button");
+  archiveBack.type = "button";
+  archiveBack.id = "archive-back";
+  archiveBack.className = "btn-ghost btn-sm";
+  archiveBack.textContent = "Back to Case";
+  archiveBack.hidden = true;
+  wrapScreen(screen, {
+    crumb: ["New Case", "Archive"],
+    panel: importPanel,
+    actions: [archiveBack],
+  });
   document.body.appendChild(screen);
+
   const libraryScreen = document.createElement("section");
   libraryScreen.id = "library-screen";
   libraryScreen.hidden = true;
-  libraryScreen.innerHTML = `
-    <div class="import-heading"><span>BronchoRoute</span>
-      <button type="button" id="library-back">Back</button></div>
-    <main class="import-panel">
-      <p class="import-eyebrow">CASE LIBRARY</p>
-      <h1>Case Library</h1>
+  const libraryPanel = document.createElement("main");
+  libraryPanel.className = "import-panel";
+  libraryPanel.innerHTML = `
+      <div class="lib-head">
+        <div>
+          <p class="import-eyebrow">On this Mac</p>
+          <h1>Case Library</h1>
+        </div>
+        <div class="lib-stats">
+          <div><b id="library-count">0</b>Cases</div>
+          <div id="library-total"></div>
+        </div>
+      </div>
       <p id="library-warn" hidden>Library is larger than 10 GB.</p>
-      <p id="library-total"></p>
       <p id="library-empty" hidden>No Cases stored.</p>
       <div id="library-table-wrap"><table id="library-table">
         <thead><tr>
@@ -66,14 +174,26 @@
         <tbody id="library-rows"></tbody>
       </table></div>
       <p id="library-message" role="alert"></p>
-      <button type="button" id="library-delete-all">Delete all</button>
-    </main>
-    <dialog id="library-confirm" aria-labelledby="library-confirm-text">
-      <p id="library-confirm-text"></p>
-      <button type="button" id="library-confirm-yes">Delete</button>
-      <button type="button" id="library-confirm-no">Cancel</button>
-    </dialog>`;
+      <div class="lib-foot">
+        <button type="button" id="library-delete-all" class="btn-danger btn-sm">Delete all</button>
+      </div>
+      <dialog id="library-confirm" aria-labelledby="library-confirm-text">
+        <p id="library-confirm-text"></p>
+        <button type="button" id="library-confirm-yes" class="btn-danger-solid">Delete</button>
+        <button type="button" id="library-confirm-no" class="btn-ghost">Cancel</button>
+      </dialog>`;
+  const libraryBack = document.createElement("button");
+  libraryBack.type = "button";
+  libraryBack.id = "library-back";
+  libraryBack.className = "btn-ghost btn-sm";
+  libraryBack.textContent = "Back";
+  wrapScreen(libraryScreen, {
+    crumb: ["Case Library"],
+    panel: libraryPanel,
+    actions: [libraryBack],
+  });
   document.body.appendChild(libraryScreen);
+
   const outdated = document.createElement("div");
   outdated.id = "outdated-note";
   outdated.hidden = true;
@@ -83,23 +203,41 @@
     <p id="outdated-text">Processed with an older version — Reprocess?</p>
     <p id="outdated-error" role="alert"></p>
     <button type="button" id="outdated-reprocess">Reprocess</button>
-    <button type="button" id="outdated-open">Open anyway</button>`;
+    <button type="button" id="outdated-open" class="btn-ghost">Open anyway</button>`;
   document.body.appendChild(outdated);
+
   const weightsScreen = document.createElement("section");
   weightsScreen.id = "weights-screen";
   weightsScreen.hidden = true;
-  weightsScreen.innerHTML = `
-    <div class="import-heading"><span>BronchoRoute</span></div>
-    <main class="import-panel">
-      <p class="import-eyebrow">LOCAL CT PROCESSING</p>
+  const weightsPanel = document.createElement("main");
+  weightsPanel.className = "import-panel";
+  weightsPanel.innerHTML = `
+      <p class="import-eyebrow">One-time setup</p>
       <h1 id="weights-title">Download models</h1>
-      <p>These models are required before an Archive can be processed. Cases already on this Mac still open.</p>
-      <p id="weights-progress" role="status" aria-live="polite">0.0 MB / 0.0 MB · 0%</p>
-      <p id="weights-error" role="alert"></p>
-      <button type="button" id="weights-cancel">Cancel</button>
-      <button type="button" id="weights-retry" hidden>Retry</button>
-    </main>`;
+      <p class="import-lede">These models are required before an Archive can be processed. Cases already on this Mac still open.</p>
+      <section class="weights-meter" aria-labelledby="weights-title">
+        <div class="weights-meter-head">
+          <span class="label">Segmentation models</span>
+          <span class="pct" id="weights-pct">0%</span>
+        </div>
+        <div class="weights-bar" id="weights-bar"><i id="weights-bar-fill"></i></div>
+        <div class="weights-meter-foot">
+          <span id="weights-progress" role="status" aria-live="polite">0.0 MB / 0.0 MB · 0%</span>
+        </div>
+        <p id="weights-error" role="alert"></p>
+      </section>
+      <div class="weights-actions">
+        <button type="button" id="weights-cancel" class="btn-ghost">Cancel</button>
+        <button type="button" id="weights-retry" hidden>Retry</button>
+      </div>`;
+  wrapScreen(weightsScreen, {
+    crumb: ["Setup", "Models"],
+    panel: weightsPanel,
+    actions: [],
+  });
   document.body.appendChild(weightsScreen);
+  screen.insertBefore(sharedRail, screen.firstChild);
+
   const get = id => document.getElementById(id);
   const open = document.createElement("button");
   open.id = "archive-open";
@@ -107,34 +245,148 @@
   open.hidden = true;
   document.body.appendChild(open);
 
+  if (window.bronchoroute) get("archive-hotkey").hidden = false;
+
   function overlayOpen() {
     return !screen.hidden || !libraryScreen.hidden || !weightsScreen.hidden;
   }
 
+  function mountArchiveOpenInTopbar(host) {
+    const actions = host.querySelector(".intake-topbar-actions");
+    if (!actions) return;
+    open.classList.add("btn-ghost", "btn-sm");
+    open.style.top = "";
+    open.style.right = "";
+    if (open.parentElement !== actions) actions.insertBefore(open, actions.firstChild);
+  }
+
+  function restoreArchiveOpenToBody() {
+    open.classList.remove("btn-ghost", "btn-sm");
+    if (open.parentElement !== document.body) document.body.appendChild(open);
+  }
+
+  function syncArchiveOpen() {
+    if (viewerOnly) {
+      open.hidden = true;
+      restoreArchiveOpenToBody();
+      return;
+    }
+    const onImportForm = !screen.hidden && get("processing").hidden && libraryScreen.hidden;
+    open.hidden = onImportForm || !weightsScreen.hidden;
+    if (open.hidden) {
+      if (!overlayOpen()) restoreArchiveOpenToBody();
+      return;
+    }
+    if (!libraryScreen.hidden) {
+      mountArchiveOpenInTopbar(libraryScreen);
+      return;
+    }
+    if (!screen.hidden && !get("processing").hidden) {
+      mountArchiveOpenInTopbar(screen);
+      return;
+    }
+    restoreArchiveOpenToBody();
+    placeArchiveOpen();
+  }
+
   function placeArchiveOpen() {
     if (open.hidden) return;
+    if (open.parentElement !== document.body) return;
     let top = 14;
     let right = 18;
-    if (!overlayOpen()) {
-      const panel = document.getElementById("limitations-panel");
-      if (panel) {
-        const box = panel.getBoundingClientRect();
-        if (box.width > 0 && box.height > 0) {
-          const gap = 8;
-          right = Math.max(18, Math.round(window.innerWidth - box.right));
-          const btnH = open.offsetHeight || 40;
-          if (box.top < window.innerHeight * 0.5) {
-            top = Math.ceil(box.bottom + gap);
-          } else {
-            top = Math.max(14, Math.floor(box.top - gap - btnH));
-          }
-          const maxTop = Math.max(14, window.innerHeight - btnH - gap);
-          if (top > maxTop) top = maxTop;
+    const panel = document.getElementById("limitations-panel");
+    if (panel) {
+      const box = panel.getBoundingClientRect();
+      if (box.width > 0 && box.height > 0) {
+        const gap = 8;
+        right = Math.max(18, Math.round(window.innerWidth - box.right));
+        const btnH = open.offsetHeight || 40;
+        if (box.top < window.innerHeight * 0.5) {
+          top = Math.ceil(box.bottom + gap);
+        } else {
+          top = Math.max(14, Math.floor(box.top - gap - btnH));
         }
+        const maxTop = Math.max(14, window.innerHeight - btnH - gap);
+        if (top > maxTop) top = maxTop;
       }
     }
     open.style.top = `${top}px`;
     open.style.right = `${right}px`;
+  }
+
+  function setCrumb(host, parts) {
+    const crumb = host.querySelector(".intake-crumb");
+    if (crumb) crumb.innerHTML = crumbHtml(parts);
+  }
+
+  function syncLibraryNavMeta() {
+    const button = get("import-library");
+    if (!button) return;
+    const existing = button.querySelector(".mono");
+    if (existing) existing.remove();
+    if (!libraryMeta || libraryMeta.count <= 0) return;
+    const meta = document.createElement("span");
+    meta.className = "mono";
+    meta.textContent = `${libraryMeta.count} · ${formatBytes(libraryMeta.total_bytes)}`;
+    button.appendChild(meta);
+  }
+
+  function mountRail(host, mode) {
+    if (sharedRail.parentElement !== host) host.insertBefore(sharedRail, host.firstChild);
+    const order = ["models", "archive", "series", "build"];
+    const active = mode === "library" ? -1 : order.indexOf(mode);
+    sharedRail.querySelectorAll(".intake-step").forEach((li, index) => {
+      const state = active < 0 ? "pending" : index < active ? "done" : index === active ? "active" : "pending";
+      li.dataset.state = state;
+      const mark = li.querySelector(".mark");
+      mark.innerHTML = state === "done" ? CHECK_SVG : String(index + 1);
+    });
+    const libBtn = get("import-library");
+    const newBtn = get("import-library-new");
+    if (libBtn) {
+      if (mode === "library") libBtn.setAttribute("aria-current", "page");
+      else libBtn.removeAttribute("aria-current");
+    }
+    if (newBtn) {
+      if (mode === "archive" || mode === "series" || mode === "build") newBtn.setAttribute("aria-current", "page");
+      else newBtn.removeAttribute("aria-current");
+    }
+    syncLibraryNavMeta();
+  }
+
+  function syncIntakeChrome() {
+    importPanel.classList.toggle("wide", !get("series-picker").hidden && get("processing").hidden);
+    if (!weightsScreen.hidden) {
+      mountRail(weightsScreen, "models");
+      setCrumb(weightsScreen, ["Setup", "Models"]);
+      syncArchiveOpen();
+      return;
+    }
+    if (!libraryScreen.hidden) {
+      mountRail(libraryScreen, "library");
+      setCrumb(libraryScreen, ["Case Library"]);
+      syncArchiveOpen();
+      return;
+    }
+    if (screen.hidden) {
+      syncArchiveOpen();
+      return;
+    }
+    if (!get("processing").hidden) {
+      mountRail(screen, "build");
+      setCrumb(screen, ["New Case", "Build"]);
+      syncArchiveOpen();
+      return;
+    }
+    if (!get("series-picker").hidden) {
+      mountRail(screen, "series");
+      setCrumb(screen, ["New Case", "Series"]);
+      syncArchiveOpen();
+      return;
+    }
+    mountRail(screen, "archive");
+    setCrumb(screen, ["New Case", "Archive"]);
+    syncArchiveOpen();
   }
 
   async function api(url, options) {
@@ -148,8 +400,24 @@
     return data;
   }
 
-  function message(text) {
-    get("import-message").textContent = text;
+  function message(text, kind) {
+    const el = get("import-message");
+    el.classList.remove("is-error", "is-progress", "intake-note", "intake-note-error");
+    if (!text) {
+      el.replaceChildren();
+      return;
+    }
+    if (kind === "progress") {
+      el.textContent = text;
+      el.classList.add("is-progress");
+      return;
+    }
+    el.replaceChildren();
+    el.insertAdjacentHTML("beforeend", NOTE_ICON);
+    const span = document.createElement("span");
+    span.textContent = text;
+    el.appendChild(span);
+    el.classList.add("intake-note", "intake-note-error", "is-error");
   }
 
   function libraryMessage(text) {
@@ -176,16 +444,52 @@
     return String(value).slice(0, 10);
   }
 
+  function setDropBusy(on) {
+    const drop = get("archive-drop");
+    drop.classList.toggle("busy", on);
+    get("drop-idle").hidden = on;
+    get("drop-busy").hidden = !on;
+  }
+
+  function processingLede() {
+    return get("processing").querySelector(".import-lede");
+  }
+
+  function parkImportMessage(failed) {
+    const msg = get("import-message");
+    const actions = get("processing").querySelector(".processing-actions");
+    if (failed && actions) {
+      actions.parentElement.insertBefore(msg, actions);
+    } else if (msg.parentElement !== importPanel) {
+      importPanel.appendChild(msg);
+    }
+  }
+
+  function setProcessingFailed(on) {
+    const lede = processingLede();
+    if (lede) lede.hidden = on;
+    get("processing-cancel").hidden = on;
+    get("try-another").hidden = !on;
+    parkImportMessage(on);
+  }
+
   function showProcessing() {
     libraryScreen.hidden = true;
     outdated.hidden = true;
     screen.hidden = false;
     get("series-picker").hidden = true;
+    get("archive-view").hidden = true;
     get("archive-drop").hidden = true;
     get("processing").hidden = false;
-    get("try-another").hidden = true;
+    setProcessingFailed(false);
     get("processing-cancel").disabled = true;
     message("");
+    Array.from(get("processing-steps").children).forEach(li => {
+      li.dataset.state = "pending";
+      const status = li.querySelector(".s");
+      if (status) status.textContent = "";
+    });
+    syncIntakeChrome();
   }
 
   async function cancel() {
@@ -194,10 +498,12 @@
     await api(`/api/cases/${activeCase}/jobs/latest/cancel`, { method: "POST" });
     activeCase = null;
     get("processing").hidden = true;
+    get("archive-view").hidden = false;
     get("archive-drop").hidden = false;
-    get("try-another").hidden = true;
+    setProcessingFailed(false);
     get("processing-cancel").disabled = false;
-    message("Processing cancelled. Open an Archive to try again.");
+    message("Processing cancelled. Open an Archive to try again.", "progress");
+    syncIntakeChrome();
   }
 
   async function prepare() {
@@ -214,15 +520,19 @@
     screen.hidden = false;
     get("series-picker").hidden = true;
     get("processing").hidden = true;
+    get("archive-view").hidden = false;
     get("archive-drop").hidden = false;
-    get("try-another").hidden = true;
+    setDropBusy(false);
+    setProcessingFailed(false);
     get("archive-back").hidden = !new URLSearchParams(location.search).get("case");
     message("");
+    syncIntakeChrome();
     return true;
   }
 
-  function cell(row, value) {
+  function cell(row, value, className) {
     const td = document.createElement("td");
+    if (className) td.className = className;
     td.textContent = value;
     row.appendChild(td);
     return td;
@@ -288,6 +598,12 @@
     return text || "Model download failed.";
   }
 
+  function updateWeightsMeter(received, total, pct) {
+    get("weights-pct").textContent = `${pct}%`;
+    get("weights-bar-fill").style.width = `${pct}%`;
+    get("weights-progress").textContent = `${formatMb(received)} MB / ${formatMb(total)} MB · ${pct}%`;
+  }
+
   function showModelDownload(status) {
     const total = status.missing.reduce((sum, file) => sum + file.bytes, 0);
     const screenEl = get("weights-screen");
@@ -295,12 +611,17 @@
     const error = get("weights-error");
     const retry = get("weights-retry");
     const cancel = get("weights-cancel");
+    const bar = get("weights-bar");
     get("weights-title").textContent = `Download models (~${Math.max(1, Math.round(total / (1024 * 1024)))} MB)`;
     progress.textContent = `0.0 MB / ${formatMb(total)} MB · 0%`;
-    error.textContent = "";
+    get("weights-pct").textContent = "0%";
+    get("weights-bar-fill").style.width = "0%";
+    error.replaceChildren();
+    bar.classList.remove("failed");
     retry.hidden = true;
     cancel.disabled = false;
     screenEl.hidden = false;
+    syncIntakeChrome();
     let stop = () => {};
     let cancelled = false;
     let settled = false;
@@ -312,18 +633,20 @@
         cancel.removeEventListener("click", onCancel);
         retry.removeEventListener("click", onRetry);
         screenEl.hidden = true;
+        syncIntakeChrome();
         resolve(ok);
       };
       const onProgress = (payload) => {
         const received = Number(payload.received) || 0;
         const all = Number(payload.total) || total;
         const pct = all > 0 && received >= all ? 100 : Math.min(99, Math.floor(all > 0 ? (received / all) * 100 : 0));
-        progress.textContent = `${formatMb(received)} MB / ${formatMb(all)} MB · ${pct}%`;
+        updateWeightsMeter(received, all, pct);
       };
       const start = () => {
         stop();
         cancelled = false;
-        error.textContent = "";
+        error.replaceChildren();
+        bar.classList.remove("failed");
         retry.hidden = true;
         cancel.disabled = false;
         stop = window.bronchoroute.onWeightsProgress(onProgress);
@@ -334,7 +657,13 @@
             finish(false);
             return;
           }
-          error.textContent = weightsFailureText(err);
+          const text = weightsFailureText(err);
+          error.replaceChildren();
+          error.insertAdjacentHTML("beforeend", NOTE_ICON);
+          const span = document.createElement("span");
+          span.textContent = text;
+          error.appendChild(span);
+          bar.classList.add("failed");
           retry.hidden = false;
         });
       };
@@ -392,6 +721,7 @@
       } else if (source === "picker") {
         screen.hidden = false;
         get("series-picker").hidden = false;
+        get("archive-view").hidden = true;
         get("archive-drop").hidden = true;
         message(text);
       } else {
@@ -399,6 +729,7 @@
         showOutdated(caseId);
         get("outdated-error").textContent = text;
       }
+      syncIntakeChrome();
     } finally {
       busy = false;
     }
@@ -426,34 +757,50 @@
   async function showLibrary() {
     libraryScreen.hidden = false;
     libraryMessage("");
+    syncIntakeChrome();
     const body = await api("/api/library");
+    libraryMeta = { count: body.cases.length, total_bytes: body.total_bytes };
     get("library-warn").hidden = !body.warn;
     get("library-total").textContent = `Total size ${formatBytes(body.total_bytes)}`;
+    get("library-count").textContent = String(body.cases.length);
     const rows = get("library-rows");
     rows.replaceChildren();
     for (const item of body.cases) {
       const tr = document.createElement("tr");
-      cell(tr, item.id);
-      cell(tr, formatStudyDate(item.study_date));
+      const idCell = cell(tr, "");
+      const caseSpan = document.createElement("span");
+      caseSpan.className = "case";
+      caseSpan.textContent = item.id;
+      idCell.appendChild(caseSpan);
+      cell(tr, formatStudyDate(item.study_date), "num");
       cell(tr, item.series_description || "—");
-      cell(tr, formatProcessed(item.processed_at));
-      cell(tr, formatBytes(item.size_bytes));
-      cell(tr, item.outdated ? "Yes" : "No");
+      cell(tr, formatProcessed(item.processed_at), "num");
+      cell(tr, formatBytes(item.size_bytes), "num");
+      const status = cell(tr, "");
+      const chip = document.createElement("span");
+      chip.className = `series-badge ${item.outdated ? "chip-warn" : "chip-ok"}`;
+      chip.textContent = item.outdated ? "Yes" : "No";
+      status.appendChild(chip);
       const actions = cell(tr, "");
-      actions.appendChild(actionButton("Open", "library-open", () => openCase(item.id)));
+      const wrap = document.createElement("div");
+      wrap.className = "row-actions";
+      wrap.appendChild(actionButton("Open", "library-open btn-sm", () => openCase(item.id)));
       if (!viewerOnly) {
-        actions.append(
-          actionButton("Reprocess", "library-reprocess", () => reprocess(item.id, "library")),
-          actionButton("Delete", "library-delete", () => removeCase(item.id)),
+        wrap.append(
+          actionButton("Reprocess", "library-reprocess btn-ghost btn-sm", () => reprocess(item.id, "library")),
+          actionButton("Delete", "library-delete btn-quiet btn-sm", () => removeCase(item.id)),
         );
       }
+      actions.appendChild(wrap);
       rows.appendChild(tr);
     }
     get("library-empty").hidden = body.cases.length > 0;
+    get("library-table-wrap").hidden = body.cases.length === 0;
     const all = get("library-delete-all");
     all.hidden = viewerOnly;
     all.disabled = body.cases.length === 0;
     all.dataset.count = String(body.cases.length);
+    syncIntakeChrome();
   }
 
   async function removeCase(caseId) {
@@ -496,6 +843,21 @@
     return Boolean(row && row.status === "usable" && recommended);
   }
 
+  function syncSelectionSummary() {
+    const summary = get("selection-summary");
+    const row = selectedSeries();
+    if (!row) {
+      summary.replaceChildren();
+      return;
+    }
+    const bold = document.createElement("b");
+    bold.textContent = row.description || "CT Series";
+    const count = document.createElement("span");
+    count.className = "mono";
+    count.textContent = String(row.count);
+    summary.replaceChildren("Selected ", bold, " · ", count, " slices");
+  }
+
   function syncProcessButton() {
     const input = get("override-reason");
     const needed = overrideNeeded();
@@ -510,6 +872,11 @@
     const row = selectedSeries();
     const blank = needed && !input.value.trim();
     get("series-confirm").disabled = !choice || Boolean(row && row.in_library) || blank;
+    screen.querySelectorAll(".series-row").forEach(tr => {
+      const radio = tr.querySelector('input[name="series-choice"]');
+      tr.classList.toggle("selected", Boolean(radio && radio.checked));
+    });
+    syncSelectionSummary();
   }
 
   async function scan(path, file) {
@@ -518,7 +885,8 @@
     else if (file) archiveSource = { path: null, file };
     busy = true;
     get("archive-choose").disabled = true;
-    message("Reading Archive…");
+    setDropBusy(true);
+    message("Reading Archive…", "progress");
     try {
       session = await api(path ? "/api/imports/scan" : "/api/imports/upload", {
         method: "POST",
@@ -528,23 +896,37 @@
       const groups = get("study-groups");
       groups.replaceChildren();
       for (const study of session.studies) {
-        const heading = document.createElement("h3");
-        heading.textContent = [study.date, study.description].filter(Boolean).join(" · ") || "Study";
-        groups.appendChild(heading);
+        const section = document.createElement("section");
+        section.className = "study";
+        const head = document.createElement("div");
+        head.className = "study-head";
+        const title = document.createElement("h2");
+        title.textContent = study.description || "Study";
+        const date = document.createElement("span");
+        date.className = "mono";
+        date.textContent = formatStudyDate(study.date);
+        head.append(title, date);
+        section.appendChild(head);
+        const wrap = document.createElement("div");
+        wrap.className = "table-wrap";
         const table = document.createElement("table");
-        const head = document.createElement("tr");
-        for (const title of ["Series", "Thickness / spacing", "Kernel", "Contrast", "Coverage", "Slices", "Suitability"]) {
+        const headRow = document.createElement("tr");
+        for (const label of ["Series", "Thickness / spacing", "Kernel", "Contrast", "Coverage", "Slices", "Suitability"]) {
           const th = document.createElement("th");
-          th.textContent = title;
-          head.appendChild(th);
+          th.textContent = label;
+          headRow.appendChild(th);
         }
         const thead = document.createElement("thead");
-        thead.appendChild(head);
+        thead.appendChild(headRow);
         table.appendChild(thead);
         const tbody = document.createElement("tbody");
         for (const series of study.series) {
           const tr = document.createElement("tr");
+          tr.className = "series-row";
+          if (series.status === "not_usable") tr.classList.add("disabled");
+          if (series.status === "recommended") tr.classList.add("selected");
           const label = document.createElement("label");
+          label.className = "series-name";
           const radio = document.createElement("input");
           radio.type = "radio";
           radio.name = "series-choice";
@@ -553,47 +935,76 @@
           radio.disabled = series.status === "not_usable";
           radio.addEventListener("change", syncProcessButton);
           label.append(radio, document.createTextNode(series.description || "CT Series"));
-          cell(tr, "").appendChild(label);
-          cell(tr, `${series.slice_thickness_mm} / ${series.spacing_mm} mm`);
-          cell(tr, series.kernel_class);
-          cell(tr, series.contrast ? "Contrast" : "Non-contrast");
-          cell(tr, `${Math.round(series.z_span_mm)} mm`);
-          cell(tr, series.count);
-          const suitability = cell(tr, "");
-          const badge = document.createElement("strong");
-          badge.className = `series-badge ${series.status}`;
-          badge.textContent = { recommended: "Recommended", usable: "Usable", not_usable: "Not usable" }[series.status];
-          suitability.append(badge, document.createTextNode(` ${series.reason || ""}`));
+          const nameCell = cell(tr, "");
+          nameCell.appendChild(label);
           if (series.in_library) {
-            const hit = document.createElement("strong");
-            hit.className = "series-badge in-library";
-            hit.textContent = "In library";
+            const hit = document.createElement("div");
+            hit.className = "lib-hit";
+            const badge = document.createElement("strong");
+            badge.className = "series-badge in-library";
+            badge.textContent = "In library";
             const openHit = document.createElement("button");
             openHit.type = "button";
-            openHit.className = "series-open";
+            openHit.className = "series-open btn-ghost btn-sm";
             openHit.textContent = "Open";
-            openHit.addEventListener("click", () => {
+            openHit.addEventListener("click", event => {
+              event.stopPropagation();
               openCase(series.in_library).catch(error => message(error.message));
             });
             const again = document.createElement("button");
             again.type = "button";
-            again.className = "series-reprocess";
+            again.className = "series-reprocess btn-quiet btn-sm";
             again.textContent = "Reprocess";
-            again.addEventListener("click", () => reprocess(series.in_library, "picker"));
-            suitability.append(document.createTextNode(" "), hit, openHit, again);
+            again.addEventListener("click", event => {
+              event.stopPropagation();
+              reprocess(series.in_library, "picker");
+            });
+            hit.append(badge, openHit, again);
+            nameCell.appendChild(hit);
           }
+          cell(tr, `${series.slice_thickness_mm} / ${series.spacing_mm} mm`, "num");
+          cell(tr, series.kernel_class);
+          cell(tr, series.contrast ? "Contrast" : "Non-contrast");
+          cell(tr, `${Math.round(series.z_span_mm)} mm`, "num");
+          cell(tr, series.count, "num");
+          const suitability = cell(tr, "");
+          const badge = document.createElement("strong");
+          badge.className = `series-badge ${series.status}`;
+          badge.textContent = { recommended: "Recommended", usable: "Usable", not_usable: "Not usable" }[series.status];
+          suitability.appendChild(badge);
+          if (series.reason) {
+            const reason = document.createElement("span");
+            reason.className = "reason";
+            reason.textContent = series.reason;
+            suitability.appendChild(reason);
+          }
+          tr.addEventListener("click", event => {
+            if (event.target.closest("button")) return;
+            if (radio.disabled) return;
+            radio.checked = true;
+            syncProcessButton();
+          });
           tbody.appendChild(tr);
         }
         table.appendChild(tbody);
-        groups.appendChild(table);
+        wrap.appendChild(table);
+        section.appendChild(wrap);
+        groups.appendChild(section);
       }
       const clinician = await api("/api/settings");
       get("clinician-prompt").hidden = Boolean(clinician.initials);
       get("series-picker").hidden = false;
+      get("archive-view").hidden = true;
       get("archive-drop").hidden = true;
+      setDropBusy(false);
       syncProcessButton();
       message("");
+      syncIntakeChrome();
+      if (!get("clinician-prompt").hidden) {
+        get("clinician-initials").focus();
+      }
     } catch (error) {
+      setDropBusy(false);
       message(error.message);
     } finally {
       busy = false;
@@ -610,7 +1021,17 @@
         const steps = ["reading", "segmentation", "airway model", "graph"];
         const index = steps.indexOf(job.step);
         Array.from(get("processing-steps").children).forEach((li, i) => {
-          li.dataset.state = i < index ? "done" : i === index ? "active" : "pending";
+          const status = li.querySelector(".s");
+          if (i < index) {
+            li.dataset.state = "done";
+            if (status) status.textContent = "done";
+          } else if (i === index) {
+            li.dataset.state = "active";
+            if (status) status.textContent = "running…";
+          } else {
+            li.dataset.state = "pending";
+            if (status) status.textContent = "";
+          }
         });
         if (job.status === "succeeded") {
           location.assign(`/?case=${encodeURIComponent(caseId)}`);
@@ -618,15 +1039,25 @@
         }
         if (job.status === "failed") {
           activeCase = null;
-          get("processing").hidden = true;
-          get("archive-drop").hidden = false;
           if (job.error === "cancelled") {
-            get("try-another").hidden = true;
-            message("Processing cancelled. Open an Archive to try again.");
+            get("processing").hidden = true;
+            get("archive-view").hidden = false;
+            get("archive-drop").hidden = false;
+            setProcessingFailed(false);
+            message("Processing cancelled. Open an Archive to try again.", "progress");
+            syncIntakeChrome();
             return;
           }
-          get("try-another").hidden = false;
+          const kids = Array.from(get("processing-steps").children);
+          const failed = kids.find(li => li.dataset.state === "active") || kids[Math.max(0, index)];
+          if (failed) {
+            failed.dataset.state = "failed";
+            const status = failed.querySelector(".s");
+            if (status) status.textContent = "stopped";
+          }
+          setProcessingFailed(true);
           message(`${job.error}.`);
+          syncIntakeChrome();
           return;
         }
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -663,9 +1094,12 @@
         });
       }
       get("series-picker").hidden = true;
+      get("archive-view").hidden = true;
       get("processing").hidden = false;
+      setProcessingFailed(false);
       get("processing-cancel").disabled = true;
-      message("Reading Series…");
+      message("Reading Series…", "progress");
+      syncIntakeChrome();
       const result = await api("/api/imports", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -682,8 +1116,12 @@
     } catch (error) {
       get("processing").hidden = true;
       get("series-picker").hidden = false;
-      if (error.status === 412) get("clinician-prompt").hidden = false;
+      if (error.status === 412) {
+        get("clinician-prompt").hidden = false;
+        get("clinician-initials").focus();
+      }
       message(error.message);
+      syncIntakeChrome();
     } finally {
       busy = false;
       syncProcessButton();
@@ -691,7 +1129,8 @@
   });
   async function tryAnother() {
     const source = archiveSource;
-    get("try-another").hidden = true;
+    setProcessingFailed(false);
+    get("processing").hidden = true;
     if (!source || (!source.path && !source.file)) {
       await prepare();
       return;
@@ -708,16 +1147,26 @@
     }
   }
   open.addEventListener("click", () => prepare().catch(error => message(error.message)));
-  get("archive-choose").addEventListener("click", () => choose().catch(error => message(error.message)));
-  get("archive-back").addEventListener("click", () => { screen.hidden = true; });
+  get("archive-choose").addEventListener("click", event => {
+    event.stopPropagation();
+    choose().catch(error => message(error.message));
+  });
+  get("archive-drop").addEventListener("click", event => {
+    if (event.target.closest("button") || event.target.closest("input")) return;
+    choose().catch(error => message(error.message));
+  });
+  get("archive-back").addEventListener("click", () => { screen.hidden = true; syncIntakeChrome(); });
   get("import-library").addEventListener("click", () => {
     showLibrary().catch(error => message(error.message));
+  });
+  get("import-library-new").addEventListener("click", () => {
+    prepare().catch(error => message(error.message));
   });
   get("library-open").addEventListener("click", event => {
     event.preventDefault();
     showLibrary().catch(error => libraryMessage(error.message));
   });
-  get("library-back").addEventListener("click", () => { libraryScreen.hidden = true; });
+  get("library-back").addEventListener("click", () => { libraryScreen.hidden = true; syncIntakeChrome(); });
   get("library-delete-all").addEventListener("click", () => {
     removeAll().catch(error => libraryMessage(error.message));
   });
@@ -736,9 +1185,26 @@
     event.target.value = "";
     if (file) scan(null, file);
   });
+  const drop = get("archive-drop");
+  drop.addEventListener("dragenter", event => {
+    event.preventDefault();
+    drop.classList.add("drag-over");
+  });
+  drop.addEventListener("dragover", event => {
+    event.preventDefault();
+    drop.classList.add("drag-over");
+  });
+  drop.addEventListener("dragleave", () => {
+    drop.classList.remove("drag-over");
+  });
+  drop.addEventListener("drop", event => {
+    event.preventDefault();
+    drop.classList.remove("drag-over");
+  });
   document.addEventListener("dragover", event => event.preventDefault());
   document.addEventListener("drop", event => {
     event.preventDefault();
+    drop.classList.remove("drag-over");
     const file = event.dataTransfer.files[0];
     if (!file) return;
     const path = window.bronchoroute?.getPathForFile(file);
@@ -772,7 +1238,14 @@
     placeArchiveOpen();
     const cases = await api("/api/cases");
     if (!cases.length) await prepare();
-    placeArchiveOpen();
+    syncArchiveOpen();
+    try {
+      const library = await api("/api/library");
+      libraryMeta = { count: library.cases.length, total_bytes: library.total_bytes };
+      syncLibraryNavMeta();
+    } catch (error) {
+      libraryMeta = null;
+    }
   }).catch(() => {});
   maybeOutdated();
 })();
