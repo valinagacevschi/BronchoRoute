@@ -42,6 +42,7 @@ script. Do not edit by hand.
 - fastremap 1.20.0 — LGPL-3.0 — https://github.com/seung-lab/fastremap/
 - filelock 3.32.3 — MIT — https://github.com/tox-dev/py-filelock
 - fill-voids 2.1.2 — LGPL-3.0-or-later — https://github.com/seung-lab/fill_voids/
+- flatbuffers 25.12.19 — Apache-2.0 — https://github.com/google/flatbuffers
 - fonttools 4.63.0 — MIT — http://github.com/fonttools/fonttools
 - frozenlist 1.8.0 — Apache-2.0 — https://matrix.to/#/#aio-libs:matrix.org
 - fsspec 2026.7.0 — BSD-3-Clause — https://github.com/fsspec/filesystem_spec
@@ -86,6 +87,8 @@ script. Do not edit by hand.
 - nnunetv2 2.8.1 — Apache-2.0 — https://github.com/MIC-DKFZ/nnUNet
 - numexpr 2.14.2 — MIT — https://github.com/pydata/numexpr
 - numpy 2.5.2 — BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 — https://numpy.org
+- onnxruntime 1.31.1 — MIT — https://onnxruntime.ai
+- opencv-python-headless 5.0.0.93 — Apache-2.0 — https://github.com/opencv/opencv-python
 - opentelemetry-api 1.45.1 — Apache-2.0 — https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api
 - orderly-set 5.5.0 — MIT — https://github.com/seperman/orderly-set
 - osteoid 0.6.0 — BSD-3-Clause — unknown
@@ -98,6 +101,7 @@ script. Do not edit by hand.
 - pox 0.3.7 — BSD-3-Clause — https://github.com/uqfoundation/pox
 - ppft 1.7.8 — BSD-3-Clause — https://github.com/uqfoundation/ppft
 - propcache 0.5.2 — Apache-2.0 — https://matrix.to/#/#aio-libs:matrix.org
+- protobuf 7.36.2 — 3-Clause BSD License — https://developers.google.com/protocol-buffers/
 - psutil 7.2.2 — BSD-3-Clause — https://github.com/giampaolo/psutil
 - pyarrow 25.0.1 — Apache-2.0 — https://arrow.apache.org/
 - pybind11 3.1.0 — BSD-3-Clause — https://github.com/pybind/pybind11
@@ -159,4 +163,5 @@ script. Do not edit by hand.
 ## Needs human review
 
 - matplotlib 3.11.1 — Apache-2.0 AND BaKoMa Fonts Licence AND Bitstream-Charter AND CC0-1.0 AND FTL OR GPL-2.0-or-later AND MIT AND MIT-Modern-Variant AND OFL-1.1 AND Qhull — https://matplotlib.org — unknown licence: BaKoMa Fonts Licence; unknown licence: Bitstream-Charter; unknown licence: Qhull
+- protobuf 7.36.2 — 3-Clause BSD License — https://developers.google.com/protocol-buffers/ — could not parse licence expression
 - unittest2 1.1.0 — BSD — http://pypi.python.org/pypi/unittest2 — BSD clause count is not in the installed metadata
