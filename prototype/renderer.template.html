@@ -1,3 +1,4 @@
+<!-- Changes: realistic fork frames — V toggle, roll-matched overlay, hold_s auto-play pause (#60). -->
 <!-- Changes: video JPEG via toDataURL (not headless-throttled toBlob); yieldEvery (#45). -->
 <!-- Changes: anatomical 360 orbit and topology spin reuse Record IPC with posed draws. -->
 <!-- Changes: fly-through fork hold looks ahead of the junction; drop on-plane orifice hacks. -->
@@ -1019,7 +1020,7 @@ const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
     hint: "<kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front)" },
   { key: "endoluminal", name: "Endoluminal",
-    hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>T</kbd> reset route" },
+    hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>V</kbd> realistic forks · <kbd>T</kbd> reset route" },
   { key: "topology", name: "Topology map",
     hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>[</kbd> / <kbd>]</kbd> rotate 15° · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
   { key: "ct-panes", name: "CT panes",
@@ -2033,6 +2034,299 @@ let lastForkOrifices = [];
 let lastEndoluminalLesion = null;
 let lastEndoCamera = null;
 
+/* ------------------------------------------------ realistic fork frames (#60) */
+const REALISM_HOLD_MM = 2.0;
+const REALISM_FADE_MS = 250;
+const REALISM_POLL_MS = 2000;
+const realism = {
+  on: true,
+  state: "idle",
+  reason: null,
+  key: null,
+  frames: [],
+  images: new Map(),
+  shownGroup: null,
+  opacity: 0,
+  fadeTarget: 0,
+  fadeFrom: 0,
+  fadeStart: 0,
+  pollTimer: null,
+  armed: new Set(),
+  lastOrifices: [],
+  lastLabels: [],
+};
+window.__realism = {
+  get state() { return realism.state; },
+  get shownGroup() { return realism.shownGroup; },
+  get on() { return realism.on; },
+  get opacity() { return realism.opacity; },
+  get frames() { return realism.frames; },
+  get lastOrifices() { return realism.lastOrifices; },
+  get lastLabels() { return realism.lastLabels; },
+};
+
+function syncRealismHook() {
+  // window.__realism uses live getters; kept as a no-op call site marker.
+}
+
+function realismCircleGeom() {
+  const diameter = 0.94 * Math.min(W, H);
+  return { cx: W / 2, cy: H / 2, R: diameter / 2, D: diameter };
+}
+
+function fisheyeToZeroRollScreen(u, v, cx, cy, R) {
+  // Fisheye: u along camera right, v row 0 = camera +up, centre 127.5.
+  const xx = (u + 0.5) * 2 / 256 - 1;
+  const yy = 1 - (v + 0.5) * 2 / 256;
+  return { x: cx + R * xx, y: cy - R * yy };
+}
+
+function realismRotateScreen(x0, y0, phi, cx, cy) {
+  // Sign matches applyRoll: positive φ rotates content clockwise on screen
+  // (canvas rotate(-φ) of the zero-roll point).
+  const dx0 = x0 - cx, dy0 = y0 - cy;
+  const c = Math.cos(phi), s = Math.sin(phi);
+  return { x: cx + dx0 * c + dy0 * s, y: cy - dx0 * s + dy0 * c };
+}
+
+function realismOrificeScreen(u, v, phi, cx, cy, R) {
+  const zero = fisheyeToZeroRollScreen(u, v, cx, cy, R);
+  return realismRotateScreen(zero.x, zero.y, phi, cx, cy);
+}
+
+function screenClockHour(x, y, cx, cy) {
+  return clockHour(Math.atan2(x - cx, -(y - cy)));
+}
+
+function activeRealismFrame(station) {
+  if (!realism.on) return null;
+  if (realism.state === "unavailable" || realism.state === "off") return null;
+  const at = Number.isFinite(station) ? station : fly.s;
+  let best = null;
+  let bestDist = Infinity;
+  for (const frame of realism.frames) {
+    if (!frame.ready || !frame.url) continue;
+    const dist = Math.abs(at - frame.hold_s);
+    if (dist <= REALISM_HOLD_MM && dist < bestDist) {
+      best = frame;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+function updateRealismFade(station, now) {
+  const frame = activeRealismFrame(station);
+  const target = frame ? 1 : 0;
+  const tNow = Number.isFinite(now) ? now : performance.now();
+  if (target !== realism.fadeTarget) {
+    realism.fadeTarget = target;
+    realism.fadeFrom = realism.opacity;
+    realism.fadeStart = tNow;
+  }
+  const elapsed = tNow - realism.fadeStart;
+  const t = REALISM_FADE_MS <= 0 ? 1 : Math.min(1, Math.max(0, elapsed / REALISM_FADE_MS));
+  realism.opacity = realism.fadeFrom + (realism.fadeTarget - realism.fadeFrom) * t;
+  realism.shownGroup = frame ? frame.group : null;
+  return frame;
+}
+
+function rearmRealismHolds() {
+  realism.armed = new Set(
+    realism.frames
+      .filter(frame => frame.ready && Number.isFinite(frame.hold_s) && frame.hold_s > fly.s)
+      .map(frame => frame.group),
+  );
+}
+
+function preloadRealismFrames(frames) {
+  for (const frame of frames || []) {
+    if (!frame.ready || !frame.url) continue;
+    if (realism.images.has(frame.group)) continue;
+    const img = new Image();
+    img.decoding = "async";
+    // Swallow decode failures silently — fall back to schematic.
+    img.onerror = () => { realism.images.delete(frame.group); };
+    img.src = frame.url;
+    realism.images.set(frame.group, img);
+  }
+}
+
+function applyRealismBody(body) {
+  if (!body || typeof body !== "object") return;
+  const prevKey = realism.key;
+  realism.state = body.status || realism.state;
+  realism.reason = body.reason == null ? null : body.reason;
+  realism.key = body.key == null ? null : body.key;
+  realism.frames = Array.isArray(body.frames) ? body.frames : [];
+  if (prevKey != null && realism.key !== prevKey) {
+    realism.images.clear();
+    realism.lastFrame = null;
+  }
+  preloadRealismFrames(realism.frames);
+  for (const frame of realism.frames) {
+    if (frame.ready && Number.isFinite(frame.hold_s) && frame.hold_s > fly.s) {
+      realism.armed.add(frame.group);
+    }
+  }
+  syncRealismHook();
+}
+
+function scheduleRealismPoll() {
+  if (realism.pollTimer != null) {
+    clearTimeout(realism.pollTimer);
+    realism.pollTimer = null;
+  }
+  if (realism.state === "done" || realism.state === "failed"
+      || realism.state === "unavailable" || realism.state === "off") {
+    return;
+  }
+  realism.pollTimer = setTimeout(() => {
+    pollRealism().catch(() => {});
+  }, REALISM_POLL_MS);
+}
+
+async function pollRealism() {
+  if (!SERVER_MODE || !CASE_ID) return;
+  if (realism.state === "off") return;
+  try {
+    const res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/realism`);
+    if (res.status === 404) {
+      realism.state = "off";
+      realism.frames = [];
+      realism.shownGroup = null;
+      syncRealismHook();
+      return;
+    }
+    if (!res.ok) {
+      scheduleRealismPoll();
+      return;
+    }
+    applyRealismBody(await res.json());
+    scheduleRealismPoll();
+  } catch (_err) {
+    // Missing/unreachable endpoint → feature off, no console noise.
+    realism.state = "off";
+    syncRealismHook();
+  }
+}
+
+async function startRealism() {
+  if (!SERVER_MODE || !CASE_ID) return;
+  try {
+    const res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/realism/start`, {
+      method: "POST",
+    });
+    if (res.status === 404) {
+      realism.state = "off";
+      realism.frames = [];
+      syncRealismHook();
+      return;
+    }
+    if (!res.ok) {
+      realism.state = "off";
+      syncRealismHook();
+      return;
+    }
+    applyRealismBody(await res.json());
+    scheduleRealismPoll();
+  } catch (_err) {
+    realism.state = "off";
+    syncRealismHook();
+  }
+}
+
+function drawRealismOrifices(frame, phi) {
+  const { cx, cy, R } = realismCircleGeom();
+  const accent = tok("--steel") || "#2E6E88";
+  const openings = [];
+  for (const orifice of frame.orifices || []) {
+    if (!orifice.inside && orifice.inside !== undefined) continue;
+    if (!Number.isFinite(orifice.u) || !Number.isFinite(orifice.v)) continue;
+    const scr = realismOrificeScreen(orifice.u, orifice.v, phi, cx, cy, R);
+    const clock = screenClockHour(scr.x, scr.y, cx, cy);
+    openings.push({
+      name: orifice.name || "branch",
+      on_route: !!orifice.on_route,
+      x: scr.x,
+      y: scr.y,
+      clock,
+      pixels: orifice.on_route ? 18 : 14,
+    });
+  }
+  for (const o of openings) {
+    ctx.strokeStyle = o.on_route ? accent : "rgba(200,210,220,0.95)";
+    ctx.lineWidth = o.on_route ? 2.75 : 1.2;
+    ctx.beginPath();
+    ctx.arc(o.x, o.y, o.pixels * 0.98, 0, 7);
+    ctx.stroke();
+  }
+  const labels = openings.map(o => {
+    const clockTxt = o.clock == null ? "" : ` · ${o.clock} o'clock`;
+    const text = `${o.name}${clockTxt}`;
+    const dx = o.x - cx, dy = o.y - cy;
+    const d = Math.hypot(dx, dy) || 1;
+    return {
+      text,
+      x: o.x + (dx / d) * (o.pixels + 22),
+      y: o.y + (dy / d) * (o.pixels + 22),
+      on_route: o.on_route,
+    };
+  });
+  for (const lab of labels) {
+    ctx.font = `600 ${lab.on_route ? 12 : 11}px "IBM Plex Sans Condensed", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.8)";
+    ctx.strokeText(lab.text, lab.x, lab.y);
+    ctx.fillStyle = lab.on_route ? accent : "#e8eef2";
+    ctx.fillText(lab.text, lab.x, lab.y);
+  }
+  realism.lastOrifices = openings;
+  realism.lastLabels = labels;
+}
+
+function drawRealismLayer(phi, station) {
+  let frame = updateRealismFade(station, performance.now());
+  const alpha = realism.opacity;
+  if (alpha <= 0.001) {
+    realism.lastOrifices = [];
+    realism.lastLabels = [];
+    return;
+  }
+  // Fade out on the last shown frame after the camera leaves the hold window.
+  if (frame) realism.lastFrame = frame;
+  else frame = realism.lastFrame;
+  if (!frame) {
+    realism.lastOrifices = [];
+    realism.lastLabels = [];
+    return;
+  }
+  const img = realism.images.get(frame.group);
+  if (!img || !img.complete || !(img.naturalWidth > 0)) {
+    realism.lastOrifices = [];
+    realism.lastLabels = [];
+    return;
+  }
+  const { cx, cy, R, D } = realismCircleGeom();
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.translate(cx, cy);
+  // Negative canvas rotation matches applyRoll screen motion (see realismRotateScreen).
+  ctx.rotate(-phi);
+  ctx.drawImage(img, -R, -R, D, D);
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  drawRealismOrifices(frame, phi);
+  ctx.restore();
+}
+
 // Lighter, more saturated tint of the anatomical lesion ink rgb(180, 82, 47).
 const LESION_CORE = "rgba(244, 168, 112, 0.9)";
 const LESION_OUTLINE = "#FFF1E8";
@@ -2655,6 +2949,7 @@ function drawEndoluminal(pose) {
   drawForkOrifices(toView, project, lastGuidance, station);
   drawAnteriorTick(rings, right, up, dir, lastGuidance, station);
   drawEndoluminalLesion(toView);
+  drawRealismLayer(phi, station);
   // Video frames paint the clocks in output pixels after letterboxing so the
   // panel sits on the frame's bottom-left inset, not the on-screen rail.
   if (!(exportFrame.active && exportFrame.deferHud)) paintEndoHud(hud);
@@ -3808,6 +4103,7 @@ window.addEventListener("message", (ev) => {
     fly.pausedFork = null;
     fly.pauseUntil = null;
     fly.armed = new Set(A.forks.map(f => f.fork));
+    rearmRealismHolds();
     fly.playing = true;
     return;
   }
@@ -3881,6 +4177,11 @@ addEventListener("keydown", e => {
   } else if (endoKeys && (e.key === "t" || e.key === "T")) {
     fly.s = 0; fly.pausedFork = null; fly.pauseUntil = null;
     fly.armed = new Set(A.forks.map(f => f.fork));
+    rearmRealismHolds();
+  } else if (endoKeys && (e.key === "v" || e.key === "V")) {
+    realism.on = !realism.on;
+    syncRealismHook();
+    e.preventDefault();
   }
   if (e.key === " " && endoKeys) {
     fly.playing = !fly.playing;
@@ -3929,9 +4230,48 @@ setInterval(() => {
   const previous = fly.s;
   const next = Math.max(0, Math.min(A.fly.s.at(-1), previous + delta));
   if (delta > 0 && fly.playing && !held.has("ArrowUp")) {
+    // Realistic hold_s is usually ~12 mm before the junction; pause_s is ~5 mm.
+    // Prefer the earlier stop when both fall inside one step.
+    let stopS = null;
+    let stopKind = null;
+    let stopFork = null;
+    let stopFrame = null;
+    if (realism.on) {
+      const frame = realism.frames.find(item => realism.armed.has(item.group)
+        && item.ready && Number.isFinite(item.hold_s)
+        && item.hold_s > previous && item.hold_s <= next);
+      if (frame) {
+        stopS = frame.hold_s;
+        stopKind = "realism";
+        stopFrame = frame;
+        stopFork = Array.isArray(frame.forks) && frame.forks.length
+          ? frame.forks[0]
+          : frame.group;
+      }
+    }
     const fork = A.forks.find(item => fly.armed.has(item.fork)
       && item.pause_s > previous && item.pause_s <= next);
-    if (fork) {
+    if (fork && (stopS == null || fork.pause_s < stopS)) {
+      stopS = fork.pause_s;
+      stopKind = "fork";
+      stopFork = fork.fork;
+      stopFrame = null;
+    }
+    if (stopKind === "realism" && stopFrame) {
+      fly.s = stopFrame.hold_s;
+      realism.armed.delete(stopFrame.group);
+      fly.pausedFork = stopFork;
+      fly.pauseUntil = performance.now() + FORK_PAUSE_MS;
+      fly.playing = false;
+      fly.lastPause = {
+        fork: stopFork,
+        phiDeg: wrapDeg(fly.phi * 180 / Math.PI),
+        s: stopFrame.hold_s,
+        realismGroup: stopFrame.group,
+      };
+      return;
+    }
+    if (stopKind === "fork" && fork) {
       fly.s = fork.pause_s;
       fly.armed.delete(fork.fork);
       fly.pausedFork = fork.fork;
@@ -3951,6 +4291,9 @@ setInterval(() => {
     // A backward crossing re-arms the fork for the next forward pass.
     for (const fork of A.forks) {
       if (fork.pause_s > fly.s) fly.armed.add(fork.fork);
+    }
+    for (const frame of realism.frames) {
+      if (frame.ready && frame.hold_s > fly.s) realism.armed.add(frame.group);
     }
   }
 }, 16);
@@ -4253,6 +4596,7 @@ function setupRouteTargetPanel() {
       setRouteTargetStatus("", false);
       await reloadCasePayload();
       await refreshRouteTargetPanel();
+      startRealism().catch(() => {});
     } catch (err) {
       setRouteTargetStatus(String(err.message || err), true);
     } finally {
@@ -5947,9 +6291,18 @@ if (DEBUG) {
       };
     },
     setFlyS(s) {
+      const prev = fly.s;
       fly.s = Math.max(0, Math.min(A.fly.s.at(-1), s));
       fly.pausedFork = null;
       fly.pauseUntil = null;
+      if (fly.s < prev) {
+        for (const fork of A.forks) {
+          if (fork.pause_s > fly.s) fly.armed.add(fork.fork);
+        }
+        for (const frame of realism.frames) {
+          if (frame.ready && frame.hold_s > fly.s) realism.armed.add(frame.group);
+        }
+      }
       if (variant !== 1) setVariant(1);
       ctx.clearRect(0, 0, W, H);
       ctx.fillStyle = tok("--ground"); ctx.fillRect(0, 0, W, H);
@@ -6050,12 +6403,25 @@ if (DEBUG) {
     },
     setFly(state) {
       const next = state && typeof state === "object" ? state : {};
+      const prev = fly.s;
       if (Number.isFinite(next.s)) {
         fly.s = Math.max(0, Math.min(A.fly.s.at(-1), next.s));
       }
       if (Number.isFinite(next.phi)) fly.phi = next.phi;
       if (typeof next.playing === "boolean") fly.playing = next.playing;
-      return { s: fly.s, phi: fly.phi, playing: fly.playing };
+      if (Object.prototype.hasOwnProperty.call(next, "pausedFork")) {
+        fly.pausedFork = next.pausedFork;
+        if (next.pausedFork == null) fly.pauseUntil = null;
+      }
+      if (fly.s < prev) {
+        for (const fork of A.forks) {
+          if (fork.pause_s > fly.s) fly.armed.add(fork.fork);
+        }
+        for (const frame of realism.frames) {
+          if (frame.ready && frame.hold_s > fly.s) realism.armed.add(frame.group);
+        }
+      }
+      return { s: fly.s, phi: fly.phi, playing: fly.playing, pausedFork: fly.pausedFork };
     },
     lumenThumbAt(s, phi) {
       const prevS = fly.s;
@@ -6179,6 +6545,7 @@ async function setupCasePicker() {
 
 setupCasePicker().catch(err => console.warn(err));
 setupRouteTargetPanel();
+startRealism().catch(() => {});
 resize(); render(); frame();
 }).catch((err) => console.error(err));
 </script>
