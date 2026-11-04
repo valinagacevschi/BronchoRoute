@@ -50,6 +50,10 @@ def test_profile_sha256_matches_module():
     assert bundled == PROFILE_SHA256
 
 
+@pytest.mark.skipif(
+    not (FIXTURES / "synthetic_y.npz").is_file(),
+    reason="reference arrays are not in the public snapshot",
+)
 def test_synthetic_depth_and_encoder_match_reference():
     cprint("synthetic_y reference match", "cyan")
     mask_npz = np.load(FIXTURES / "synthetic_mask.npz")

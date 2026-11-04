@@ -208,6 +208,8 @@ def exclusion_reason(rel: str, text: str | None = None) -> str | None:
     parts = rel.split("/")
     if rel == "pipeline/test_public_snapshot.py":
         return "private snapshot tooling test"
+    if rel.startswith("pipeline/fixtures/realism/"):
+        return "realism port reference arrays (.npz); the scanner bans binary arrays"
     if parts[0] in KEEP_DIRS or rel in KEEP_FILES:
         if parts[0] == "desktop" and set(parts[1:]) & {"node_modules", "build", "dist"}:
             return "desktop dependency or build output (node_modules, build, or dist)"
