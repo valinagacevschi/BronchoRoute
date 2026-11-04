@@ -1,3 +1,4 @@
+// Changes: splash and disclaimer/FileVault overlays follow viewer theme tokens.
 // Changes: check GitHub Releases after load when updates_enabled; ask before download/install.
 // Changes: download mirrored weights before packaged processing.
 // Changes: Record IPC saves an MP4 under Movies/BronchoRoute and cancels if the window closes.
@@ -120,6 +121,9 @@ function inlinePage(body) {
 <style>
   html, body { margin: 0; height: 100%; background: #EDF1F3; color: #17242B;
     font: 15px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; }
+  @media (prefers-color-scheme: dark) {
+    html, body { background: #0C1216; color: #DDE7ED; }
+  }
   main { min-height: 100%; display: flex; align-items: center; justify-content: center; }
   p { max-width: 32rem; margin: 0; padding: 24px; }
 </style>
@@ -324,7 +328,7 @@ function disclaimerInstallScript() {
     overlay.setAttribute("aria-modal", "true");
     overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(12,18,22,.45);display:flex;align-items:center;justify-content:center;";
     const panel = document.createElement("div");
-    panel.style.cssText = "max-width:28rem;margin:16px;padding:20px 22px;background:#fff;color:#17242B;border-radius:10px;box-shadow:0 8px 24px rgba(23,36,43,.18);font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;";
+    panel.style.cssText = "max-width:28rem;margin:16px;padding:20px 22px;background:var(--surface, #fff);color:var(--ink, #17242B);border:1px solid var(--edge, transparent);border-radius:10px;box-shadow:var(--shadow, 0 8px 24px rgba(23,36,43,.18));font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;";
     const text = document.createElement("p");
     text.id = "disclaimer-text";
     text.textContent = ${sentence};
@@ -333,7 +337,7 @@ function disclaimerInstallScript() {
     button.id = "disclaimer-ack";
     button.type = "button";
     button.textContent = "Acknowledge";
-    button.style.cssText = "font:600 14px/1 -apple-system,BlinkMacSystemFont,sans-serif;padding:8px 14px;border-radius:6px;border:0;background:#2E6E88;color:#fff;cursor:pointer;";
+    button.style.cssText = "font:600 14px/1 -apple-system,BlinkMacSystemFont,sans-serif;padding:8px 14px;border-radius:6px;border:0;background:var(--steel, #2E6E88);color:var(--on-steel, #fff);cursor:pointer;";
     button.addEventListener("click", async () => {
       button.disabled = true;
       try {
@@ -382,7 +386,7 @@ function fileVaultInstallScript() {
       overlay.setAttribute("aria-modal", "true");
       overlay.style.cssText = "position:fixed;inset:0;z-index:10001;background:rgba(12,18,22,.45);display:flex;align-items:center;justify-content:center;";
       const panel = document.createElement("div");
-      panel.style.cssText = "max-width:28rem;margin:16px;padding:20px 22px;background:#fff;color:#17242B;border-radius:10px;box-shadow:0 8px 24px rgba(23,36,43,.18);font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;";
+      panel.style.cssText = "max-width:28rem;margin:16px;padding:20px 22px;background:var(--surface, #fff);color:var(--ink, #17242B);border:1px solid var(--edge, transparent);border-radius:10px;box-shadow:var(--shadow, 0 8px 24px rgba(23,36,43,.18));font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;";
       const text = document.createElement("p");
       text.id = "filevault-text";
       text.textContent = ${sentence};
@@ -391,7 +395,7 @@ function fileVaultInstallScript() {
       button.id = "filevault-ack";
       button.type = "button";
       button.textContent = "OK";
-      button.style.cssText = "font:600 14px/1 -apple-system,BlinkMacSystemFont,sans-serif;padding:8px 14px;border-radius:6px;border:0;background:#2E6E88;color:#fff;cursor:pointer;";
+      button.style.cssText = "font:600 14px/1 -apple-system,BlinkMacSystemFont,sans-serif;padding:8px 14px;border-radius:6px;border:0;background:var(--steel, #2E6E88);color:var(--on-steel, #fff);cursor:pointer;";
       button.addEventListener("click", async () => {
         button.disabled = true;
         try {

@@ -1,3 +1,4 @@
+# Changes: header assertion is case-insensitive (intake redesign uppercases th via CSS).
 # Changes: Case Library clicks, outdated prompt, and instant library-hit open.
 from __future__ import annotations
 
@@ -100,8 +101,9 @@ def test_library_screen_and_hit(library_server):
         page.locator("#library-rows tr").nth(1).wait_for()
         assert page.locator("#library-rows tr").count() == 2
         table = page.locator("#library-table").inner_text()
+        table_l = table.lower()
         for column in ("Case", "Study date", "Series", "Processed", "Size", "Outdated"):
-            assert column in table
+            assert column.lower() in table_l
         assert "local-001" in table
         assert "local-002" in table
         assert "Yes" in table
