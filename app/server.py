@@ -1,3 +1,4 @@
+# Changes: realism GET/POST/PNG routes; start after RouteTarget confirm (#57).
 # Changes: expose bridge controls outside legacy review with optional evidence notes.
 # Changes: accept an optional Series override reason on import confirm.
 # Changes: route candidates and RouteTarget require a Lesion, not workflow steps.
@@ -94,6 +95,7 @@ from app.review import (
     undo_correction,
 )
 from app.route_target import route_target_candidates, set_route_target
+from app.realism.worker import realism_png_path, realism_status, start_realism
 from app.signoff import SignoffArtifactError, apply_signoff, version_report_html
 from app.versions import (
     REPORT_CSP,
@@ -641,7 +643,7 @@ async def api_route_target(case_id: str, request: Request):
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
     try:
-        return set_route_target(
+        result = set_route_target(
             case_id,
             clinician["clinician"],
             edge_id=body.edge_id,
@@ -652,6 +654,38 @@ async def api_route_target(case_id: str, request: Request):
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
+    try:
+        start_realism(case_id)
+    except Exception:  # noqa: BLE001 — confirm already succeeded; realism is best-effort
+        pass
+    return result
+
+
+@app.get("/api/cases/{case_id}/realism")
+def api_realism_status(case_id: str):
+    try:
+        return realism_status(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/realism/start")
+def api_realism_start(case_id: str):
+    try:
+        return start_realism(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.get("/api/cases/{case_id}/realism/{key}/{name}.png")
+def api_realism_png(case_id: str, key: str, name: str):
+    try:
+        path = realism_png_path(case_id, key, name)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    if path is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(path, media_type="image/png")
 
 
 @app.get("/api/cases/{case_id}/review")
