@@ -158,6 +158,39 @@ Reference prototype: `prototype/proto_endoluminal_rig.html` on branch `prototype
 - Fix the prototype's cosmetic issues: a fork label under the clocks panel, the anterior tick under the
   side rail, an oversized Lesion glow.
 
+### Realistic fork views ([Realistic forks 1–7](https://git.xelasys.ro/vali/lung-navigator/-/issues/56), #56–#62)
+
+A depth-conditioned image model (`broncho-flow-prototype3-realism-int8.onnx`, 553 MB, from the
+`BronchoNavigation` Slicer module) renders one tissue-like still per route fork.
+
+- **Frames:** one per fork on the route (main carina included), camera at `fork.s − 12 mm` (the
+  fly-through hold), 120° equidistant fisheye, zero roll. Every child orifice must fall inside the circle.
+- **Depth:** the module's `render_depth` and BREA encoder (`brea_geometry_image`), ported unchanged,
+  run on the CT airway mask only (`airways.nii.gz`; never Estimated airway). Encoder output must match
+  the module's bit for bit on recorded references.
+- **Inference:** local CPU, onnxruntime + opencv-python-headless, 12 Euler steps, seed fixed per fork.
+  About 5 s per fork on an M5 Pro.
+- **Worker:** one background job per Case, started when the RouteTarget is confirmed; nearest fork first;
+  frames stream to the viewer as each lands; cancelled and restarted on route change; paused while
+  segmentation runs. Cache per Case keyed by route, pose and model SHA-256.
+- **Viewer:** during the fork hold the main view fades to the generated fisheye image (R toggles back to
+  the schematic view; default on). Roll rotates the image in 2D. The on-route orifice gets the usual
+  accent outline and "name + clock" label, projected through the same fisheye camera 8 mm down the
+  child centreline. No extra AI badge; the standing "Simulated · CT-derived · research use" footer stays.
+- **Model download:** a Settings row "Realistic fork views". The user pastes a key issued by Val (stored
+  with Electron `safeStorage`); download resumes, then is checked against a SHA-256 pinned in code. The
+  feature stays hidden until the model is verified.
+- **Hosting:** `GET https://lung-nav.appcenter.ro/models/<file>` with `Authorization: Bearer <key>`,
+  constant-time check against per-user keys in the k8s Secret `lung-nav-model-key`; a separate Ingress
+  for `/models/` only (no basic auth, nginx rate limit 5 r/min per IP); Range support; one log line per
+  download (key id, IP). The file lives on the lung-nav-data hostPath under `models/` (PV/PVC 4 GiB).
+- **Public snapshot:** code ships; the model and its key never do. Licence for public model release open.
+- **Tests:** a stub generator (env var) for UI and Playwright tests; exact-match tests for the depth and
+  encoder port.
+- **Phase 2 (spike first):** whole-route tissue look. Compare same-seed keyframes crossfaded every
+  2/5 mm against a texture baked from keyframes onto a marching-cubes mesh (WebGL). Val picks from
+  side-by-side MP4s before any renderer change.
+
 ### Topology ([Topology 360° rotation](https://git.xelasys.ro/vali/lung-navigator/-/issues/9))
 
 - Keep the approved radial map (trachea at the centre pointing down at 0°, right lung on the right,
