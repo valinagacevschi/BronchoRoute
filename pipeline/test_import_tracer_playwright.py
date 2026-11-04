@@ -1,3 +1,4 @@
+# Changes: no Series initials field; Process Series without typing; auto initials.
 # Changes: wait until processing-cancel is enabled before Archive-open during an import.
 # Changes: override-reason and lungs-failure browser flows.
 # Changes: settings assertion includes the FileVault note flag.
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -103,7 +105,7 @@ def test_archive_import(tracer_server, cancel):
         assert "Recommended" in page.locator("#study-groups").inner_text()
         assert "Synthetic thorax" in page.locator("#study-groups").inner_text()
         page.screenshot(path=str(shots / "picker.png"))
-        page.locator("#clinician-initials").fill("AB")
+        assert page.locator("#clinician-initials").count() == 0
         page.locator("#series-confirm").click()
         page.locator("#processing").wait_for(state="visible")
         assert page.locator("#processing-steps li").count() == 4
@@ -131,14 +133,15 @@ def test_archive_import(tracer_server, cancel):
             page.wait_for_function("() => document.querySelector('#r-branches').textContent === '1'")
             assert not list((root / "tmp").iterdir())
             page.screenshot(path=str(shots / "case.png"))
-        assert settings_writes == [{"initials": "AB"}]
+        assert settings_writes == []
         with urllib.request.urlopen(f"{base}/api/settings") as response:
             settings = json.load(response)
-        assert settings == {
-            "initials": "AB", "role": "", "updates_enabled": True,
-            "disclaimer_ack": False, "filevault_note_shown": False,
-            "ram_warning_shown": False,
-        }
+        assert re.fullmatch(r"[A-Z]{3}", settings["initials"])
+        assert settings["role"] == ""
+        assert settings["updates_enabled"] is True
+        assert settings["disclaimer_ack"] is False
+        assert settings["filevault_note_shown"] is False
+        assert settings["ram_warning_shown"] is False
         assert not errors, errors
         browser.close()
 
@@ -173,7 +176,6 @@ def test_override_reason_flow(choice_server):
         page.screenshot(path=str(shots / "override-reason.png"))
         page.locator("#override-reason").fill("sharper edges")
         assert page.locator("#series-confirm").is_enabled()
-        page.locator("#clinician-initials").fill("AB")
         page.locator("#series-confirm").click()
         page.locator("#processing").wait_for(state="visible")
         page.wait_for_function("() => !document.querySelector('#processing-cancel').disabled")
@@ -195,7 +197,6 @@ def test_lungs_failure_offers_the_same_archive(lungs_server):
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(base)
         _open_archive(page, archive)
-        page.locator("#clinician-initials").fill("AB")
         page.locator("#series-confirm").click()
         page.locator("#import-message").get_by_text(
             "segmentation step failed: no lungs found",

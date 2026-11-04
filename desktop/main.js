@@ -1,3 +1,4 @@
+// Changes: drop first-launch disclaimer overlay; FileVault note shows on its own.
 // Changes: splash and disclaimer/FileVault overlays follow viewer theme tokens.
 // Changes: check GitHub Releases after load when updates_enabled; ask before download/install.
 // Changes: download mirrored weights before packaged processing.
@@ -19,7 +20,6 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
-  DISCLAIMER,
   FILEVAULT_NOTE,
   SPLASH,
   fileVaultIsOff,
@@ -316,53 +316,6 @@ async function chooseStartUrl(port, token) {
   return `${origin}/?case=${encodeURIComponent(caseId)}`;
 }
 
-function disclaimerInstallScript() {
-  const sentence = JSON.stringify(DISCLAIMER);
-  return `(() => {
-    if (document.getElementById("disclaimer-overlay")) {
-      return false;
-    }
-    const overlay = document.createElement("div");
-    overlay.id = "disclaimer-overlay";
-    overlay.setAttribute("role", "dialog");
-    overlay.setAttribute("aria-modal", "true");
-    overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(12,18,22,.45);display:flex;align-items:center;justify-content:center;";
-    const panel = document.createElement("div");
-    panel.style.cssText = "max-width:28rem;margin:16px;padding:20px 22px;background:var(--surface, #fff);color:var(--ink, #17242B);border:1px solid var(--edge, transparent);border-radius:10px;box-shadow:var(--shadow, 0 8px 24px rgba(23,36,43,.18));font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;";
-    const text = document.createElement("p");
-    text.id = "disclaimer-text";
-    text.textContent = ${sentence};
-    text.style.margin = "0 0 16px";
-    const button = document.createElement("button");
-    button.id = "disclaimer-ack";
-    button.type = "button";
-    button.textContent = "Acknowledge";
-    button.style.cssText = "font:600 14px/1 -apple-system,BlinkMacSystemFont,sans-serif;padding:8px 14px;border-radius:6px;border:0;background:var(--steel, #2E6E88);color:var(--on-steel, #fff);cursor:pointer;";
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      try {
-        const response = await fetch("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ disclaimer_ack: true }),
-        });
-        if (!response.ok) throw new Error("settings");
-        overlay.remove();
-      } catch (error) {
-        button.textContent = "Could not save. Try again";
-        button.disabled = false;
-      }
-    });
-    panel.appendChild(text);
-    panel.appendChild(button);
-    overlay.appendChild(panel);
-    overlay.setAttribute("aria-labelledby", "disclaimer-text");
-    document.body.appendChild(overlay);
-    button.focus();
-    return true;
-  })()`;
-}
-
 function readFileVaultStatus() {
   return new Promise((resolve) => {
     execFile("fdesetup", ["status"], { timeout: 5000 }, (err, stdout) => {
@@ -418,17 +371,6 @@ function fileVaultInstallScript() {
       document.body.appendChild(overlay);
       button.focus();
     };
-    // Wait until the disclaimer click is done so this note does not steal it.
-    if (document.getElementById("disclaimer-overlay")) {
-      const observer = new MutationObserver(() => {
-        if (!document.getElementById("disclaimer-overlay")) {
-          observer.disconnect();
-          show();
-        }
-      });
-      observer.observe(document.body, { childList: true, subtree: true });
-      return;
-    }
     show();
   })()`;
 }
@@ -477,17 +419,6 @@ async function maybeWarnLowRam(port, token) {
     body: JSON.stringify({ ram_warning_shown: true }),
   });
   if (!saved.ok) throw new Error("Could not save the memory warning");
-}
-
-async function showDisclaimer(win, port, token) {
-  const response = await fetch(`${sidecarOrigin(port)}/api/settings`, {
-    headers: { "X-BronchoRoute-Token": token },
-  });
-  if (!response.ok) throw new Error("Could not load Settings");
-  const settings = await response.json();
-  if (!settings.disclaimer_ack) {
-    await win.webContents.executeJavaScript(disclaimerInstallScript());
-  }
 }
 
 async function showFatal(message) {
@@ -776,7 +707,6 @@ async function launch() {
   await maybeWarnLowRam(port, token);
   const url = await chooseStartUrl(port, token);
   await mainWindow.loadURL(url);
-  await showDisclaimer(mainWindow, port, token);
   await showFileVaultNote(mainWindow, port, token);
   startUpdateCheck(dataRoot);
   return {

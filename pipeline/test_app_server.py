@@ -1,3 +1,4 @@
+# Changes: records/lesion no longer 412 for missing initials (auto-generated).
 # Changes: stamp a freshly built synthetic Case as the current pipeline version.
 # Changes: About, bundled LICENSE, notices, and sponsors are same-origin.
 # Changes: hide legacy review behind the default-off feature flag.
@@ -410,9 +411,10 @@ def test_per_clinician_ct_view(client, harness):
 
 
 def test_records_require_clinician_then_stamp(client, harness):
-    missing = client.post("/api/cases/local-001/records",
-                          json={"step": 1, "kind": "note", "data": {"mm": [1, 2, 3]}})
-    assert missing.status_code == 412
+    auto = client.post("/api/cases/local-001/records",
+                       json={"step": 1, "kind": "note", "data": {"mm": [1, 2, 3]}})
+    assert auto.status_code == 200
+    assert auto.json()["clinician"].startswith("Clinician, ")
 
     client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
     saved = client.post("/api/cases/local-001/records",
@@ -610,9 +612,6 @@ def test_payload_origin_and_lesion_roundtrip(client, harness):
         1.0,
     ])
     ras = (affine @ ijk)[:3].tolist()
-
-    missing = client.put("/api/cases/local-001/lesion", json={"ras_mm": ras})
-    assert missing.status_code == 412
 
     client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
     # Step 1 must be done before lesion (Phase 4a); seed series_confirmed.

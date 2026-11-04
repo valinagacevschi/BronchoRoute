@@ -1,3 +1,4 @@
+# Changes: import no longer 412 for missing initials (settings auto-generate).
 # Changes: Series override reason, junk-file scans, and a lungs failure.
 # Changes: scan rows include the library hit field.
 # Changes: synthetic Archive safety, privacy and processing lifecycle coverage.
@@ -80,10 +81,7 @@ def test_scan_privacy_and_non_dicom(lifecycle, extraction):
     assert len(list(root.iterdir())) == 255
     assert all(path.suffix == ".dcm" for path in root.iterdir())
     assert result["series"][1]["status"] == "not_usable"
-    refused = lifecycle.post("/api/imports", json={
-        "import_id": result["import_id"], "series_key": result["proposed"]["series_key"],
-    })
-    assert refused.status_code == 412
+    # Auto initials are enough to confirm; this test only checks scan privacy/cleanup.
     lifecycle.delete(f"/api/imports/{result['import_id']}")
     assert not list(paths.TMP_DIR.iterdir())
 

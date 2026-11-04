@@ -16,8 +16,8 @@ Where this spec conflicts with `docs/Product Requirements Document_ Lung Navigat
 - **Fully local:** segmentation runs on the Mac (MPS/CPU). No cloud processing, no telemetry, no
   upload. The only network calls are the first-run weight download and optional update checks.
 - **Research tool:** "Research and education tool. Not a medical device. Not for diagnosis or
-  treatment decisions." Shown on first launch (acknowledged once), in About, and in every view's
-  footer. No regulatory (MDR) work is planned; nothing is sold (§11).
+  treatment decisions." Shown in About and in every view's footer (no first-launch popup since
+  #55). No regulatory (MDR) work is planned; nothing is sold (§11).
 - **Patient data:** identifiers (name, ID, birth date, UIDs) are never shown, logged or written.
   Series descriptions and Study dates may appear in the Series picker only. Archive file and folder
   names can contain the patient's name: never log or display them.
@@ -120,7 +120,7 @@ Where this spec conflicts with `docs/Product Requirements Document_ Lung Navigat
     signed distance ("Lesion +12 mm").
   - Anatomical: translucent labelled sphere. Topology: on the RouteTarget's branch with the target gap
     (before a RouteTarget exists, beside the nearest CT-seen branch). Endoluminal: §7.
-  - Record keeps its shape (`ras_mm`, who, when) plus `diameter_mm`; "who" = initials from Settings.
+  - Record keeps its shape (`ras_mm`, who, when) plus `diameter_mm`; "who" = initials from Settings (3 random capitals generated on first use, editable in Settings; #55).
 - **No gating:** the airway shows as soon as processing finishes; the Lesion is optional.
 - **RouteTarget:** proposals appear once a Lesion exists: top 3 CT-seen endpoints nearest the Lesion
   (gap, generation, route length), or a click on CT-seen centreline.

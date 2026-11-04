@@ -1,3 +1,5 @@
+# Changes: viewer-only never writes settings (read-only data root).
+# Changes: empty/missing initials become 3 random A–Z letters, persisted once.
 # Changes: allow filevault_note_shown on the shared settings API.
 # Changes: allow ram_warning_shown on the public settings allowlist.
 # Changes: one atomic settings store preserves switches and unknown fields.
@@ -11,6 +13,8 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
+import string
 from pathlib import Path
 from typing import Any
 
@@ -104,11 +108,13 @@ def _view_for_clinician(data: dict, clinician: str) -> str:
 
 
 def get_clinician(path: Path | None = None) -> dict | None:
-    data = read_settings(path)
-    role = data.get("role", "")
-    initials = data.get("initials")
+    # Same store as get_settings: empty/missing initials are generated once.
+    public = get_settings(path)
+    initials = public.get("initials")
     if not initials:
         return None
+    data = read_settings(path)
+    role = data.get("role", "")
     clinician = clinician_string(role, initials)
     return {
         "role": role,
@@ -193,9 +199,34 @@ PUBLIC_DEFAULTS = {
 }
 
 
+def _generate_initials() -> str:
+    return "".join(secrets.choice(string.ascii_uppercase) for _ in range(3))
+
+
+def _initials_present(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _ensure_initials_data(data: dict) -> tuple[dict, bool]:
+    """Return settings data with initials filled; second value is True when written."""
+    if _initials_present(data.get("initials")):
+        return data, False
+    next_data = {**data, "initials": _generate_initials()}
+    return next_data, True
+
+
 def get_settings(path: Path | None = None) -> dict:
-    data = read_settings(path)
-    return {key: data.get(key, default) for key, default in PUBLIC_DEFAULTS.items()}
+    target = settings_path() if path is None else path
+    # Deploy viewer-only roots are read-only; never mkdir/lock/write there.
+    if paths.viewer_only():
+        data = read_settings(target)
+        return {key: data.get(key, default) for key, default in PUBLIC_DEFAULTS.items()}
+    with json_file_lock(target):
+        data = read_settings(target)
+        data, changed = _ensure_initials_data(data)
+        if changed:
+            atomic_write_json(target, data)
+        return {key: data.get(key, default) for key, default in PUBLIC_DEFAULTS.items()}
 
 
 def put_settings(patch: dict, path: Path | None = None) -> dict:
@@ -203,7 +234,10 @@ def put_settings(patch: dict, path: Path | None = None) -> dict:
         raise ValueError("unknown settings fields")
     for key, value in patch.items():
         if key == "initials":
-            if not isinstance(value, str) or not re.fullmatch(r"(?:[A-Za-z]\.?){1,4}", value):
+            if not isinstance(value, str):
+                raise ValueError("Initials must be 1–4 letters with optional dots.")
+            # Explicit empty regenerates below; non-empty must still validate.
+            if value != "" and not re.fullmatch(r"(?:[A-Za-z]\.?){1,4}", value):
                 raise ValueError("Initials must be 1–4 letters with optional dots.")
         elif key == "role":
             if not isinstance(value, str) or len(value) > 40 or any(c in value for c in "<>'\""):
@@ -213,7 +247,10 @@ def put_settings(patch: dict, path: Path | None = None) -> dict:
     target = settings_path() if path is None else path
     with json_file_lock(target):
         data = read_settings(target)
-        if {"role", "initials"} & patch.keys():
+        applied = dict(patch)
+        if "initials" in applied and applied["initials"] == "":
+            applied["initials"] = _generate_initials()
+        if {"role", "initials"} & applied.keys():
             prefs = _prefs_map(data)
             if data.get("initials"):
                 old_key = clinician_string(data.get("role", ""), data["initials"])
@@ -221,11 +258,12 @@ def put_settings(patch: dict, path: Path | None = None) -> dict:
                     **prefs.get(old_key, {}),
                     "ct_view": _view_for_clinician(data, old_key),
                 }
-            next_data = {**data, **patch}
+            next_data = {**data, **applied}
             if next_data.get("initials"):
                 key = clinician_string(next_data.get("role", ""), next_data["initials"])
                 data["ct_view"] = prefs.get(key, {}).get("ct_view", DEFAULT_CT_VIEW)
             data["clinician_prefs"] = prefs
-        data.update(patch)
+        data.update(applied)
+        data, _changed = _ensure_initials_data(data)
         atomic_write_json(target, data)
     return {key: data.get(key, default) for key, default in PUBLIC_DEFAULTS.items()}

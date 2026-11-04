@@ -1,3 +1,4 @@
+// Changes: queue Archive IPC until import.js registers onOpenArchive (⌘O race).
 // Changes: expose model-weight status, download, and cancel.
 // Changes: expose Record start, frame, stop, and cancel.
 // Changes: expose saveImage for a native PNG still dialog.
@@ -6,6 +7,18 @@
 "use strict";
 
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
+
+// Open Archive can arrive (menu / ⌘O / smoke) before import.js calls onOpenArchive.
+let pendingArchive = null;
+let archiveListener = null;
+
+ipcRenderer.on("bronchoroute:archive", (_event, archivePath) => {
+  if (typeof archiveListener === "function") {
+    archiveListener(archivePath);
+    return;
+  }
+  pendingArchive = archivePath;
+});
 
 contextBridge.exposeInMainWorld("bronchoroute", {
   openArchive() {
@@ -27,9 +40,15 @@ contextBridge.exposeInMainWorld("bronchoroute", {
     return ipcRenderer.invoke("bronchoroute:record-cancel", payload);
   },
   onOpenArchive(callback) {
-    const listener = (_event, archivePath) => callback(archivePath);
-    ipcRenderer.on("bronchoroute:archive", listener);
-    return () => ipcRenderer.removeListener("bronchoroute:archive", listener);
+    archiveListener = (archivePath) => callback(archivePath);
+    if (pendingArchive !== null) {
+      const queued = pendingArchive;
+      pendingArchive = null;
+      archiveListener(queued);
+    }
+    return () => {
+      archiveListener = null;
+    };
   },
   getPathForFile(file) {
     return webUtils.getPathForFile(file);

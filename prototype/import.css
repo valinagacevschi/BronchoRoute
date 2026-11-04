@@ -1,3 +1,4 @@
+/* Changes: vertically centre Process Series with the selection summary; drop initials CSS. */
 /* Changes: library Case id nowrap so narrow tables scroll instead of wrapping. */
 /* Changes: hidden precedence, topbar archive-open, library stats/meta, failure note, mask, elapsed. */
 /* Changes: intake shell, derived tokens, and dark-theme-safe restyle to match the design draft. */
@@ -392,10 +393,10 @@ kbd {
   border: 1px solid var(--edge); border-radius: 10px;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   backdrop-filter: blur(10px); box-shadow: var(--shadow);
-  display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
 }
 #import-confirm .selection-summary {
-  margin-right: auto; font-size: 13px; color: var(--muted); align-self: center;
+  margin-right: auto; font-size: 13px; color: var(--muted);
 }
 #import-confirm .selection-summary b { color: var(--ink); font-weight: 500; }
 #import-confirm .field {
@@ -405,17 +406,12 @@ kbd {
   height: 38px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--edge);
   background: var(--ground); color: var(--ink); font: 400 14px/1 "IBM Plex Sans", sans-serif;
 }
-#clinician-initials {
-  width: 96px; margin-left: 0; padding: 0 12px;
-  font-family: "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .06em;
-}
 #override-reason-field { display: grid; margin: 0; }
 #override-reason {
   display: block; width: 300px; margin-top: 0; padding: 0 12px; height: 38px;
   border: 1px solid var(--edge); border-radius: 6px; font: inherit;
   background: var(--ground); color: var(--ink);
 }
-#clinician-prompt p { margin: 0; font-size: 12px; color: var(--muted); }
 
 #processing-steps {
   list-style: none; margin: 40px 0 0; padding: 0;
@@ -560,8 +556,7 @@ body:has(#weights-screen:not([hidden])) .research-footer a:hover { color: var(--
   #import-confirm { position: static; }
   #import-confirm .selection-summary { flex-basis: 100%; }
   #import-confirm .field,
-  #override-reason,
-  #clinician-initials { width: 100%; }
+  #override-reason { width: 100%; }
   #import-confirm button, #archive-choose, #weights-cancel, #weights-retry,
   #processing-cancel, #try-another, #library-delete-all { width: 100%; }
   #processing-steps { grid-template-columns: 1fr; }

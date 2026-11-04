@@ -1,7 +1,10 @@
+# Changes: viewer-only GET settings/clinician never writes on a read-only app_state.
+# Changes: auto-generate 3-letter initials on fresh load and empty PUT.
 # Changes: filevault_note_shown is a boolean on the shared settings API.
 # Changes: ram_warning_shown round-trips on the settings allowlist.
 # Changes: shared settings API validation, preservation, and record identity.
 import json
+import re
 
 import pytest
 
@@ -12,11 +15,46 @@ pytestmark = pytest.mark.server
 
 
 def test_settings_defaults(client):
-    assert client.get("/api/settings").json() == {
-        "initials": "", "role": "", "updates_enabled": True,
-        "disclaimer_ack": False, "filevault_note_shown": False,
-        "ram_warning_shown": False,
-    }
+    first = client.get("/api/settings").json()
+    assert re.fullmatch(r"[A-Z]{3}", first["initials"])
+    assert first["role"] == ""
+    assert first["updates_enabled"] is True
+    assert first["disclaimer_ack"] is False
+    assert first["filevault_note_shown"] is False
+    assert first["ram_warning_shown"] is False
+    second = client.get("/api/settings").json()
+    assert second["initials"] == first["initials"]
+
+
+def test_viewer_only_settings_never_write(client, monkeypatch):
+    state = settings_path().parent
+    state.mkdir(parents=True, exist_ok=True)
+    assert not settings_path().exists()
+    monkeypatch.setenv("LUNGNAV_VIEWER_ONLY", "1")
+    state.chmod(0o555)
+    try:
+        assert client.get("/api/settings").status_code == 200
+        assert client.get("/api/clinician").status_code == 200
+        assert not settings_path().exists()
+        assert not (state / "settings.json.lock").exists()
+    finally:
+        state.chmod(0o755)
+
+
+def test_settings_empty_put_regenerates(client):
+    first = client.get("/api/settings").json()["initials"]
+    assert re.fullmatch(r"[A-Z]{3}", first)
+    client.put("/api/settings", json={"initials": "AB"})
+    assert client.get("/api/settings").json()["initials"] == "AB"
+    regenerated = client.put("/api/settings", json={"initials": ""}).json()["initials"]
+    assert re.fullmatch(r"[A-Z]{3}", regenerated)
+    assert regenerated != "AB"
+    assert client.get("/api/settings").json()["initials"] == regenerated
+
+
+def test_settings_explicit_initials_preserved(client):
+    assert client.put("/api/settings", json={"initials": "A.B."}).json()["initials"] == "A.B."
+    assert client.get("/api/settings").json()["initials"] == "A.B."
 
 
 @pytest.mark.parametrize("initials", ["A", "ABCD", "A.B.", "ab", "A.B"])
@@ -31,7 +69,7 @@ def test_settings_initials(client, initials):
 
 
 @pytest.mark.parametrize("patch", [
-    {"initials": ""}, {"initials": "ABCDE"}, {"initials": "A1"},
+    {"initials": "ABCDE"}, {"initials": "A1"},
     {"initials": ".AB"}, {"initials": "A..B"}, {"initials": "A B"},
     {"initials": None}, {"role": "x" * 41},
     *({"role": "Role" + c} for c in "<>'\""),
