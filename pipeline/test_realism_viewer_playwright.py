@@ -1,4 +1,4 @@
-# Changes: Playwright coverage for realistic fork frames — hold show/hide, V toggle,
+# Changes: realism label scope-clock parity, collision avoid, schematic skip (#60b);
 # auto-play pause, unavailable/404 fallback, roll clock parity (#60).
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from test_flythrough_playwright import _synthetic_graph  # noqa: E402
 from test_viewer_v2_playwright import VIEWPORT, _playwright_or_skip  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
-SHOTS = Path(os.environ.get("TMPDIR", "/tmp")) / "bronchoroute-60-realism"
+SHOTS = Path(os.environ.get("TMPDIR", "/tmp")) / "bronchoroute-60b-realism-labels"
 
 
 def _seed(tmp: Path) -> Path:
@@ -167,7 +167,16 @@ def _clock_delta(a, b) -> int:
 
 
 class _RealismMock:
-    def __init__(self, *, hold_s: float, u: float, v: float, name: str, mode: str = "done"):
+    def __init__(
+        self,
+        *,
+        hold_s: float,
+        u: float,
+        v: float,
+        name: str,
+        mode: str = "done",
+        orifices: list[dict] | None = None,
+    ):
         self.hold_s = float(hold_s)
         self.u = float(u)
         self.v = float(v)
@@ -178,6 +187,7 @@ class _RealismMock:
         self.post_hits = 0
         self.get_hits = 0
         self.png_hits = 0
+        self.orifices = orifices
 
     def body(self) -> dict:
         if self.mode == "unavailable":
@@ -188,6 +198,18 @@ class _RealismMock:
                 "frames": [],
             }
         ready = self.mode == "done"
+        if self.orifices is not None:
+            orifices = self.orifices
+        else:
+            orifices = [{
+                "fork": 1,
+                "edge": 1,
+                "on_route": True,
+                "name": self.name,
+                "u": self.u,
+                "v": self.v,
+                "inside": True,
+            }]
         return {
             "status": "done" if ready else "running",
             "reason": None,
@@ -201,15 +223,7 @@ class _RealismMock:
                     f"/api/cases/local-001/realism/{self.key}/group-0.png"
                     if ready else None
                 ),
-                "orifices": [{
-                    "fork": 1,
-                    "edge": 1,
-                    "on_route": True,
-                    "name": self.name,
-                    "u": self.u,
-                    "v": self.v,
-                    "inside": True,
-                }],
+                "orifices": orifices,
             }],
         }
 
@@ -286,6 +300,29 @@ def _shot(page, name: str) -> Path:
     return path
 
 
+def _label_clock_state(page) -> dict:
+    return page.evaluate(
+        """() => {
+          const orifices = window.__realism.lastOrifices || [];
+          const labels = window.__realism.lastLabels || [];
+          const on = orifices.find(o => o.on_route) || orifices[0];
+          const lab = labels.find(l => l.on_route) || labels[0];
+          const guidance = window.__p2_debug.rig();
+          return {
+            orifice: on,
+            label: lab,
+            scopeClock: guidance && guidance.scopeClock,
+            orificeClock: on ? on.clock : null,
+            labelClock: lab ? lab.clock : null,
+            phi: (window.__p2_debug.endoCamera() || {}).phi,
+            drawn: window.__p2_debug.forkOrificesDrawn(),
+            skips: window.__p2_debug.forkOrificesSkipCount(),
+            opacity: window.__realism.opacity,
+          };
+        }"""
+    )
+
+
 def test_realism_hold_toggle_autoplay_roll_and_fallback(server):
     os.environ.pop("NODE_ENV", None)
     sync_playwright = _playwright_or_skip()
@@ -337,6 +374,20 @@ def test_realism_hold_toggle_autoplay_roll_and_fallback(server):
         assert abs(info["s"] - hold_s) <= 2.0
         _shot(page, "realism-roll0.png")
 
+        cprint("roll 0°: on-route label clock equals HUD scope clock", "cyan")
+        page.wait_for_timeout(300)
+        roll0 = _label_clock_state(page)
+        assert roll0["scopeClock"] is not None, roll0
+        assert roll0["orificeClock"] == roll0["scopeClock"], roll0
+        assert roll0["labelClock"] == roll0["scopeClock"], roll0
+        assert roll0["drawn"] is False, roll0
+        assert roll0["skips"] >= 1, roll0
+        cprint(
+            f"  roll0 scope={roll0['scopeClock']} label={roll0['labelClock']} "
+            f"skips={roll0['skips']}",
+            "green",
+        )
+
         cprint("outside ±2 mm → schematic (shownGroup null)", "cyan")
         page.evaluate("(s) => window.__p2_debug.setFlyS(s)", hold_s + 5.0)
         page.wait_for_function(
@@ -380,7 +431,7 @@ def test_realism_hold_toggle_autoplay_roll_and_fallback(server):
         at = page.evaluate("() => (window.__p2_debug.endoCamera() || {}).s")
         assert abs(at - hold_s) < 0.05, (at, hold_s)
 
-        cprint("roll 90°: red-dot clock matches HUD scope clock", "cyan")
+        cprint("roll 90°: label clock equals HUD scope clock exactly", "cyan")
         page.evaluate(
             """(s) => {
               window.__p2_debug.setFly({
@@ -429,6 +480,9 @@ def test_realism_hold_toggle_autoplay_roll_and_fallback(server):
                 scopeClock: guidance && guidance.scopeClock,
                 redClock: best ? clockOf(best.x, best.y) : null,
                 orificeClock: on ? on.clock : null,
+                labelClock: lab ? lab.clock : null,
+                drawn: window.__p2_debug.forkOrificesDrawn(),
+                skips: window.__p2_debug.forkOrificesSkipCount(),
                 phi: (window.__p2_debug.endoCamera() || {}).phi,
               };
             }"""
@@ -447,7 +501,10 @@ def test_realism_hold_toggle_autoplay_roll_and_fallback(server):
         assert dist_orifice < 20, (dist_orifice, roll)
         assert dist_label > 10, (dist_label, roll)
         assert _clock_delta(roll["redClock"], roll["scopeClock"]) <= 1, roll
-        assert _clock_delta(roll["orificeClock"], roll["scopeClock"]) <= 1, roll
+        assert roll["orificeClock"] == roll["scopeClock"], roll
+        assert roll["labelClock"] == roll["scopeClock"], roll
+        assert roll["drawn"] is False, roll
+        assert roll["skips"] >= 1, roll
         _shot(page, "realism-roll90.png")
         assert not errors, errors
         browser.close()
@@ -495,6 +552,122 @@ def test_realism_hold_toggle_autoplay_roll_and_fallback(server):
             assert not errors2, (mode, errors2)
             cprint(f"  {mode}: schematic ok state={shown['state']}", "green")
             browser.close()
+
+
+def test_realism_label_collision_and_schematic_skip(server):
+    """Two on-route orifices 6 px apart must not produce intersecting label boxes."""
+    os.environ.pop("NODE_ENV", None)
+    sync_playwright = _playwright_or_skip()
+    base, _case_path, _tmp = server
+    cprint("collision mock: two on-route orifices 6 px apart", "cyan")
+    payload = _fetch_payload(base)
+    hold_s, u, v, name = _on_route_uv(payload)
+    # ~6 px on the endoluminal circle: fisheye δu ≈ 6 * 128 / R, R≈0.47*min(W,H).
+    min_side = min(VIEWPORT["width"], VIEWPORT["height"])
+    r_px = 0.47 * min_side
+    du = 6.0 * 128.0 / r_px
+    orifices = [
+        {
+            "fork": 1,
+            "edge": 1,
+            "on_route": True,
+            "name": "right lower lobe",
+            "u": u,
+            "v": v,
+            "inside": True,
+        },
+        {
+            "fork": 1,
+            "edge": 2,
+            "on_route": True,
+            "name": "right lower lobe",
+            "u": u + du,
+            "v": v,
+            "inside": True,
+        },
+    ]
+    mock = _RealismMock(
+        hold_s=hold_s, u=u, v=v, name=name, mode="done", orifices=orifices,
+    )
+    errors: list[str] = []
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            args=["--disable-background-timer-throttling"],
+        )
+        page = browser.new_page(viewport=VIEWPORT)
+        page.on("pageerror", lambda err: errors.append(str(err)))
+        page.on(
+            "console",
+            lambda msg: errors.append(msg.text) if msg.type == "error" else None,
+        )
+        mock.install(page)
+        _open(page, base)
+        page.wait_for_function(
+            "() => window.__realism && window.__realism.state === 'done'",
+            timeout=10_000,
+        )
+        page.evaluate(
+            """(s) => window.__p2_debug.setFly({ s, phi: 0, playing: false, pausedFork: null })""",
+            hold_s,
+        )
+        page.evaluate("(s) => window.__p2_debug.setFlyS(s)", hold_s)
+        _wait_shown(page, 0)
+        page.wait_for_timeout(350)
+
+        report = page.evaluate(
+            """() => {
+              const orifices = window.__realism.lastOrifices || [];
+              const labels = window.__realism.lastLabels || [];
+              let orificeDist = null;
+              if (orifices.length >= 2) {
+                orificeDist = Math.hypot(
+                  orifices[1].x - orifices[0].x,
+                  orifices[1].y - orifices[0].y,
+                );
+              }
+              const pairs = [];
+              for (let i = 0; i < labels.length; i++) {
+                for (let j = i + 1; j < labels.length; j++) {
+                  const a = labels[i], b = labels[j];
+                  const clear = a.right + 14 <= b.left || b.right + 14 <= a.left
+                    || a.bottom + 14 <= b.top || b.bottom + 14 <= a.top;
+                  const intersect = !(a.right <= b.left || b.right <= a.left
+                    || a.bottom <= b.top || b.bottom <= a.top);
+                  pairs.push({ i, j, clear, intersect, a, b });
+                }
+              }
+              return {
+                orificeCount: orifices.length,
+                labelCount: labels.length,
+                orificeDist,
+                pairs,
+                drawn: window.__p2_debug.forkOrificesDrawn(),
+                skips: window.__p2_debug.forkOrificesSkipCount(),
+                opacity: window.__realism.opacity,
+                labels,
+              };
+            }"""
+        )
+        assert report["orificeCount"] == 2, report
+        assert report["labelCount"] == 2, report
+        assert report["orificeDist"] is not None
+        assert 3.0 <= report["orificeDist"] <= 12.0, report
+        assert report["pairs"], report
+        for pair in report["pairs"]:
+            assert pair["intersect"] is False, pair
+            assert pair["clear"] is True, pair
+        assert report["drawn"] is False, report
+        assert report["skips"] >= 1, report
+        assert report["opacity"] > 0.5, report
+        _shot(page, "realism-label-collision.png")
+        cprint(
+            f"  orificeDist={report['orificeDist']:.1f}px "
+            f"skips={report['skips']} labels clear",
+            "green",
+        )
+        assert not errors, errors
+        browser.close()
 
 
 def test_template_splice_still_holds():

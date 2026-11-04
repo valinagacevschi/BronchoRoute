@@ -1,3 +1,4 @@
+<!-- Changes: realism labels use HUD scope clock, dark pills, collision avoid; skip schematic orifices when realism opaque (#60b). -->
 <!-- Changes: realistic fork frames — V toggle, roll-matched overlay, hold_s auto-play pause (#60). -->
 <!-- Changes: video JPEG via toDataURL (not headless-throttled toBlob); yieldEvery (#45). -->
 <!-- Changes: anatomical 360 orbit and topology spin reuse Record IPC with posed draws. -->
@@ -2031,6 +2032,8 @@ let lastAnteriorTick = {
   angleFrom12Deg: null, screen: null,
 };
 let lastForkOrifices = [];
+let lastForkOrificesDrawn = false;
+let forkOrificesSkipCount = 0;
 let lastEndoluminalLesion = null;
 let lastEndoCamera = null;
 
@@ -2063,6 +2066,8 @@ window.__realism = {
   get frames() { return realism.frames; },
   get lastOrifices() { return realism.lastOrifices; },
   get lastLabels() { return realism.lastLabels; },
+  get forkOrificesDrawn() { return lastForkOrificesDrawn; },
+  get forkOrificesSkipCount() { return forkOrificesSkipCount; },
 };
 
 function syncRealismHook() {
@@ -2236,6 +2241,105 @@ async function startRealism() {
   }
 }
 
+function childScopeClock(fork, child, up) {
+  // Same scope clock the HUD / schematic use for a child at the current roll:
+  // clockHour(patientAngle(child) - scopeAngle(camera up)).
+  if (!fork || !child) return null;
+  const direction = childOffset(A.edges[child.edge]);
+  const parent = flyAt(fork.s);
+  if (!direction) return child.clock != null ? child.clock : null;
+  if (patientFrame(parent.t).degenerate) return null;
+  if (inPlaneFraction(parent.t, direction) < AHEAD_FRACTION) return null;
+  const theta = patientAngle(parent.t, direction);
+  if (theta == null) return null;
+  if (!up) return clockHour(theta);
+  const psi = scopeAngle(parent.t, up);
+  if (psi == null) return clockHour(theta);
+  return clockHour(theta - psi);
+}
+
+function realismOrificeScopeClock(orifice) {
+  const up = lastEndoCamera && lastEndoCamera.up;
+  const forks = A.forks || [];
+  let fork = orifice.fork != null
+    ? forks.find(f => f.fork === orifice.fork)
+    : null;
+  if (!fork && orifice.edge != null) {
+    fork = forks.find(f => (f.children || []).some(c => c.edge === orifice.edge));
+  }
+  const children = (fork && fork.children) || [];
+  let child = orifice.edge != null
+    ? children.find(c => c.edge === orifice.edge)
+    : null;
+  if (!child && orifice.on_route) child = children.find(c => c.on_route);
+  if (!child && orifice.name) {
+    child = children.find(c => (c.name || "") === (orifice.name || ""));
+  }
+  const clock = childScopeClock(fork, child, up);
+  if (clock != null) return clock;
+  if (orifice.on_route && lastGuidance && lastGuidance.scopeClock != null) {
+    return lastGuidance.scopeClock;
+  }
+  return child && child.clock != null ? child.clock : null;
+}
+
+function realismLabelBoxesClear(a, b, gap) {
+  const ax0 = a.x - a.w / 2, ay0 = a.y - a.h / 2;
+  const ax1 = a.x + a.w / 2, ay1 = a.y + a.h / 2;
+  const bx0 = b.x - b.w / 2, by0 = b.y - b.h / 2;
+  const bx1 = b.x + b.w / 2, by1 = b.y + b.h / 2;
+  return ax1 + gap <= bx0 || bx1 + gap <= ax0
+    || ay1 + gap <= by0 || by1 + gap <= ay0;
+}
+
+function deconflictRealismLabels(labels, cx, cy, R) {
+  const GAP = 14;
+  const margin = 4;
+  for (let pass = 0; pass < 20; pass++) {
+    let moved = false;
+    for (let i = 0; i < labels.length; i++) {
+      for (let j = i + 1; j < labels.length; j++) {
+        const a = labels[i], b = labels[j];
+        if (realismLabelBoxesClear(a, b, GAP)) continue;
+        const amx = (a.ox != null ? a.ox : a.x) - cx;
+        const amy = (a.oy != null ? a.oy : a.y) - cy;
+        const bmx = (b.ox != null ? b.ox : b.x) - cx;
+        const bmy = (b.oy != null ? b.oy : b.y) - cy;
+        const ar = Math.hypot(amx, amy);
+        const br = Math.hypot(bmx, bmy);
+        const sep = (a.h + b.h) / 2 + GAP;
+        if (ar > 1e-3 && br > 1e-3 && Math.hypot(bmx - amx, bmy - amy) > 1e-3) {
+          // Shift along each orifice's radial direction first.
+          const push = Math.max(2, sep * 0.35);
+          a.x += (amx / ar) * push;
+          a.y += (amy / ar) * push;
+          b.x += (bmx / br) * push;
+          b.y += (bmy / br) * push;
+        }
+        if (!realismLabelBoxesClear(a, b, GAP)) {
+          // Stack vertically when still colliding (near-identical anchors).
+          const mid = (a.y + b.y) / 2;
+          a.y = mid - sep / 2;
+          b.y = mid + sep / 2;
+        }
+        moved = true;
+      }
+    }
+    for (const lab of labels) {
+      const half = Math.hypot(lab.w / 2, lab.h / 2);
+      const maxR = Math.max(0, R - half - margin);
+      const dx = lab.x - cx, dy = lab.y - cy;
+      const d = Math.hypot(dx, dy);
+      if (d > maxR && d > 1e-3) {
+        lab.x = cx + dx / d * maxR;
+        lab.y = cy + dy / d * maxR;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
 function drawRealismOrifices(frame, phi) {
   const { cx, cy, R } = realismCircleGeom();
   const accent = tok("--steel") || "#2E6E88";
@@ -2244,14 +2348,15 @@ function drawRealismOrifices(frame, phi) {
     if (!orifice.inside && orifice.inside !== undefined) continue;
     if (!Number.isFinite(orifice.u) || !Number.isFinite(orifice.v)) continue;
     const scr = realismOrificeScreen(orifice.u, orifice.v, phi, cx, cy, R);
-    const clock = screenClockHour(scr.x, scr.y, cx, cy);
     openings.push({
       name: orifice.name || "branch",
       on_route: !!orifice.on_route,
       x: scr.x,
       y: scr.y,
-      clock,
+      clock: realismOrificeScopeClock(orifice),
       pixels: orifice.on_route ? 18 : 14,
+      edge: orifice.edge,
+      fork: orifice.fork,
     });
   }
   for (const o of openings) {
@@ -2266,25 +2371,63 @@ function drawRealismOrifices(frame, phi) {
     const text = `${o.name}${clockTxt}`;
     const dx = o.x - cx, dy = o.y - cy;
     const d = Math.hypot(dx, dy) || 1;
+    const fontPx = o.on_route ? 12 : 11;
+    const padX = 6, padY = 3;
+    const bar = o.on_route ? 3 : 0;
+    ctx.font = `600 ${fontPx}px "IBM Plex Sans Condensed", sans-serif`;
+    const tw = ctx.measureText(text).width;
     return {
       text,
+      on_route: o.on_route,
+      fontPx,
+      padX,
+      padY,
+      bar,
+      w: tw + padX * 2 + bar,
+      h: fontPx + padY * 2,
       x: o.x + (dx / d) * (o.pixels + 22),
       y: o.y + (dy / d) * (o.pixels + 22),
-      on_route: o.on_route,
+      ox: o.x,
+      oy: o.y,
     };
   });
+  deconflictRealismLabels(labels, cx, cy, R);
   for (const lab of labels) {
-    ctx.font = `600 ${lab.on_route ? 12 : 11}px "IBM Plex Sans Condensed", sans-serif`;
-    ctx.textAlign = "center";
+    const left = lab.x - lab.w / 2;
+    const top = lab.y - lab.h / 2;
+    ctx.fillStyle = "rgba(12, 16, 20, 0.9)";
+    ctx.beginPath();
+    ctx.roundRect(left, top, lab.w, lab.h, 4);
+    ctx.fill();
+    if (lab.on_route) {
+      ctx.fillStyle = accent;
+      ctx.fillRect(left, top, lab.bar, lab.h);
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.roundRect(left, top, lab.w, lab.h, 4);
+      ctx.stroke();
+    }
+    ctx.font = `600 ${lab.fontPx}px "IBM Plex Sans Condensed", sans-serif`;
+    ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = "rgba(0,0,0,0.8)";
-    ctx.strokeText(lab.text, lab.x, lab.y);
-    ctx.fillStyle = lab.on_route ? accent : "#e8eef2";
-    ctx.fillText(lab.text, lab.x, lab.y);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(lab.text, left + lab.padX + lab.bar, lab.y);
   }
   realism.lastOrifices = openings;
-  realism.lastLabels = labels;
+  realism.lastLabels = labels.map((lab, i) => ({
+    text: lab.text,
+    x: lab.x,
+    y: lab.y,
+    w: lab.w,
+    h: lab.h,
+    on_route: lab.on_route,
+    clock: openings[i] ? openings[i].clock : null,
+    left: lab.x - lab.w / 2,
+    top: lab.y - lab.h / 2,
+    right: lab.x + lab.w / 2,
+    bottom: lab.y + lab.h / 2,
+  }));
 }
 
 function drawRealismLayer(phi, station) {
@@ -2946,6 +3089,9 @@ function drawEndoluminal(pose) {
     right, up, dir, posed ? { s: station, phi, pausedFork: null } : null,
   );
   lastEndoHudPaint = hud;
+  // Advance realism fade before the schematic orifice pass so opacity > 0.5
+  // skips outlines/labels on the same frame the realistic image is dominant.
+  updateRealismFade(station, performance.now());
   drawForkOrifices(toView, project, lastGuidance, station);
   drawAnteriorTick(rings, right, up, dir, lastGuidance, station);
   drawEndoluminalLesion(toView);
@@ -2997,6 +3143,7 @@ function drawForkOrifices(toView, projectFn, hud, station) {
   if (!fork || !fork.children || fork.children.length < 2) {
     lastForkOrifices = [];
     lastForkLabels = [];
+    lastForkOrificesDrawn = false;
     return;
   }
   const FORK_ORIFICE_DEPTH_MM = 8;
@@ -3015,10 +3162,11 @@ function drawForkOrifices(toView, projectFn, hud, station) {
     const scr = projectFn(view);
     if (!scr) continue;
     const radiusMm = child.r != null ? child.r : edge.r;
+    const up = lastEndoCamera && lastEndoCamera.up;
     openings.push({
       child,
       name: child.name || "branch",
-      clock: child.clock,
+      clock: childScopeClock(fork, child, up),
       on_route: !!child.on_route,
       x: scr.x,
       y: scr.y,
@@ -3033,6 +3181,7 @@ function drawForkOrifices(toView, projectFn, hud, station) {
   if (openings.length < 1) {
     lastForkOrifices = [];
     lastForkLabels = [];
+    lastForkOrificesDrawn = false;
     return;
   }
 
@@ -3048,6 +3197,7 @@ function drawForkOrifices(toView, projectFn, hud, station) {
   if (!parentScr) {
     lastForkOrifices = [];
     lastForkLabels = [];
+    lastForkOrificesDrawn = false;
     return;
   }
   const parentCx = parentScr.x, parentCy = parentScr.y;
@@ -3147,6 +3297,25 @@ function drawForkOrifices(toView, projectFn, hud, station) {
   }
 
   openings.sort((a, b) => b.z - a.z);
+  lastForkOrifices = openings.map(o => ({
+    name: o.name,
+    clock: o.clock,
+    on_route: o.on_route,
+    edge: o.child.edge,
+    x: o.x, y: o.y, pixels: o.pixels,
+    projected: true,
+    viewX: o.viewX,
+    viewY: o.viewY,
+  }));
+  // Realistic frame owns the lumen: skip schematic orifice outlines/labels so
+  // they do not bleed past the circle edge under the fisheye image.
+  if (realism.opacity > 0.5) {
+    lastForkLabels = [];
+    lastForkOrificesDrawn = false;
+    forkOrificesSkipCount += 1;
+    return;
+  }
+  lastForkOrificesDrawn = true;
   const accent = tok("--steel") || "#2E6E88";
 
   // Opaque mucosal face of the bifurcation (parent wall around the openings).
@@ -3289,16 +3458,6 @@ function drawForkOrifices(toView, projectFn, hud, station) {
     ctx.fillStyle = lab.on_route ? accent : "#e8eef2";
     ctx.fillText(lab.text, lab.x, lab.y);
   }
-  lastForkOrifices = openings.map(o => ({
-    name: o.name,
-    clock: o.clock,
-    on_route: o.on_route,
-    edge: o.child.edge,
-    x: o.x, y: o.y, pixels: o.pixels,
-    projected: true,
-    viewX: o.viewX,
-    viewY: o.viewY,
-  }));
   lastForkLabels = labels.map(lab => {
     ctx.font = `600 ${lab.on_route ? 12 : 11}px "IBM Plex Sans Condensed", sans-serif`;
     return {
@@ -6350,6 +6509,8 @@ if (DEBUG) {
     },
     anteriorTick: () => ({ ...lastAnteriorTick }),
     forkOrifices: () => lastForkOrifices.map(o => ({ ...o })),
+    forkOrificesDrawn: () => lastForkOrificesDrawn,
+    forkOrificesSkipCount: () => forkOrificesSkipCount,
     forkLabels: () => lastForkLabels.map(label => ({ ...label })),
     forks: () => A.forks,
     rig: () => lastGuidance ? { ...lastGuidance } : null,
