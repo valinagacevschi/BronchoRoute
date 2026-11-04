@@ -81,7 +81,9 @@
         "from": "../app",
         "to": "app/app",
         "filter": [
-          "*.py"
+          "*.py",
+          "realism/*.py",
+          "realism/*.json"
         ]
       },
       {
@@ -91,6 +93,7 @@
           "app_server.py",
           "atomic_json.py",
           "build_graph.py",
+          "estimated_airway.py",
           "import_dicom.py",
           "make_prototype_data.py",
           "paths.py",
