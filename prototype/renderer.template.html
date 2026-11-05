@@ -1,3 +1,4 @@
+<!-- Changes: unsnapped orifices draw edge pills (no outline) at HUD clock on the circle (#60d). -->
 <!-- Changes: realism labels use HUD scope clock, dark pills, collision avoid; skip schematic orifices when realism opaque (#60b). -->
 <!-- Changes: realistic fork frames — V toggle, roll-matched overlay, hold_s auto-play pause (#60). -->
 <!-- Changes: video JPEG via toDataURL (not headless-throttled toBlob); yieldEvery (#45). -->
@@ -2340,6 +2341,26 @@ function deconflictRealismLabels(labels, cx, cy, R) {
   }
 }
 
+function realismEdgePillTheta(clock, scrX, scrY, cx, cy) {
+  // Clock 12 = top of screen, clockwise; each hour is 30°.
+  if (clock != null && Number.isFinite(clock)) {
+    return (clock % 12) * Math.PI / 6;
+  }
+  return Math.atan2(scrX - cx, -(scrY - cy));
+}
+
+function drawRealismEdgeChevron(x, y, theta, size, color) {
+  const dx = Math.sin(theta), dy = -Math.cos(theta);
+  const px = -dy, py = dx;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x + dx * size, y + dy * size);
+  ctx.lineTo(x - dx * size * 0.35 + px * size * 0.6, y - dy * size * 0.35 + py * size * 0.6);
+  ctx.lineTo(x - dx * size * 0.35 - px * size * 0.6, y - dy * size * 0.35 - py * size * 0.6);
+  ctx.closePath();
+  ctx.fill();
+}
+
 function drawRealismOrifices(frame, phi) {
   const { cx, cy, R } = realismCircleGeom();
   const accent = tok("--steel") || "#2E6E88";
@@ -2347,19 +2368,35 @@ function drawRealismOrifices(frame, phi) {
   for (const orifice of frame.orifices || []) {
     if (!orifice.inside && orifice.inside !== undefined) continue;
     if (!Number.isFinite(orifice.u) || !Number.isFinite(orifice.v)) continue;
+    // Absent snapped (older caches/mocks) → treat as placed.
+    const snapped = orifice.snapped !== false;
+    const clock = realismOrificeScopeClock(orifice);
     const scr = realismOrificeScreen(orifice.u, orifice.v, phi, cx, cy, R);
+    let x = scr.x, y = scr.y;
+    let edgeTheta = null;
+    if (!snapped) {
+      edgeTheta = realismEdgePillTheta(clock, scr.x, scr.y, cx, cy);
+      const provisionalHalf = 22;
+      const r = Math.max(0, R - provisionalHalf - 6);
+      x = cx + r * Math.sin(edgeTheta);
+      y = cy - r * Math.cos(edgeTheta);
+    }
     openings.push({
       name: orifice.name || "branch",
       on_route: !!orifice.on_route,
-      x: scr.x,
-      y: scr.y,
-      clock: realismOrificeScopeClock(orifice),
+      x,
+      y,
+      clock,
       pixels: orifice.on_route ? 18 : 14,
       edge: orifice.edge,
       fork: orifice.fork,
+      snapped,
+      outlined: snapped,
+      edgeTheta,
     });
   }
   for (const o of openings) {
+    if (!o.outlined) continue;
     ctx.strokeStyle = o.on_route ? accent : "rgba(200,210,220,0.95)";
     ctx.lineWidth = o.on_route ? 2.75 : 1.2;
     ctx.beginPath();
@@ -2369,22 +2406,59 @@ function drawRealismOrifices(frame, phi) {
   const labels = openings.map(o => {
     const clockTxt = o.clock == null ? "" : ` · ${o.clock} o'clock`;
     const text = `${o.name}${clockTxt}`;
-    const dx = o.x - cx, dy = o.y - cy;
-    const d = Math.hypot(dx, dy) || 1;
     const fontPx = o.on_route ? 12 : 11;
     const padX = 6, padY = 3;
     const bar = o.on_route ? 3 : 0;
+    const chevronPad = o.outlined ? 0 : 10;
     ctx.font = `600 ${fontPx}px "IBM Plex Sans Condensed", sans-serif`;
     const tw = ctx.measureText(text).width;
+    const w = tw + padX * 2 + bar + chevronPad;
+    const h = fontPx + padY * 2;
+    if (!o.outlined) {
+      const theta = o.edgeTheta != null
+        ? o.edgeTheta
+        : realismEdgePillTheta(o.clock, o.x, o.y, cx, cy);
+      const half = Math.hypot(w / 2, h / 2);
+      const r = Math.max(0, R - half - 6);
+      const x = cx + r * Math.sin(theta);
+      const y = cy - r * Math.cos(theta);
+      o.x = x;
+      o.y = y;
+      o.edgeTheta = theta;
+      return {
+        text,
+        tw,
+        on_route: o.on_route,
+        fontPx,
+        padX,
+        padY,
+        bar,
+        chevronPad,
+        edgePill: true,
+        theta,
+        w,
+        h,
+        x,
+        y,
+        ox: x,
+        oy: y,
+      };
+    }
+    const dx = o.x - cx, dy = o.y - cy;
+    const d = Math.hypot(dx, dy) || 1;
     return {
       text,
+      tw,
       on_route: o.on_route,
       fontPx,
       padX,
       padY,
       bar,
-      w: tw + padX * 2 + bar,
-      h: fontPx + padY * 2,
+      chevronPad: 0,
+      edgePill: false,
+      theta: null,
+      w,
+      h,
       x: o.x + (dx / d) * (o.pixels + 22),
       y: o.y + (dy / d) * (o.pixels + 22),
       ox: o.x,
@@ -2392,7 +2466,12 @@ function drawRealismOrifices(frame, phi) {
     };
   });
   deconflictRealismLabels(labels, cx, cy, R);
-  for (const lab of labels) {
+  for (let i = 0; i < labels.length; i++) {
+    const lab = labels[i];
+    if (lab.edgePill && openings[i]) {
+      openings[i].x = lab.x;
+      openings[i].y = lab.y;
+    }
     const left = lab.x - lab.w / 2;
     const top = lab.y - lab.h / 2;
     ctx.fillStyle = "rgba(12, 16, 20, 0.9)";
@@ -2413,6 +2492,10 @@ function drawRealismOrifices(frame, phi) {
     ctx.textBaseline = "middle";
     ctx.fillStyle = "#ffffff";
     ctx.fillText(lab.text, left + lab.padX + lab.bar, lab.y);
+    if (lab.edgePill && lab.theta != null) {
+      const chX = left + lab.padX + lab.bar + lab.tw + lab.chevronPad * 0.55;
+      drawRealismEdgeChevron(chX, lab.y, lab.theta, 4.2, "#ffffff");
+    }
   }
   realism.lastOrifices = openings;
   realism.lastLabels = labels.map((lab, i) => ({
@@ -2423,6 +2506,7 @@ function drawRealismOrifices(frame, phi) {
     h: lab.h,
     on_route: lab.on_route,
     clock: openings[i] ? openings[i].clock : null,
+    edgePill: !!lab.edgePill,
     left: lab.x - lab.w / 2,
     top: lab.y - lab.h / 2,
     right: lab.x + lab.w / 2,

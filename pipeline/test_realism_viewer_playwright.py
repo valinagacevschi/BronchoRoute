@@ -1,4 +1,5 @@
-# Changes: realism label scope-clock parity, collision avoid, schematic skip (#60b);
+# Changes: unsnapped orifice edge-pill placement + roll follow (#60d);
+# realism label scope-clock parity, collision avoid, schematic skip (#60b);
 # auto-play pause, unavailable/404 fallback, roll clock parity (#60).
 from __future__ import annotations
 
@@ -666,6 +667,178 @@ def test_realism_label_collision_and_schematic_skip(server):
             f"skips={report['skips']} labels clear",
             "green",
         )
+        assert not errors, errors
+        browser.close()
+
+
+def _angle_deg_from_centre(x: float, y: float, cx: float, cy: float) -> float:
+    return math.degrees(math.atan2(x - cx, -(y - cy)))
+
+
+def _clock_angle_deg(clock: int) -> float:
+    return (int(clock) % 12) * 30.0
+
+
+def _angle_delta_deg(a: float, b: float) -> float:
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def test_realism_unsnapped_edge_pills(server):
+    """snapped:false → no outline; pill at HUD-clock circle edge; rolls with clock."""
+    os.environ.pop("NODE_ENV", None)
+    sync_playwright = _playwright_or_skip()
+    base, _case_path, _tmp = server
+    cprint("edge-pill mock: one snapped outline + one unsnapped on-route", "cyan")
+    payload = _fetch_payload(base)
+    hold_s, u, v, name = _on_route_uv(payload)
+    orifices = [
+        {
+            "fork": 1,
+            "edge": 2,
+            "on_route": False,
+            "name": "visible opening",
+            "u": u,
+            "v": v,
+            "inside": True,
+            "snapped": True,
+        },
+        {
+            "fork": 1,
+            "edge": 1,
+            "on_route": True,
+            "name": "unplaced branch",
+            "u": u + 30.0,
+            "v": v,
+            "inside": True,
+            "snapped": False,
+        },
+    ]
+    mock = _RealismMock(
+        hold_s=hold_s, u=u, v=v, name=name, mode="done", orifices=orifices,
+    )
+    errors: list[str] = []
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            args=["--disable-background-timer-throttling"],
+        )
+        page = browser.new_page(viewport=VIEWPORT)
+        page.on("pageerror", lambda err: errors.append(str(err)))
+        page.on(
+            "console",
+            lambda msg: errors.append(msg.text) if msg.type == "error" else None,
+        )
+        mock.install(page)
+        _open(page, base)
+        page.wait_for_function(
+            "() => window.__realism && window.__realism.state === 'done'",
+            timeout=10_000,
+        )
+        page.evaluate(
+            """(s) => window.__p2_debug.setFly({ s, phi: 0, playing: false, pausedFork: null })""",
+            hold_s,
+        )
+        page.evaluate("(s) => window.__p2_debug.setFlyS(s)", hold_s)
+        _wait_shown(page, 0)
+        page.wait_for_timeout(350)
+
+        def _edge_report():
+            return page.evaluate(
+                """() => {
+                  const geom = (() => {
+                    const cv = document.getElementById('c');
+                    const W = cv.width, H = cv.height;
+                    const diameter = 0.94 * Math.min(W, H);
+                    return { cx: W / 2, cy: H / 2, R: diameter / 2, W, H };
+                  })();
+                  const orifices = window.__realism.lastOrifices || [];
+                  const labels = window.__realism.lastLabels || [];
+                  const snapped = orifices.find(o => o.snapped === true);
+                  const unsnapped = orifices.find(o => o.snapped === false);
+                  const edgeLab = labels.find(l => l.edgePill)
+                    || (unsnapped && labels.find(l => l.on_route));
+                  const guidance = window.__p2_debug.rig();
+                  return {
+                    cx: geom.cx,
+                    cy: geom.cy,
+                    R: geom.R,
+                    scopeClock: guidance && guidance.scopeClock,
+                    snapped,
+                    unsnapped,
+                    edgeLab,
+                    orificeCount: orifices.length,
+                    labels,
+                  };
+                }"""
+            )
+
+        report0 = _edge_report()
+        assert report0["orificeCount"] == 2, report0
+        assert report0["snapped"] is not None, report0
+        assert report0["unsnapped"] is not None, report0
+        assert report0["snapped"]["outlined"] is True, report0
+        assert report0["unsnapped"]["outlined"] is False, report0
+        assert report0["edgeLab"] is not None, report0
+        assert report0["unsnapped"]["clock"] == report0["scopeClock"], report0
+        assert report0["edgeLab"]["clock"] == report0["scopeClock"], report0
+
+        pill = report0["edgeLab"]
+        cx, cy, R = report0["cx"], report0["cy"], report0["R"]
+        r = math.hypot(pill["x"] - cx, pill["y"] - cy)
+        half = math.hypot(pill["w"] / 2, pill["h"] / 2)
+        # Rule places centre at R - halfDiag - 6; outer corner then sits ~6 px inside rim.
+        expected_r = max(0.0, R - half - 6.0)
+        edge_gap = abs(r - expected_r)
+        assert edge_gap < 40.0, (edge_gap, r, expected_r, R, half, report0)
+        assert (R - r) < 40.0 + half, (R - r, half, report0)
+        clock0 = int(report0["scopeClock"])
+        ang0 = _angle_deg_from_centre(pill["x"], pill["y"], cx, cy)
+        assert _angle_delta_deg(ang0, _clock_angle_deg(clock0)) <= 20.0, (
+            ang0, clock0, report0,
+        )
+        cprint(
+            f"  roll0 clock={clock0} r={r:.1f} expected={expected_r:.1f} "
+            f"R={R:.1f} gap={edge_gap:.1f} ang={ang0:.1f}°",
+            "green",
+        )
+        _shot(page, "realism-edge-pill-roll0.png")
+
+        cprint("roll 90°: edge pill moves with HUD clock", "cyan")
+        page.evaluate(
+            """(s) => {
+              window.__p2_debug.setFly({
+                s, playing: false, pausedFork: null, phi: Math.PI / 2,
+              });
+              return window.__p2_debug.setFlyS(s);
+            }""",
+            hold_s,
+        )
+        _wait_shown(page, 0)
+        page.wait_for_timeout(350)
+        report90 = _edge_report()
+        assert report90["unsnapped"] is not None, report90
+        assert report90["unsnapped"]["outlined"] is False, report90
+        assert report90["edgeLab"] is not None, report90
+        clock90 = report90["scopeClock"]
+        assert clock90 is not None, report90
+        assert report90["unsnapped"]["clock"] == clock90, report90
+        assert clock90 != clock0, (clock0, clock90, report90)
+        pill90 = report90["edgeLab"]
+        r90 = math.hypot(pill90["x"] - cx, pill90["y"] - cy)
+        half90 = math.hypot(pill90["w"] / 2, pill90["h"] / 2)
+        expected_r90 = max(0.0, R - half90 - 6.0)
+        assert abs(r90 - expected_r90) < 40.0, (r90, expected_r90, R, report90)
+        ang90 = _angle_deg_from_centre(pill90["x"], pill90["y"], cx, cy)
+        assert _angle_delta_deg(ang90, _clock_angle_deg(int(clock90))) <= 20.0, (
+            ang90, clock90, report90,
+        )
+        moved = math.hypot(pill90["x"] - pill["x"], pill90["y"] - pill["y"])
+        assert moved > 20.0, (moved, pill, pill90)
+        cprint(
+            f"  roll90 clock={clock90} ang={ang90:.1f}° moved={moved:.1f}px",
+            "green",
+        )
+        _shot(page, "realism-edge-pill-roll90.png")
         assert not errors, errors
         browser.close()
 
