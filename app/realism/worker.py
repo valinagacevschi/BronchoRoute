@@ -1,4 +1,4 @@
-# Changes: realistic fork worker — grouping, cache, ONNX/stub generation, API state (#57).
+# Changes: snap orifices to depth openings after render_depth; PROTOCOL realism-v2 (#60c).
 """Background realism frames: group close forks, cache by route/pose/model, stream PNGs."""
 
 from __future__ import annotations
@@ -25,9 +25,16 @@ from app.cases import case_payload, load_case_record
 from app.jobs import job_in_progress
 from app.realism.brea_geometry import brea_geometry_image
 from app.realism.depth import render_depth
-from app.realism.poses import fisheye_project, fork_poses, orifice_points
+from app.realism.poses import (
+    ORIFICE_DIR_DISTANCE_MM,
+    _point_along,
+    fisheye_project,
+    fork_poses,
+    orifice_points,
+    snap_orifices_to_openings,
+)
 
-PROTOCOL = "realism-v1"
+PROTOCOL = "realism-v2"
 STEPS = 12
 GROUP_JOIN_MM = 3.0
 MODEL_SHA256 = "419adbd774b0c0dad2eae9746c923b4f9265d5f1ab3a908fef9b3b2a784b58df"
@@ -165,6 +172,7 @@ def _orifices_for_group(
     position = np.asarray(pose["position_ras_mm"], dtype=float)
     forward = np.asarray(pose["forward"], dtype=float)
     up = np.asarray(pose["up"], dtype=float)
+    origin = np.asarray(payload["origin_mm"], dtype=float)
     rows: list[dict] = []
     for fork in group:
         for child, sample in zip(
@@ -175,6 +183,15 @@ def _orifices_for_group(
             u, v, inside = fisheye_project(
                 sample["point_ras_mm"], position, forward, up
             )
+            edge = edges_full[child["edge"]]
+            centreline = edge.get("centreline_mm", edge.get("c"))
+            point_dir = _point_along(centreline, ORIFICE_DIR_DISTANCE_MM)
+            point_dir_ras = (np.asarray(point_dir, dtype=float) + origin).tolist()
+            u_dir, v_dir, dir_inside = fisheye_project(
+                point_dir_ras, position, forward, up
+            )
+            if not dir_inside or u_dir != u_dir or v_dir != v_dir:
+                u_dir, v_dir = u, v
             rows.append({
                 "fork": fork["fork"],
                 "edge": sample["edge"],
@@ -183,6 +200,8 @@ def _orifices_for_group(
                 "u": u,
                 "v": v,
                 "inside": inside,
+                "u_dir": u_dir,
+                "v_dir": v_dir,
             })
     return rows
 
@@ -425,6 +444,9 @@ def _worker_main(
             up = np.asarray(pose["up"], dtype=float)
             depth, valid = render_depth(mask, affine, position, forward, up)
             encoded = brea_geometry_image(depth, valid, size=256)
+            snapped = snap_orifices_to_openings(
+                depth, valid, working[index]["orifices"]
+            )
             seed = group_seed(case_id, group[0]["node"])
             rgb = _run_euler(encoded, seed, cancel)
             if rgb is None or cancel.is_set():
@@ -434,6 +456,7 @@ def _worker_main(
             _atomic_write_png(png_path, rgb)
             working[index] = {
                 **working[index],
+                "orifices": snapped,
                 "ready": True,
                 "url": _frame_url(case_id, key, index),
             }
