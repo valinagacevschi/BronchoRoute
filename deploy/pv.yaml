@@ -1,3 +1,4 @@
+# Changes: reserve 4Gi for case data and realism models (#58).
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -7,7 +8,7 @@ metadata:
 spec:
   # Create /volumes/lung-nav-data on node k8s (see deploy/README.md); chown 10001:10001.
   capacity:
-    storage: 2Gi
+    storage: 4Gi
   accessModes:
     - ReadOnlyMany
   persistentVolumeReclaimPolicy: Retain

@@ -1,3 +1,4 @@
+<!-- Changes: model allowlists must also reject symlink escapes (#58). -->
 <!-- Changes: PIL save to a .tmp path needs format="PNG" (#57). -->
 <!-- Changes: realistic frame roll uses canvas rotate(-φ) to match applyRoll (#60). -->
 <!-- Changes: desktop extraResources must list estimated_airway.py and realism/* (#63). -->
@@ -159,3 +160,6 @@
   Other viewer tests open fixtures with no pipeline_version, and a top-layer
   backdrop makes the footer About and Settings links fail hit-testing. Keep the
   prompt in the page, clear of the left rail and the switcher.
+- Model hosting (#58): a safe filename and manifest entry alone do not prevent
+  a staged symlink from exposing a file outside `models/`. Resolve the target,
+  require its parent to be the models directory, and test an escaping symlink.

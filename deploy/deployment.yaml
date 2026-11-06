@@ -1,3 +1,4 @@
+# Changes: optional per-user model download keys from Secret (#58).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,6 +33,12 @@ spec:
             - name: http
               containerPort: 8765
           env:
+            - name: LUNGNAV_MODEL_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: lung-nav-model-key
+                  key: keys.json
+                  optional: true
             - name: LUNGNAV_HOST
               value: "0.0.0.0"
             - name: LUNGNAV_PORT
