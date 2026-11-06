@@ -1,0 +1,29 @@
+# Changes: bearer-only model path, isolated from viewer basic auth (#58).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lung-nav-models
+  namespace: lung-nav
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rpm: "5"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "1"
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - lung-nav.appcenter.ro
+      secretName: lung-nav-tls
+  rules:
+    - host: lung-nav.appcenter.ro
+      http:
+        paths:
+          - path: /models/
+            pathType: Prefix
+            backend:
+              service:
+                name: lung-nav
+                port:
+                  name: http

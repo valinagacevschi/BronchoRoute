@@ -183,7 +183,7 @@ A depth-conditioned image model (`broncho-flow-prototype3-realism-int8.onnx`, 55
 - **Hosting:** `GET https://lung-nav.appcenter.ro/models/<file>` with `Authorization: Bearer <key>`,
   constant-time check against per-user keys in the k8s Secret `lung-nav-model-key`; a separate Ingress
   for `/models/` only (no basic auth, nginx rate limit 5 r/min per IP); Range support; one log line per
-  download (key id, IP). The file lives on the lung-nav-data hostPath under `models/` (PV/PVC 4 GiB).
+  download (key id, IP). The file lives on the lung-nav-data hostPath under `models/` (PV 4 GiB; the bound static PVC stays 2 GiB, hostPath is not enforced).
 - **Public snapshot:** code ships; the model and its key never do. Licence for public model release open.
 - **Tests:** a stub generator (env var) for UI and Playwright tests; exact-match tests for the depth and
   encoder port.

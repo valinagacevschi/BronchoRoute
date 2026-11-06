@@ -1,3 +1,4 @@
+# Changes: register bearer-authenticated model downloads outside /api (#58).
 # Changes: realism GET/POST/PNG routes; start after RouteTarget confirm (#57).
 # Changes: expose bridge controls outside legacy review with optional evidence notes.
 # Changes: accept an optional Series override reason on import confirm.
@@ -76,6 +77,7 @@ from app.jobs import (
     terminate_all_jobs,
 )
 from app.masks import MasksUnavailable, build_masks_crop, read_masks_bytes
+from app.models_dl import router as models_router
 from app.settings import (
     DEFAULT_CT_VIEW,
     ClinicianNotSet,
@@ -183,6 +185,7 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(title="BronchoRoute", docs_url=None, redoc_url=None, lifespan=_lifespan)
 app.add_middleware(_DeployGuards)
+app.include_router(models_router)
 
 
 class ClinicianBody(BaseModel):

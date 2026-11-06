@@ -1,3 +1,4 @@
+# Changes: deploy the separate model download Ingress (#58).
 stages:
   - test
   - docker
@@ -54,7 +55,7 @@ deploy:
     - kubectl apply --validate=false -f deploy/pv.yaml
     - kubectl apply --validate=false -f deploy/pvc.yaml
     - export IMAGE="$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-    - for f in deploy/deployment.yaml deploy/service.yaml deploy/ingress.yaml; do envsubst '${IMAGE}' < "$f" | kubectl apply --validate=false -f -; done
+    - for f in deploy/deployment.yaml deploy/service.yaml deploy/ingress.yaml deploy/ingress-models.yaml; do envsubst '${IMAGE}' < "$f" | kubectl apply --validate=false -f -; done
     - kubectl rollout status deployment/lung-nav -n lung-nav --timeout=300s
   only:
     refs:
