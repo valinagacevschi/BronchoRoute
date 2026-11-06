@@ -1,4 +1,4 @@
-# Changes: pytest image needs procps (sidecar recovery calls ps); deploy the model download Ingress (#58).
+# Changes: pull-secret copy without python3 (cloud-sdk image dropped it); pytest image needs procps (sidecar recovery calls ps); deploy the model download Ingress (#58).
 stages:
   - test
   - docker
@@ -51,7 +51,10 @@ deploy:
     - apt-get update && apt-get install -y --no-install-recommends gettext-base
     - kubectl cluster-info
     - kubectl apply -f deploy/namespace.yaml --validate=false
-    - kubectl get secret docker-xelasys -n default -o json | python3 -c 'import json,sys; d=json.load(sys.stdin); d["metadata"]={"name":"docker-xelasys","namespace":"lung-nav"}; print(json.dumps(d))' | kubectl apply -f -
+    # google/cloud-sdk:latest no longer ships python3; copy the pull secret with kubectl only.
+    - kubectl get secret docker-xelasys -n default -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d > /tmp/dockerconfig.json
+    - kubectl create secret generic docker-xelasys -n lung-nav --type=kubernetes.io/dockerconfigjson --from-file=.dockerconfigjson=/tmp/dockerconfig.json --dry-run=client -o yaml | kubectl apply -f -
+    - rm -f /tmp/dockerconfig.json
     - kubectl apply --validate=false -f deploy/pv.yaml
     - kubectl apply --validate=false -f deploy/pvc.yaml
     - export IMAGE="$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
