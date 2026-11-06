@@ -108,3 +108,53 @@ def test_settings_dialog(server):
         page.locator("#settings-dialog").wait_for(state="hidden")
         assert not errors, errors
         browser.close()
+
+
+def test_realism_model_settings(server):
+    sync_playwright = _playwright_or_skip()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.goto(f"{server}/?case=local-001&variant=topology&debug=1")
+        page.locator("#settings-open").click()
+        assert page.locator("#realism-model-row").is_hidden()
+        page.close()
+        page = browser.new_page()
+        page.add_init_script("""
+          let installed = false, hasKey = false, progress, finish;
+          window.bronchoroute = {
+            realismModelStatus: async () => ({state: installed ? 'verified' : 'absent', hasKey}),
+            realismModelSetKey: async () => { hasKey = true; return {hasKey}; },
+            realismModelClearKey: async () => { hasKey = false; return {hasKey}; },
+            realismModelDownload: () => new Promise(resolve => { finish = resolve; progress({bytes: 50, total: 100}); }),
+            realismModelCancel: async () => finish({error: 'cancelled'}),
+            realismModelRemove: async () => { installed = false; return {state: 'absent', hasKey}; },
+            onRealismModelProgress: callback => { progress = callback; },
+          };
+          window.completeModel = result => { installed = result.state === 'verified'; finish({...result, hasKey}); };
+        """)
+        page.goto(f"{server}/?case=local-001&variant=topology&debug=1")
+        page.locator("#settings-open").click()
+        row = page.locator("#realism-model-row")
+        row.wait_for(state="visible")
+        assert page.locator("#realism-key").get_attribute("type") == "password"
+        assert page.locator("#realism-download").is_disabled()
+        page.locator("#realism-key").evaluate("el => { el.value = crypto.randomUUID(); }")
+        page.locator("#realism-key-save").click()
+        page.wait_for_function("!document.getElementById('realism-download').disabled")
+        assert page.locator("#realism-key").input_value() == ""
+        for result, text in [({"error": "bad_key"}, "Key rejected"),
+                             ({"error": "checksum"}, "Checksum failed"),
+                             ({"state": "verified"}, "Installed")]:
+            page.locator("#realism-download").click()
+            page.wait_for_function("document.getElementById('realism-status').textContent === 'Downloading 50%'")
+            page.evaluate("result => window.completeModel(result)", result)
+            page.wait_for_function("text => document.getElementById('realism-status').textContent === text", arg=text)
+        page.locator("#realism-remove").click()
+        page.wait_for_function("document.getElementById('realism-status').textContent === 'Not installed'")
+        page.locator("#realism-download").click()
+        page.locator("#realism-cancel").click()
+        page.wait_for_function("document.getElementById('realism-cancel').hidden")
+        page.locator("#realism-key-clear").click()
+        page.wait_for_function("document.getElementById('realism-download').disabled")
+        browser.close()

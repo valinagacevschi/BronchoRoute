@@ -737,6 +737,16 @@ body.walkthrough-active .walk-sim-label { display: block; }
       <input type="text" id="settings-role" maxlength="40" autocomplete="off" aria-describedby="settings-error">
     </label>
     <label class="settings-toggle"><input type="checkbox" id="settings-updates">Check for updates at launch</label>
+    <section id="realism-model-row" hidden aria-label="Realistic fork views">
+      <strong>Realistic fork views</strong>
+      <label>Model access key<input id="realism-key" type="password" autocomplete="off"></label>
+      <button type="button" id="realism-key-save">Save key</button>
+      <button type="button" id="realism-key-clear">Clear key</button>
+      <p id="realism-status" role="status" aria-live="polite">Not installed</p>
+      <button type="button" id="realism-download">Download</button>
+      <button type="button" id="realism-cancel" hidden>Cancel</button>
+      <button type="button" id="realism-remove">Remove</button>
+    </section>
     <p id="settings-error" role="alert"></p>
     <div>
       <button type="submit" class="about-close" id="settings-save">Save</button>
@@ -799,6 +809,44 @@ document.getElementById("about-close").addEventListener("click", () => {
   document.getElementById("about-dialog").close();
 });
 
+const realismBridge = window.bronchoroute;
+if (typeof realismBridge?.realismModelStatus === "function") {
+  const el = id => document.getElementById(`realism-${id}`);
+  document.getElementById("realism-model-row").hidden = false;
+  let busy = false, hasKey = false, percent = 0;
+  const render = result => {
+    if (result.hasKey !== undefined) hasKey = result.hasKey;
+    const errors = { bad_key: "Key rejected", checksum: "Checksum failed", no_keychain: "Keychain unavailable", key_storage: "Key storage unavailable", interrupted: "Download interrupted" };
+    el("status").textContent = busy ? `Downloading ${percent}%` : result.error ? (errors[result.error] || "Download cancelled") : result.state === "verified" ? "Installed" : "Not installed";
+    el("download").disabled = busy || !hasKey || result.state === "verified";
+    el("cancel").hidden = !busy;
+    el("remove").disabled = busy;
+    el("key-save").disabled = busy;
+    el("key-clear").disabled = busy || !hasKey;
+  };
+  const refresh = async () => { try { render(await realismBridge.realismModelStatus()); } catch { render({ error: "interrupted" }); } };
+  document.getElementById("settings-open").addEventListener("click", refresh);
+  document.getElementById("settings-dialog").addEventListener("close", () => { el("key").value = ""; });
+  el("key-save").onclick = async () => {
+    const key = el("key").value;
+    el("key").value = "";
+    try { const result = await realismBridge.realismModelSetKey(key); if (result.error) render(result); else await refresh(); }
+    catch { render({ error: "key_storage" }); }
+  };
+  el("key-clear").onclick = async () => { render(await realismBridge.realismModelClearKey()); await refresh(); };
+  el("remove").onclick = async () => render(await realismBridge.realismModelRemove());
+  el("cancel").onclick = () => realismBridge.realismModelCancel();
+  el("download").onclick = async () => {
+    busy = true; percent = 0; render({});
+    try { const result = await realismBridge.realismModelDownload(); busy = false; render(result); }
+    catch { busy = false; render({ error: "interrupted" }); }
+  };
+  realismBridge.onRealismModelProgress(progress => {
+    percent = Math.floor(100 * progress.bytes / progress.total);
+    if (busy) el("status").textContent = `Downloading ${percent}%`;
+  });
+  refresh();
+}
 const settingsDialog = document.getElementById("settings-dialog");
 const settingsInitials = document.getElementById("settings-initials");
 const settingsRole = document.getElementById("settings-role");

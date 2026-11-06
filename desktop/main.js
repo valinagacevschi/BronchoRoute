@@ -13,7 +13,7 @@
 // Changes: native Archive IPC and File menu alongside sidecar lifecycle.
 "use strict";
 
-const { app, BrowserWindow, dialog, ipcMain, Menu, session } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, session, safeStorage } = require("electron");
 const { execFile, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -46,6 +46,7 @@ const {
   saveVideoDefaultPath,
   resolveFfmpeg,
 } = require("./lib");
+const realismModel = require("./realism-model");
 const { startEncoder } = require("./encoder");
 const {
   downloadWeights,
@@ -623,6 +624,39 @@ function manifestPath() {
   return path.join(__dirname, "weights-manifest.json");
 }
 
+let realismAbort = null;
+let realismDownload = null;
+function installRealismModel() {
+  const root = () => resolveDataRoot(process.env, app.getPath("userData"));
+  const keys = realismModel.keyStore(app.getPath("userData"), safeStorage);
+  const current = () => ({ ...realismModel.status(root()), hasKey: keys.hasKey() });
+  const handlers = {
+    status: current,
+    "set-key": key => { keys.setKey(key); return { hasKey: keys.hasKey() }; },
+    "clear-key": () => { keys.clearKey(); return { hasKey: false }; },
+    cancel: () => { realismAbort?.abort(); return true; },
+    remove: () => { if (realismDownload) return { error: "busy" }; realismModel.remove(root()); return current(); },
+    download: () => {
+      if (realismDownload) return realismDownload;
+      const key = keys.getKey();
+      realismAbort = new AbortController();
+      realismDownload = realismModel.download({ dataRoot: root(), key, signal: realismAbort.signal,
+        onProgress: progress => {
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("bronchoroute:realism-model-progress", progress);
+        },
+      }).then(current).catch(error => ({ error: error.code || "interrupted" }))
+        .finally(() => { realismDownload = null; realismAbort = null; });
+      return realismDownload;
+    },
+  };
+  for (const [name, handler] of Object.entries(handlers)) {
+    ipcMain.handle(`bronchoroute:realism-model-${name}`, (event, payload) => {
+      if (!fromMainWindow(event)) return { error: "unknown_window" };
+      try { return handler(payload); } catch (error) { return { error: error.code || "key_storage" }; }
+    });
+  }
+}
+
 function installWeights() {
   ipcMain.handle("bronchoroute:weights-required", (event) => {
     if (!fromMainWindow(event)) throw new Error("Weights request from an unknown window");
@@ -690,6 +724,7 @@ async function launch() {
   installSaveImage();
   installRecord();
   installWeights();
+  installRealismModel();
   installNavigationGuards(mainWindow);
   await loadInline(mainWindow, splashHtml());
   mainWindow.show();
@@ -758,6 +793,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", (event) => {
+  realismAbort?.abort();
   if (weightsAbort) weightsAbort.abort();
   if (shutdownStarted) {
     return;
