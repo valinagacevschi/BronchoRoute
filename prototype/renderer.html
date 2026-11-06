@@ -1012,7 +1012,7 @@ if (A.signoff && A.signoff.length) {
 }
 const cv = document.getElementById("c");
 let ctx = cv.getContext("2d");
-let exportFrame = { active: false, hud: true, lesion: true, deferHud: false };
+let exportFrame = { active: false, hud: true, lesion: true, deferHud: false, realismOffline: false };
 let lastEndoHudPaint = null;
 let lastBurnIn = null;
 const css = getComputedStyle(document.documentElement);
@@ -2137,6 +2137,28 @@ function updateRealismFade(station, now) {
   return frame;
 }
 
+function exportRealismOpacity(station, frame) {
+  if (!frame) return 0;
+  const img = realism.images.get(frame.group);
+  if (!img || !img.complete || !(img.naturalWidth > 0)) return 0;
+  // Offline fade is distance-based: ramp over the outer 0.5 mm at each
+  // end of the hold window, fully opaque in the middle (including hold_s).
+  return Math.min(1, Math.max(0, (REALISM_HOLD_MM - Math.abs(station - frame.hold_s)) / 0.5));
+}
+
+async function decodeReadyRealismFrames() {
+  preloadRealismFrames(realism.frames);
+  await Promise.all(realism.frames.filter(frame => frame.ready && frame.url).map(async frame => {
+    const img = realism.images.get(frame.group);
+    if (!img) return;
+    try { await img.decode(); }
+    catch (err) {
+      // A failed image uses the schematic, without waiting for generation.
+      if (realism.images.get(frame.group) === img) realism.images.delete(frame.group);
+    }
+  }));
+}
+
 function rearmRealismHolds() {
   realism.armed = new Set(
     realism.frames
@@ -2515,16 +2537,19 @@ function drawRealismOrifices(frame, phi) {
 }
 
 function drawRealismLayer(phi, station) {
-  let frame = updateRealismFade(station, performance.now());
-  const alpha = realism.opacity;
+  const offline = exportFrame.realismOffline;
+  let frame = offline ? activeRealismFrame(station) : updateRealismFade(station, performance.now());
+  const alpha = offline ? exportRealismOpacity(station, frame) : realism.opacity;
   if (alpha <= 0.001) {
     realism.lastOrifices = [];
     realism.lastLabels = [];
     return;
   }
   // Fade out on the last shown frame after the camera leaves the hold window.
-  if (frame) realism.lastFrame = frame;
-  else frame = realism.lastFrame;
+  if (!offline) {
+    if (frame) realism.lastFrame = frame;
+    else frame = realism.lastFrame;
+  }
   if (!frame) {
     realism.lastOrifices = [];
     realism.lastLabels = [];
@@ -3175,7 +3200,7 @@ function drawEndoluminal(pose) {
   lastEndoHudPaint = hud;
   // Advance realism fade before the schematic orifice pass so opacity > 0.5
   // skips outlines/labels on the same frame the realistic image is dominant.
-  updateRealismFade(station, performance.now());
+  if (!exportFrame.realismOffline) updateRealismFade(station, performance.now());
   drawForkOrifices(toView, project, lastGuidance, station);
   drawAnteriorTick(rings, right, up, dir, lastGuidance, station);
   drawEndoluminalLesion(toView);
@@ -3393,7 +3418,9 @@ function drawForkOrifices(toView, projectFn, hud, station) {
   }));
   // Realistic frame owns the lumen: skip schematic orifice outlines/labels so
   // they do not bleed past the circle edge under the fisheye image.
-  if (realism.opacity > 0.5) {
+  const realismAlpha = exportFrame.realismOffline
+    ? exportRealismOpacity(station, activeRealismFrame(station)) : realism.opacity;
+  if (realismAlpha > 0.5) {
     lastForkLabels = [];
     lastForkOrificesDrawn = false;
     forkOrificesSkipCount += 1;
@@ -5183,6 +5210,7 @@ function withExportFrame(hud, lesion, paint) {
     exportFrame.hud = true;
     exportFrame.lesion = true;
     exportFrame.deferHud = false;
+    exportFrame.realismOffline = false;
     ctx = screenCtx;
     W = screenW;
     H = screenH;
@@ -5201,6 +5229,7 @@ function renderStillCanvas(options) {
   const offCtx = off.getContext("2d", { alpha: false }) || off.getContext("2d");
   if (!offCtx) throw new Error("Could not encode PNG");
   withExportFrame(hud, lesion, () => {
+    exportFrame.realismOffline = true;
     ctx = offCtx;
     W = cssW;
     H = cssH;
@@ -5271,6 +5300,7 @@ function renderVideoCanvas(options) {
   const offsetY = (height - contentH) / 2;
   withExportFrame(hud, lesion, () => {
     exportPose = pose;
+    exportFrame.realismOffline = !!pose;
     exportFrame.deferHud = !!(hud && viewKey === "endoluminal");
     try {
       ctx = offCtx;
@@ -5359,6 +5389,7 @@ function downloadPngBlob(blob, name) {
 }
 
 async function exportStill(options) {
+  await decodeReadyRealismFrames();
   if (document.fonts && document.fonts.ready) {
     try { await document.fonts.ready; } catch (err) { /* draw with the fallback face */ }
   }
@@ -5928,6 +5959,7 @@ async function renderFlythrough(options) {
   const forks = flythroughForkList(length);
   const poses = flythroughPoses(length, forks);
   const total = poses.length;
+  await decodeReadyRealismFrames();
   const saved = { s: fly.s, phi: fly.phi };
   // Show the progress row before the first frame so the rail size stays put,
   // then match the live camera viewport to that CSS size.
