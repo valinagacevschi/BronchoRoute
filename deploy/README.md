@@ -109,7 +109,7 @@ Stage `broncho-flow-int8.onnx` and its matching `model.json` under a local
 `/tmp/lung-nav-model-stage/models/` directory. Generate the manifest locally:
 
 ```bash
-python3 - <<'PY'
+uv run --no-project --python 3.12 python - <<'PY'  # hashlib.file_digest needs Python 3.11+
 import hashlib
 import json
 from pathlib import Path
