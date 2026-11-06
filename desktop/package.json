@@ -26,6 +26,7 @@
       "encoder.js",
       "preload.js",
       "weights.js",
+      "realism-model.js",
       "weights-manifest.json",
       "updater.js"
     ],

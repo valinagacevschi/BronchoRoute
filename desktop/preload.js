@@ -53,6 +53,17 @@ contextBridge.exposeInMainWorld("bronchoroute", {
   getPathForFile(file) {
     return webUtils.getPathForFile(file);
   },
+  realismModelStatus: () => ipcRenderer.invoke("bronchoroute:realism-model-status"),
+  realismModelSetKey: key => ipcRenderer.invoke("bronchoroute:realism-model-set-key", key),
+  realismModelClearKey: () => ipcRenderer.invoke("bronchoroute:realism-model-clear-key"),
+  realismModelDownload: () => ipcRenderer.invoke("bronchoroute:realism-model-download"),
+  realismModelCancel: () => ipcRenderer.invoke("bronchoroute:realism-model-cancel"),
+  realismModelRemove: () => ipcRenderer.invoke("bronchoroute:realism-model-remove"),
+  onRealismModelProgress(callback) {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on("bronchoroute:realism-model-progress", listener);
+    return () => ipcRenderer.removeListener("bronchoroute:realism-model-progress", listener);
+  },
   weightsRequired() {
     return ipcRenderer.invoke("bronchoroute:weights-required");
   },
