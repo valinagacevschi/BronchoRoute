@@ -1,3 +1,4 @@
+# Changes: load optional realism dependencies only when realism is requested.
 # Changes: register bearer-authenticated model downloads outside /api (#58).
 # Changes: realism GET/POST/PNG routes; start after RouteTarget confirm (#57).
 # Changes: expose bridge controls outside legacy review with optional evidence notes.
@@ -97,7 +98,6 @@ from app.review import (
     undo_correction,
 )
 from app.route_target import route_target_candidates, set_route_target
-from app.realism.worker import realism_png_path, realism_status, start_realism
 from app.signoff import SignoffArtifactError, apply_signoff, version_report_html
 from app.versions import (
     REPORT_CSP,
@@ -658,6 +658,8 @@ async def api_route_target(case_id: str, request: Request):
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
     try:
+        from app.realism.worker import start_realism
+
         start_realism(case_id)
     except Exception:  # noqa: BLE001 — confirm already succeeded; realism is best-effort
         pass
@@ -667,6 +669,10 @@ async def api_route_target(case_id: str, request: Request):
 @app.get("/api/cases/{case_id}/realism")
 def api_realism_status(case_id: str):
     try:
+        from app.realism.worker import realism_status
+    except ImportError:
+        return {"status": "unavailable", "reason": "realism not installed", "key": None, "frames": []}
+    try:
         return realism_status(case_id)
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
@@ -675,6 +681,10 @@ def api_realism_status(case_id: str):
 @app.post("/api/cases/{case_id}/realism/start")
 def api_realism_start(case_id: str):
     try:
+        from app.realism.worker import start_realism
+    except ImportError:
+        return {"status": "unavailable", "reason": "realism not installed", "key": None, "frames": []}
+    try:
         return start_realism(case_id)
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
@@ -682,6 +692,10 @@ def api_realism_start(case_id: str):
 
 @app.get("/api/cases/{case_id}/realism/{key}/{name}.png")
 def api_realism_png(case_id: str, key: str, name: str):
+    try:
+        from app.realism.worker import realism_png_path
+    except ImportError:
+        raise HTTPException(status_code=404, detail="Not Found") from None
     try:
         path = realism_png_path(case_id, key, name)
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
