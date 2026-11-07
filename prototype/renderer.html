@@ -1203,7 +1203,7 @@ const tok = n => css.getPropertyValue(n).trim();
 
 const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
-    hint: "<kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front)" },
+    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front)" },
   { key: "endoluminal", name: "Endoluminal",
     hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>V</kbd> realistic forks · <kbd>T</kbd> reset route" },
   { key: "topology", name: "Topology map",
@@ -1297,6 +1297,8 @@ const hypot3 = v => Math.hypot(v[0], v[1], v[2]);
 const DEFAULT_DIST = 260;
 const PITCH_MAX = 89 * Math.PI / 180;
 const ORBIT_RATE = 0.006;
+const ANATOMICAL_FIT_MARGIN = 0.08;
+let anatomicalFitDone = false;
 
 const CHILDREN = (() => {
   const kids = new Map();
@@ -1396,6 +1398,7 @@ function applyPreset(name, { resetPan = true } = {}) {
   cam.dist = DEFAULT_DIST;
   if (resetPan) { cam.panX = 0; cam.panY = 0; }
   syncBasis();
+  if (resetPan) fitAnatomicalCamera();
   syncPresetButtons();
 }
 
@@ -1464,6 +1467,45 @@ function project(p, c) {
   const y = dot(rel, c.up);
   const f = (Math.min(W, H) * 0.9) / depth;
   return { x: W / 2 + x * f + c.panX, y: H / 2 - y * f + c.panY, z: depth, f };
+}
+
+function projectedNodeBounds(c, dist) {
+  // Same projection as drawing, with pan forced to zero so the result is the
+  // model's own footprint. Depth grows with dist, so iterate the distance.
+  const probe = { ...c, dist, panX: 0, panY: 0 };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const node of Object.values(A.nodes)) {
+    const p = project(node.p, probe);
+    if (!p) return null;
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  }
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+
+function fitAnatomicalCamera() {
+  if (!(W > 0 && H > 0)) return false;
+  const targetW = W * (1 - 2 * ANATOMICAL_FIT_MARGIN);
+  const targetH = H * (1 - 2 * ANATOMICAL_FIT_MARGIN);
+  let dist = Math.max(60, Math.min(900, cam.dist));
+  let bounds = projectedNodeBounds(cam, dist);
+  for (let i = 0; i < 24 && bounds; i++) {
+    const spanX = bounds.maxX - bounds.minX;
+    const spanY = bounds.maxY - bounds.minY;
+    const ratio = Math.max(spanX / targetW, spanY / targetH);
+    if (!(ratio > 0) || Math.abs(ratio - 1) <= 0.01) break;
+    const next = Math.max(60, Math.min(900, dist * ratio));
+    if (Math.abs(next - dist) < 1e-6) break;
+    dist = next;
+    const grown = projectedNodeBounds(cam, dist);
+    if (!grown) break;
+    bounds = grown;
+  }
+  if (!bounds) return false;
+  cam.dist = dist;
+  cam.panX = W / 2 - (bounds.minX + bounds.maxX) / 2;
+  cam.panY = H / 2 - (bounds.minY + bounds.maxY) / 2;
+  return true;
 }
 
 /* ------------------------------------------------------- variant A: tree */
@@ -1586,6 +1628,10 @@ function drawEstimatedAirway() {
 function drawAnatomical(pose) {
   const prevCam = anatomicalDrawCam;
   anatomicalDrawCam = anatomicalPoseCam(pose) || anatomicalPoseCam(exportPose);
+  if (!anatomicalDrawCam && !anatomicalFitDone) {
+    anatomicalFitDone = true;
+    fitAnatomicalCamera();
+  }
   try {
   anatomicalHighlightDraws = 0;
   lastAnatomicalRouteTarget = null;
@@ -4479,7 +4525,10 @@ cv.addEventListener("pointerdown", e => {
     e.preventDefault();
     return;
   }
-  pointerDownAt = { x: e.clientX, y: e.clientY, rotate: variant === 2 && e.shiftKey };
+  pointerDownAt = {
+    x: e.clientX, y: e.clientY,
+    rotate: (variant === 2 || variant === 0) && e.shiftKey,
+  };
   if (pointerDownAt.rotate) setTopoRotation(topoRot);
   drag = { x: e.clientX, y: e.clientY }; cv.classList.add("dragging");
   cv.setPointerCapture(e.pointerId);
@@ -4521,7 +4570,10 @@ cv.addEventListener("pointermove", e => {
   }
   drag = { x: e.clientX, y: e.clientY };
   if (variant === 2) { cam.panX += dx; cam.panY += dy; }
-  else if (variant === 0) { orbitCamera(dx, dy); }
+  else if (variant === 0) {
+    if (pointerDownAt && pointerDownAt.rotate) orbitCamera(dx, dy);
+    else { cam.panX += dx; cam.panY += dy; }
+  }
 });
 cv.addEventListener("pointerleave", () => { topoPointer = null; });
 cv.addEventListener("wheel", e => {
