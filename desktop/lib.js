@@ -1,3 +1,4 @@
+// Changes: desktop start URL opens the editing page, not the read-only viewer (#70).
 // Changes: sidecar env points at the downloaded realism model (#67).
 // Changes: drop unused DISCLAIMER constant (footer/About live in the HTML template).
 // Changes: save-video names allow anatomical-orbit and topology-spin (#45).
@@ -144,6 +145,14 @@ function sidecarOrigin(port) {
     throw new Error("invalid sidecar port");
   }
   return `http://127.0.0.1:${parsed}`;
+}
+
+function startPageUrl(origin, caseId) {
+  const base = `${origin}/renderer.template.html`;
+  if (!caseId) {
+    return base;
+  }
+  return `${base}?case=${encodeURIComponent(caseId)}`;
 }
 
 function requestFilterUrls(port) {
@@ -364,6 +373,7 @@ module.exports = {
   buildSidecarEnv,
   sidecarLaunch,
   sidecarOrigin,
+  startPageUrl,
   requestFilterUrls,
   isAllowedAppUrl,
   firstLocalCaseId,

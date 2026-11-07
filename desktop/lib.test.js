@@ -1,3 +1,4 @@
+// Changes: desktop start URL opens the editing page, not the read-only viewer (#70).
 // Changes: sidecar env carries the downloaded realism model path (#67).
 // Changes: research footer asserted from template text; DISCLAIMER export gone.
 // Changes: accept anatomical-orbit and topology-spin video names (#45).
@@ -29,6 +30,7 @@ const {
   requestFilterUrls,
   resolveDataRoot,
   splitCompleteLines,
+  startPageUrl,
   atomicWriteJson,
   PNG_SIGNATURE,
   SAVE_IMAGE_MAX_BYTES,
@@ -512,4 +514,13 @@ test("save video default path uses an injected movies directory", () => {
   assert.throws(() => saveVideoDefaultPath(base, "local-001_anatomical_20261101-2350.png"), /invalid save video name/);
   assert.throws(() => saveVideoDefaultPath("  ", name), /base directory/);
   assert.throws(() => resolveSaveVideoBaseDir("", "  "), /videos directory/);
+});
+
+test("start page URL opens the editing page with or without a Case", () => {
+  const origin = "http://127.0.0.1:8765";
+  assert.equal(
+    startPageUrl(origin, "local-001"),
+    `${origin}/renderer.template.html?case=local-001`,
+  );
+  assert.equal(startPageUrl(origin, null), `${origin}/renderer.template.html`);
 });

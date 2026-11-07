@@ -1,3 +1,4 @@
+// Changes: desktop window opens the editing page, not the read-only viewer (#70).
 // Changes: drop first-launch disclaimer overlay; FileVault note shows on its own.
 // Changes: splash and disclaimer/FileVault overlays follow viewer theme tokens.
 // Changes: check GitHub Releases after load when updates_enabled; ask before download/install.
@@ -34,6 +35,7 @@ const {
   resolveDataRoot,
   shouldWarnLowRam,
   sidecarOrigin,
+  startPageUrl,
   splitCompleteLines,
   isSaveImageName,
   isPngBytes,
@@ -311,10 +313,7 @@ async function chooseStartUrl(port, token) {
   }
   const cases = await response.json();
   const caseId = firstLocalCaseId(cases);
-  if (!caseId) {
-    return `${origin}/`;
-  }
-  return `${origin}/?case=${encodeURIComponent(caseId)}`;
+  return startPageUrl(origin, caseId);
 }
 
 function readFileVaultStatus() {
