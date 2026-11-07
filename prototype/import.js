@@ -1,3 +1,4 @@
+// Changes: Archive open shows an in-page guard instead of window.confirm.
 // Changes: drop Series initials prompt; settings auto-supply initials.
 // Changes: selection summary uses textContent (no Archive description HTML).
 // Changes: focus initials when Series prompt opens so Electron insertText lands.
@@ -503,12 +504,14 @@
     syncIntakeChrome();
   }
 
+  function processingGuard() {
+    if (!busy && !activeCase) return false;
+    message("Cancel current processing first.");
+    return true;
+  }
+
   async function prepare() {
-    if (busy) return false;
-    if (activeCase) {
-      if (!window.confirm("Cancel current processing?")) return false;
-      await cancel();
-    }
+    if (processingGuard()) return false;
     if (session) {
       await api(`/api/imports/${session.import_id}`, { method: "DELETE" });
       session = null;
@@ -693,7 +696,13 @@
   }
 
   async function reprocess(caseId, source) {
-    if (busy) return;
+    if (busy) {
+      const text = "Cancel current processing first.";
+      if (source === "library") libraryMessage(text);
+      else if (source === "outdated") get("outdated-error").textContent = text;
+      else message(text);
+      return;
+    }
     busy = true;
     try {
       if (!await ensureModels()) {
@@ -1169,7 +1178,7 @@
   get("archive-file").addEventListener("change", event => {
     const file = event.target.files[0];
     event.target.value = "";
-    if (file) scan(null, file);
+    if (file) scan(null, file).catch(error => message(error.message));
   });
   const drop = get("archive-drop");
   drop.addEventListener("dragenter", event => {
@@ -1194,9 +1203,11 @@
     const file = event.dataTransfer.files[0];
     if (!file) return;
     const path = window.bronchoroute?.getPathForFile(file);
-    scan(path, file);
+    scan(path, file).catch(error => message(error.message));
   });
-  if (window.bronchoroute) window.bronchoroute.onOpenArchive(path => scan(path));
+  if (window.bronchoroute) {
+    window.bronchoroute.onOpenArchive(path => scan(path).catch(error => message(error.message)));
+  }
   window.addEventListener("resize", placeArchiveOpen);
   const placeWhenChromeMoves = new MutationObserver(placeArchiveOpen);
   placeWhenChromeMoves.observe(document.body, {

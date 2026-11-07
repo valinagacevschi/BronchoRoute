@@ -4,6 +4,7 @@
 # Changes: settings assertion includes the FileVault note flag.
 # Changes: settings payload includes ram_warning_shown.
 # Changes: import initials share Settings and leave the other preferences intact.
+# Changes: Archive open while processing shows an in-page guard instead of a confirm.
 # Changes: real-click Archive import and cancellation on a free port and isolated state.
 from __future__ import annotations
 
@@ -112,14 +113,9 @@ def test_archive_import(tracer_server, cancel):
         page.screenshot(path=str(shots / "processing.png"))
         if cancel:
             # The cancel button is enabled only once the import has a job to cancel.
-            dialogs = []
-            def keep_processing(dialog):
-                dialogs.append(dialog.message)
-                dialog.dismiss()
-            page.once("dialog", keep_processing)
             page.wait_for_function("() => !document.querySelector('#processing-cancel').disabled")
             page.locator("#archive-open").click()
-            assert dialogs == ["Cancel current processing?"]
+            page.locator("#import-message").get_by_text("Cancel current processing first.").wait_for()
             assert page.locator("#processing").is_visible()
             page.locator("#processing-cancel").click()
             page.get_by_text("Processing cancelled. Open an Archive to try again.").wait_for()
