@@ -1,3 +1,4 @@
+<!-- Changes: route-target replace confirm, Generate realistic images checkbox, fork-still progress (#68). -->
 <!-- Changes: standalone viewer never POSTs realism/start (view-only, no writes). -->
 <!-- Changes: realistic route export dollies anchor frames with depth reprojection; fly waits for fork textures (#66). -->
 <!-- Changes: unsnapped orifices draw edge pills (no outline) at HUD clock on the circle (#60d). -->
@@ -332,6 +333,12 @@ body.ct-panes-active .proto {
 }
 #route-target-pick[aria-pressed="true"] { border-color: var(--steel); color: var(--steel); }
 #route-target-pick:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+#route-target-realism-option { font-size: 12px; color: var(--muted); }
+#route-target-realism-option[hidden] { display: none; }
+#route-realism-progress { display: flex; flex-direction: column; gap: 4px; }
+#route-realism-progress[hidden] { display: none; }
+#route-realism-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+#route-realism-bar { width: 100%; height: 8px; }
 #route-target-status { margin: 0; min-height: 1.2em; font-size: 12px; color: var(--muted); }
 #route-target-status.is-error { color: #a32b24; }
 #bridge-list { padding: 6px 10px; font-size: 12px; border-bottom: 1px solid var(--muted); }
@@ -596,6 +603,11 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <h2>RouteTarget</h2>
     <div class="route-target-cards" id="route-target-cards"></div>
     <button type="button" id="route-target-pick" aria-pressed="false">Pick a point</button>
+    <label id="route-target-realism-option" hidden><input type="checkbox" id="route-target-realism" checked> Generate realistic images</label>
+    <div id="route-realism-progress" hidden>
+      <progress id="route-realism-bar" value="0" max="1"></progress>
+      <span id="route-realism-count"></span>
+    </div>
     <p id="route-target-status" role="status"></p>
   </section>
 
@@ -2126,7 +2138,55 @@ window.__realism = {
 
 function syncRealismHook() {
   syncRouteRealismOption();
+  syncTargetRealismOption();
+  syncTargetRealismProgress();
   // window.__realism uses live getters; kept as a no-op call site marker.
+}
+
+function realismProgressModel() {
+  if (!SERVER_MODE || !realism.available) return null;
+  if (realism.state !== "running") return null;
+  const frames = realism.frames || [];
+  if (!frames.length) return null;
+  const done = frames.filter(frame => frame.ready).length;
+  const pending = frames.find(frame => !frame.ready);
+  return {done, total: frames.length, group: pending ? pending.group : null};
+}
+
+function realismProgressText(progress) {
+  const suffix = progress.group == null ? "" : ` — group ${progress.group + 1} rendering`;
+  return `${progress.done}/${progress.total} fork stills${suffix}`;
+}
+
+function syncTargetRealismOption() {
+  const option = document.getElementById("route-target-realism-option");
+  if (!option) return;
+  option.hidden = VIEWER_MODE || !SERVER_MODE || !realism.available
+    || realism.state === "unavailable" || realism.state === "off";
+}
+
+function syncTargetRealismProgress() {
+  const wrap = document.getElementById("route-realism-progress");
+  if (!wrap) return;
+  const progress = realismProgressModel();
+  if (!progress) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  const bar = document.getElementById("route-realism-bar");
+  if (bar) {
+    bar.max = progress.total;
+    bar.value = progress.done;
+  }
+  const count = document.getElementById("route-realism-count");
+  if (count) count.textContent = realismProgressText(progress);
+}
+
+function targetRealismWanted() {
+  const option = document.getElementById("route-target-realism-option");
+  const box = document.getElementById("route-target-realism");
+  return !!option && !option.hidden && !!box && box.checked;
 }
 
 function realismCircleGeom() {
@@ -5046,14 +5106,31 @@ function setupRouteTargetPanel() {
   }
   refreshCasePayload = reloadCasePayload;
 
+  function currentRouteTargetRas() {
+    const rt = A && A.route_target;
+    if (!rt || rt.stale || !Array.isArray(rt.ras_mm) || rt.ras_mm.length !== 3) {
+      return null;
+    }
+    return rt.ras_mm.map(value => Number(value).toFixed(2)).join(", ");
+  }
+
   async function putRouteTarget(payload) {
     if (VIEWER_MODE || routeTargetBusy || !CASE_ID) return;
+    const oldTarget = currentRouteTargetRas();
+    if (oldTarget != null) {
+      const replace = window.confirm(
+        "Replace the current route target? Its tissue images will be deleted."
+        + `\nCurrent target: ${oldTarget} mm`,
+      );
+      if (!replace) return;
+    }
+    const generateRealism = targetRealismWanted();
     routeTargetBusy = true;
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/route-target`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({...payload, generate_realism: generateRealism}),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -5064,7 +5141,7 @@ function setupRouteTargetPanel() {
       setRouteTargetStatus("", false);
       await reloadCasePayload();
       await refreshRouteTargetPanel();
-      startRealism().catch(() => {});
+      if (generateRealism) startRealism().catch(() => {});
     } catch (err) {
       setRouteTargetStatus(String(err.message || err), true);
     } finally {
@@ -6107,7 +6184,9 @@ function syncFlythroughUi() {
   const recording = recordSession != null;
   const gate = !running && onEndo ? forkTextureGate() : null;
   const gateKey = gate ? `${gate.done}/${gate.total}` : "";
-  const key = `${view}|${running}|${reason}|${recording}|${gateKey}`;
+  const tissueProgress = !running ? realismProgressModel() : null;
+  const tissueKey = tissueProgress ? realismProgressText(tissueProgress) : "";
+  const key = `${view}|${running}|${reason}|${recording}|${gateKey}|${tissueKey}`;
   if (key === flythroughUiKey) return;
   flythroughUiKey = key;
   const btn = document.getElementById("flythrough-btn");
@@ -6138,7 +6217,18 @@ function syncFlythroughUi() {
     reasonEl.textContent = reason;
   }
   if (cancel) cancel.hidden = !running;
-  if (progress && !running) progress.hidden = true;
+  if (progress && !running) {
+    progress.hidden = !tissueProgress;
+    if (tissueProgress) {
+      const bar = document.getElementById("flythrough-bar");
+      if (bar) {
+        bar.max = tissueProgress.total;
+        bar.value = tissueProgress.done;
+      }
+      const count = document.getElementById("flythrough-count");
+      if (count) count.textContent = realismProgressText(tissueProgress);
+    }
+  }
 }
 
 function yieldToEventLoop() {
