@@ -45,7 +45,7 @@ _ort_session = None
 _ort_session_path: str | None = None
 _ort_lock = threading.Lock()
 
-_states_lock = threading.Lock()
+_states_lock = threading.RLock()
 _states: dict[str, dict[str, Any]] = {}
 
 _worker_lock = threading.Lock()
@@ -400,7 +400,7 @@ def _delete_other_keys(case_id: str, keep_key: str) -> None:
     if not root.is_dir():
         return
     for child in root.iterdir():
-        if child.is_dir() and child.name != keep_key:
+        if child.is_dir() and child.name != keep_key and not (child / "route").is_dir():
             shutil.rmtree(child, ignore_errors=True)
 
 
