@@ -1,3 +1,4 @@
+# Changes: route depth PNG endpoint before the RGB route so kf-N.depth.png resolves (#66).
 # Changes: load optional realism dependencies only when realism is requested.
 # Changes: register bearer-authenticated model downloads outside /api (#58).
 # Changes: realism GET/POST/PNG routes; start after RouteTarget confirm (#57).
@@ -715,6 +716,21 @@ def api_realism_route_start(case_id: str):
 @app.post("/api/cases/{case_id}/realism/route/cancel")
 def api_realism_route_cancel(case_id: str):
     return _route_realism(case_id, "cancel_route")
+
+
+@app.get("/api/cases/{case_id}/realism/route/{key}/kf-{index}.depth.png")
+def api_realism_route_depth_png(case_id: str, key: str, index: int):
+    try:
+        from app.realism.route_keyframes import route_depth_png_path
+    except ImportError:
+        raise HTTPException(status_code=404, detail="Not Found") from None
+    try:
+        path = route_depth_png_path(case_id, key, index)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    if path is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(path, media_type="image/png")
 
 
 @app.get("/api/cases/{case_id}/realism/route/{key}/kf-{index}.png")
