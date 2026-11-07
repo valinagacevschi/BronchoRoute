@@ -1,3 +1,4 @@
+<!-- Changes: shared ? help button and help sheet on every screen (#71). -->
 <!-- Changes: route-target replace confirm, Generate realistic images checkbox, fork-still progress (#68). -->
 <!-- Changes: standalone viewer never POSTs realism/start (view-only, no writes). -->
 <!-- Changes: realistic route export dollies anchor frames with depth reprojection; fly waits for fork textures (#66). -->
@@ -591,7 +592,9 @@ body.walkthrough-active .walk-sim-label { display: block; }
 
 <aside class="rail">
   <div class="rail-body">
-  <div class="brand"><span>BronchoRoute</span>Airway route viewer</div>
+  <div class="brand-row">
+    <div class="brand"><span>BronchoRoute</span>Airway route viewer</div>
+  </div>
 
   <section class="review-warnings" id="review-warnings" hidden aria-label="Review warnings">
     <button type="button" id="review-warnings-toggle" aria-expanded="true"
@@ -769,6 +772,121 @@ body.walkthrough-active .walk-sim-label { display: block; }
     </div>
   </form>
 </dialog>
+
+<template id="help-content">
+  <section class="help-section" aria-labelledby="help-realistic">
+    <h2 id="help-realistic">Realistic images</h2>
+    <p>Realistic images replace the drawn fork view with generated tissue pictures.
+    The app makes one still for each group of forks on the route.
+    <!-- app/realism/worker.py:58 group_forks; prototype/renderer.template.html:2339 activeRealismFrame --></p>
+    <ol>
+      <li>Confirm a lesion. The RouteTarget panel then appears with the Generate realistic images checkbox.
+      <!-- prototype/renderer.template.html:5270-5277 --></li>
+      <li>Leave Generate realistic images checked to make the images. Clear it to keep the drawn view.
+      <!-- prototype/renderer.template.html:609, 2304-2307, 5245 --></li>
+      <li>Choose a target. The app starts generation after it saves the target.
+      <!-- prototype/renderer.template.html:5245-5262 --></li>
+    </ol>
+    <p>While images generate, the panel shows a progress bar and a count such as 5/14 fork stills.
+    The total is the number of fork groups on the route. It can differ from 14.
+    The panel reads progress every two seconds.
+    <!-- prototype/renderer.template.html:2226, 2264-2277 --></p>
+    <p>If you confirm a new target, the app asks "Replace the current route target? Its tissue images will be deleted."
+    If you agree, it deletes the old stills and generates new ones.
+    <!-- prototype/renderer.template.html:5235-5244; app/realism/worker.py:398-404, 471 --></p>
+    <p>To turn realistic images off, clear Generate realistic images before you confirm a new target.
+    In Endoluminal view, press V to hide or show the generated tissue layer.
+    The layer toggle does not delete images.
+    <!-- prototype/renderer.template.html:4828-4830, 2339-2340 --></p>
+    <p>The model is a separate download. Open Settings. Under Realistic fork views, type the model access key,
+    then click Download. Ask the maintainer for the access key.
+    <!-- prototype/renderer.template.html:758-767; desktop/realism-model.js:221 --></p>
+    <p>Tissue shows only at forks that have a finished image. Until then the app draws the normal view.
+    Export fly-through waits for all fork stills, so it can stay disabled while generation runs.
+    <!-- prototype/renderer.template.html:2339-2354, 6279-6291, 6316-6323 --></p>
+  </section>
+
+  <section class="help-section" aria-labelledby="help-lesion">
+    <h2 id="help-lesion">Mark a lesion</h2>
+    <ol>
+      <li>Open a Case and select "1 CT panes".
+      <!-- prototype/renderer.template.html:1219-1224 --></li>
+      <li>Click Mark Lesion. The status reads "Click a CT pane to place the Lesion".
+      <!-- prototype/ct_panes.js:535-545, 604-605 --></li>
+      <li>Click a CT pane to place the marker.
+      <!-- prototype/ct_panes.js:1351-1357, 750-754 --></li>
+      <li>Drag away from the marker to set the diameter. The status shows the diameter in mm.
+      <!-- prototype/ct_panes.js:1359, 1420-1426, 597-598 --></li>
+      <li>Click Confirm Lesion to save the lesion.
+      <!-- prototype/ct_panes.js:548-553, 622-665 --></li>
+      <li>Click Cancel to stop marking without saving.
+      <!-- prototype/ct_panes.js:554-560, 613-620 --></li>
+    </ol>
+    <p>To remove a confirmed lesion, click Clear. To redo it, click Clear, then mark and confirm again.
+    <!-- prototype/ct_panes.js:561-567, 667-700 --></p>
+    <p>The read-only viewer hides the lesion box.
+    <!-- prototype/ct_panes.js:580-582 --></p>
+  </section>
+
+  <section class="help-section" aria-labelledby="help-routetarget">
+    <h2 id="help-routetarget">RouteTarget</h2>
+    <ol>
+      <li>Confirm a lesion. The RouteTarget panel appears only after a lesion is confirmed.
+      <!-- prototype/renderer.template.html:5270-5277 --></li>
+      <li>Click a candidate card to confirm that target. Each card shows the target gap, generation,
+      route length and place.
+      <!-- prototype/renderer.template.html:5171-5195, 5298-5311 --></li>
+      <li>Or click Pick a point, then click a CT-seen centreline point. The status reads "Click CT-seen centreline".
+      <!-- prototype/renderer.template.html:5327-5334; prototype/ct_panes.js:1363-1369 --></li>
+    </ol>
+    <p>If a target already exists, the app asks you to replace it. A stored target that is no longer reachable
+    is shown as stale. Choose a new target.
+    <!-- prototype/renderer.template.html:5218-5222, 5235-5244 --></p>
+  </section>
+
+  <section class="help-section" aria-labelledby="help-layers">
+    <h2 id="help-layers">Layers and panels</h2>
+    <p>The CT panes toolbar has these checkboxes: Airway mask, Route, Lesion, RouteTarget and Estimated airway.
+    <!-- prototype/ct_panes.js:500-529 --></p>
+    <p>The bottom switcher has four panels:</p>
+    <ol>
+      <li>CT panes</li>
+      <li>Anatomical 3D</li>
+      <li>Topology map</li>
+      <li>Endoluminal</li>
+    </ol>
+    <p>Press 1 to 4 to switch panels.
+    <!-- prototype/renderer.template.html:1219-1224, 4805-4809 --></p>
+  </section>
+
+  <section class="help-section" aria-labelledby="help-open-case">
+    <h2 id="help-open-case">Opening a case</h2>
+    <ol>
+      <li>In the desktop app, choose File &gt; Open Archive…. Or press Command-O.
+      <!-- desktop/main.js:704 --></li>
+      <li>You can also drag a zip onto the window.
+      <!-- prototype/import.js:1283-1289 --></li>
+      <li>Choose a Series, then click Process Series.
+      <!-- prototype/import.js:115-125 --></li>
+      <li>Wait for processing. The screen estimates 6–7 minutes. Segmentation uses TotalSegmentator,
+      then the app builds the airway model and graph.
+      <!-- prototype/import.js:111, 132-135; pipeline/run_totalsegmentator.py:5 --></li>
+      <li>The Case opens by itself when the graph is ready.
+      <!-- prototype/import.js:130 --></li>
+    </ol>
+  </section>
+
+  <section class="help-section" aria-labelledby="help-viewer">
+    <h2 id="help-viewer">Viewer and edit mode</h2>
+    <p>The standalone viewer is the page at /. With LUNGNAV_VIEWER_ONLY=1 it is read-only.
+    In that mode the app refuses writes and hides the edit controls.
+    <!-- pipeline/paths.py:56-59; app/server.py:165-174; prototype/renderer.template.html:910-912, 4983 --></p>
+    <p>The read-only viewer hides the lesion box, disables target picking and does not start image generation.
+    <!-- prototype/ct_panes.js:580-582; prototype/renderer.template.html:5327, 2477 --></p>
+    <p>The desktop app opens the edit page /renderer.template.html. It shows Mark Lesion and the other edit controls.
+    <!-- desktop/lib.js:150-155; desktop/main.js:742-743 --></p>
+  </section>
+</template>
 
 <link rel="stylesheet" href="/import.css">
 <script src="/import.js"></script>

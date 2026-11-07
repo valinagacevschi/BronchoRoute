@@ -1,3 +1,4 @@
+// Changes: shared ? help button and help sheet on every screen (#71).
 // Changes: an opened Case keeps the current page, so the desktop stays in edit mode (#70).
 // Changes: Archive open shows an in-page guard instead of window.confirm.
 // Changes: drop Series initials prompt; settings auto-supply initials.
@@ -244,6 +245,80 @@
   screen.insertBefore(sharedRail, screen.firstChild);
 
   const get = id => document.getElementById(id);
+
+  const helpButton = document.createElement("button");
+  helpButton.type = "button";
+  helpButton.id = "help-open";
+  helpButton.className = "help-open";
+  helpButton.setAttribute("aria-label", "Help");
+  helpButton.title = "Help";
+  helpButton.textContent = "?";
+  document.body.appendChild(helpButton);
+
+  const helpOverlay = document.createElement("section");
+  helpOverlay.id = "help-overlay";
+  helpOverlay.hidden = true;
+  helpOverlay.setAttribute("role", "dialog");
+  helpOverlay.setAttribute("aria-modal", "true");
+  helpOverlay.setAttribute("aria-labelledby", "help-title");
+  helpOverlay.innerHTML = `
+    <div class="help-panel" role="document">
+      <header class="help-header">
+        <h1 id="help-title">Help</h1>
+        <button type="button" id="help-close">Close</button>
+      </header>
+      <div class="help-body"></div>
+    </div>`;
+  const helpTemplate = document.getElementById("help-content");
+  if (helpTemplate) {
+    helpOverlay.querySelector(".help-body").appendChild(helpTemplate.content.cloneNode(true));
+  }
+  document.body.appendChild(helpOverlay);
+  let helpReturnFocus = null;
+
+  function syncHelpMount() {
+    const host = !weightsScreen.hidden ? weightsScreen
+      : !libraryScreen.hidden ? libraryScreen
+      : !screen.hidden ? screen : null;
+    const actions = host ? host.querySelector(".intake-topbar-actions") : null;
+    if (actions) {
+      helpButton.classList.add("btn-ghost", "btn-sm");
+      if (helpButton.parentElement !== actions) actions.appendChild(helpButton);
+      return;
+    }
+    helpButton.classList.remove("btn-ghost", "btn-sm");
+    const row = document.querySelector(".rail .brand-row");
+    if (row && helpButton.parentElement !== row) row.appendChild(helpButton);
+  }
+
+  function openHelp() {
+    if (!helpOverlay.hidden) return;
+    helpReturnFocus = document.activeElement;
+    helpOverlay.hidden = false;
+    get("help-close").focus();
+  }
+
+  function closeHelp() {
+    if (helpOverlay.hidden) return;
+    helpOverlay.hidden = true;
+    if (helpReturnFocus && typeof helpReturnFocus.focus === "function") {
+      helpReturnFocus.focus();
+    }
+    helpReturnFocus = null;
+  }
+
+  helpButton.addEventListener("click", openHelp);
+  get("help-close").addEventListener("click", closeHelp);
+  helpOverlay.addEventListener("click", event => {
+    if (event.target === helpOverlay) closeHelp();
+  });
+  document.addEventListener("keydown", event => {
+    if (helpOverlay.hidden) return;
+    if (event.key === "Escape") closeHelp();
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+  syncHelpMount();
   const open = document.createElement("button");
   open.id = "archive-open";
   open.textContent = "Open Archive…";
@@ -360,6 +435,7 @@
   }
 
   function syncIntakeChrome() {
+    syncHelpMount();
     importPanel.classList.toggle("wide", !get("series-picker").hidden && get("processing").hidden);
     if (!weightsScreen.hidden) {
       mountRail(weightsScreen, "models");

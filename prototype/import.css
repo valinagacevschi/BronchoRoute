@@ -1,3 +1,4 @@
+/* Changes: shared ? help button and help sheet on every screen (#71). */
 /* Changes: vertically centre Process Series with the selection summary; drop initials CSS. */
 /* Changes: library Case id nowrap so narrow tables scroll instead of wrapping. */
 /* Changes: hidden precedence, topbar archive-open, library stats/meta, failure note, mask, elapsed. */
@@ -524,6 +525,53 @@ body:has(#weights-screen:not([hidden])) .research-footer a:hover { color: var(--
   .drop-grid { grid-template-columns: 1fr; }
   #processing-steps { grid-template-columns: 1fr 1fr; row-gap: 24px; }
 }
+
+/* Help button and shared help sheet (#71). */
+.brand-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+}
+.brand-row #help-open {
+  flex: 0 0 auto; width: 26px; height: 26px; padding: 0;
+  border: 1px solid var(--edge); border-radius: 50%;
+  background: var(--ground); color: var(--muted); cursor: pointer;
+  font: 600 14px/1 "IBM Plex Sans", sans-serif;
+}
+.brand-row #help-open:hover { border-color: var(--steel); color: var(--ink); }
+.brand-row #help-open:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+.intake-topbar-actions #help-open { width: 38px; padding: 0; }
+
+#help-overlay {
+  position: fixed; inset: 0; z-index: 9000;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: color-mix(in srgb, var(--ground) 70%, transparent);
+}
+#help-overlay[hidden] { display: none; }
+.help-panel {
+  width: min(760px, 100%); max-height: 88vh; display: flex; flex-direction: column;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--edge); border-radius: 10px; box-shadow: var(--shadow);
+}
+.help-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 16px 20px; border-bottom: 1px solid var(--edge);
+}
+.help-header h1 {
+  margin: 0; font: 600 22px/1.2 "IBM Plex Sans Condensed", sans-serif;
+}
+#help-close {
+  height: 32px; padding: 0 14px; border: 1px solid var(--edge); border-radius: 6px;
+  background: var(--ground); color: var(--ink); cursor: pointer;
+  font: 500 13px/1 "IBM Plex Sans", sans-serif;
+}
+#help-close:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+.help-body { padding: 4px 20px 24px; overflow: auto; }
+.help-section h2 {
+  margin: 22px 0 8px; font: 600 17px/1.2 "IBM Plex Sans Condensed", sans-serif;
+}
+.help-section p, .help-section li { font-size: 14px; line-height: 1.5; }
+.help-section p { margin: 8px 0; color: var(--ink); }
+.help-section ol { margin: 8px 0; padding-left: 22px; }
+.help-section li { margin: 4px 0; }
 
 @media (max-width: 760px) {
   #import-screen, #library-screen, #weights-screen {
