@@ -650,6 +650,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
       <button type="button" id="record-btn" hidden>Record</button>
       <button type="button" id="record-stop" hidden>Stop</button>
       <span id="record-indicator" hidden role="status" aria-live="polite">● REC 00:00</span>
+      <label id="flythrough-realism-option" hidden><input type="checkbox" id="flythrough-realism"> Realistic tissue (generated, slow)</label>
       <button type="button" id="flythrough-btn" hidden aria-describedby="flythrough-reason">Export fly-through</button>
       <button type="button" id="orbit-btn" hidden>Export orbit</button>
       <button type="button" id="spin-btn" hidden>Export spin</button>
@@ -2092,6 +2093,7 @@ const REALISM_FADE_MS = 250;
 const REALISM_POLL_MS = 2000;
 const realism = {
   on: true,
+  available: false,
   state: "idle",
   reason: null,
   key: null,
@@ -2120,6 +2122,7 @@ window.__realism = {
 };
 
 function syncRealismHook() {
+  syncRouteRealismOption();
   // window.__realism uses live getters; kept as a no-op call site marker.
 }
 
@@ -2153,7 +2156,7 @@ function screenClockHour(x, y, cx, cy) {
 }
 
 function activeRealismFrame(station) {
-  if (!realism.on) return null;
+  if (!realism.on && !(exportFrame.realismOffline && routeTissue)) return null;
   if (realism.state === "unavailable" || realism.state === "off") return null;
   const at = Number.isFinite(station) ? station : fly.s;
   let best = null;
@@ -2230,6 +2233,7 @@ function preloadRealismFrames(frames) {
 
 function applyRealismBody(body) {
   if (!body || typeof body !== "object") return;
+  realism.available = true;
   const prevKey = realism.key;
   realism.state = body.status || realism.state;
   realism.reason = body.reason == null ? null : body.reason;
@@ -2246,6 +2250,7 @@ function applyRealismBody(body) {
     }
   }
   syncRealismHook();
+  syncRouteRealismOption();
 }
 
 function scheduleRealismPoll() {
@@ -2584,7 +2589,76 @@ function drawRealismOrifices(frame, phi) {
   }));
 }
 
+let routeTissue = null;
+let routeTissueHold = null;
+let tissueGeneration = null;
+
+function syncRouteRealismOption() {
+  const option = document.getElementById("flythrough-realism-option");
+  option.hidden = exportViewKey() !== "endoluminal" || !SERVER_MODE || !realism.available
+    || realism.state === "unavailable" || realism.state === "off";
+}
+
+function drawRouteTissue(phi, station) {
+  const frames = routeTissue;
+  let right = frames.findIndex(f => f.s >= station);
+  if (right < 0) right = frames.length - 1;
+  const b = frames[right], a = frames[Math.max(0, right - 1)];
+  const mix = a.s === b.s ? 0 : (station - a.s) / (b.s - a.s);
+  const {cx, cy, R, D} = realismCircleGeom();
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
+  ctx.translate(cx, cy); ctx.rotate(-phi);
+  for (const [frame, alpha] of [[a, 1], [b, mix]]) {
+    const scale = 1 + 0.025 * (station - frame.s);
+    const size = D * scale;
+    ctx.globalAlpha = alpha;
+    // Mirrored tiles implement reflected borders when the signed scale shrinks.
+    for (let y = -1; y <= 1; y++) for (let x = -1; x <= 1; x++) {
+      ctx.save(); ctx.translate(x * size, y * size);
+      ctx.scale(x === 0 ? 1 : -1, y === 0 ? 1 : -1);
+      ctx.drawImage(frame.image, -size / 2, -size / 2, size, size);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+  realism.lastOrifices = []; realism.lastLabels = [];
+}
+
+async function prepareRouteTissue() {
+  const base = `/api/cases/${encodeURIComponent(CASE_ID)}/realism/route`;
+  const generation = {cancelled: false};
+  tissueGeneration = generation;
+  try {
+    let response = await fetch(`${base}/start`, {method: "POST"});
+    if (!response.ok) throw new Error("keyframe request failed");
+    let body = await response.json();
+    while (body.status === "running" && !generation.cancelled) {
+      setFlythroughProgress(body.done, body.total);
+      document.getElementById("flythrough-count").textContent = `Generating tissue keyframes ${body.done}/${body.total}…`;
+      await new Promise(resolve => setTimeout(resolve, 200));
+      response = await fetch(base);
+      if (!response.ok) throw new Error("keyframe request failed");
+      body = await response.json();
+    }
+    if (generation.cancelled || body.status !== "done" || !body.frames.length) {
+      throw new Error(generation.cancelled ? "cancelled" : body.reason || "generation failed");
+    }
+    await pollRealism();
+    const decoded = await Promise.all(body.frames.map(async frame => {
+      const image = new Image(); image.src = frame.url; await image.decode();
+      return {...frame, image};
+    }));
+    if (generation.cancelled) throw new Error("cancelled");
+    return decoded;
+  } finally { tissueGeneration = null; }
+}
+
 function drawRealismLayer(phi, station) {
+  if (exportFrame.realismOffline && routeTissue && routeTissueHold !== "fork") {
+    drawRouteTissue(phi, station);
+    return;
+  }
   const offline = exportFrame.realismOffline;
   let frame = offline ? activeRealismFrame(station) : updateRealismFade(station, performance.now());
   const alpha = offline ? exportRealismOpacity(station, frame) : realism.opacity;
@@ -3468,7 +3542,7 @@ function drawForkOrifices(toView, projectFn, hud, station) {
   // they do not bleed past the circle edge under the fisheye image.
   const realismAlpha = exportFrame.realismOffline
     ? exportRealismOpacity(station, activeRealismFrame(station)) : realism.opacity;
-  if (realismAlpha > 0.5) {
+  if (realismAlpha > 0.5 || (exportFrame.realismOffline && routeTissue && routeTissueHold !== "fork")) {
     lastForkLabels = [];
     lastForkOrificesDrawn = false;
     forkOrificesSkipCount += 1;
@@ -5932,6 +6006,7 @@ function clearFlythroughProgress() {
 }
 
 function syncFlythroughUi() {
+  syncRouteRealismOption();
   const view = exportViewKey();
   const onEndo = view === "endoluminal";
   const onAnat = view === "anatomical";
@@ -6007,11 +6082,18 @@ async function renderFlythrough(options) {
   const forks = flythroughForkList(length);
   const poses = flythroughPoses(length, forks);
   const total = poses.length;
+  let tissue = null;
+  let tissueFallback = null;
+  if (opts.realistic) {
+    try { tissue = await prepareRouteTissue(); }
+    catch (err) { tissueFallback = `Tissue ${err.message}; exporting normal fly-through`; }
+  }
   await decodeReadyRealismFrames();
   const saved = { s: fly.s, phi: fly.phi };
   // Show the progress row before the first frame so the rail size stays put,
   // then match the live camera viewport to that CSS size.
   setFlythroughProgress(0, total);
+  if (tissueFallback) document.getElementById("flythrough-status").textContent = tissueFallback;
   resize();
   let pose = null;
   const source = createVideoFrameSource({
@@ -6033,7 +6115,10 @@ async function renderFlythrough(options) {
       }
       const item = poses[i];
       pose = { s: item.s, phi: routeRollAt(item.s) };
-      const bytes = await source.frame(when);
+      let bytes;
+      routeTissue = tissue; routeTissueHold = item.hold;
+      try { bytes = await source.frame(when); }
+      finally { routeTissue = null; routeTissueHold = null; }
       if (signal && signal.aborted) {
         cancelled = true;
         break;
@@ -6052,6 +6137,7 @@ async function renderFlythrough(options) {
       }
       sent += 1;
       setFlythroughProgress(sent, total);
+      if (tissueFallback) document.getElementById("flythrough-status").textContent = tissueFallback;
       if (onProgress) onProgress(sent, total);
       if (sent % yieldEvery === 0) await yieldToEventLoop();
     }
@@ -6064,7 +6150,8 @@ async function renderFlythrough(options) {
       if (status && status.textContent === "Export in progress") status.textContent = "";
     }
   }
-  return { frames: sent, total, cancelled, length, forks: forks.length };
+  if (tissueFallback) document.getElementById("flythrough-status").textContent = tissueFallback;
+  return { frames: sent, total, cancelled, length, forks: forks.length, tissueFallback };
 }
 
 async function startFlythrough() {
@@ -6106,6 +6193,7 @@ async function startFlythrough() {
   let sent = 0;
   try {
     const result = await renderFlythrough({
+      realistic: document.getElementById("flythrough-realism").checked,
       size,
       hud,
       lesion,
@@ -6469,7 +6557,10 @@ document.getElementById("spin-btn").addEventListener("click", () => {
   startSpin();
 });
 document.getElementById("flythrough-cancel").addEventListener("click", () => {
-  if (flythroughSession) flythroughSession.controller.abort();
+  if (tissueGeneration) {
+    tissueGeneration.cancelled = true;
+    fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/realism/route/cancel`, {method: "POST"}).catch(() => {});
+  } else if (flythroughSession) flythroughSession.controller.abort();
 });
 
 if (DEBUG) {

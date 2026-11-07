@@ -690,6 +690,48 @@ def api_realism_start(case_id: str):
         raise _http_for_case(exc) from exc
 
 
+def _route_realism(case_id: str, action: str):
+    try:
+        from app.realism import route_keyframes
+    except ImportError:
+        return {"status": "unavailable", "reason": "realism not installed", "key": None,
+                "done": 0, "total": 0, "frames": []}
+    try:
+        return getattr(route_keyframes, action)(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.get("/api/cases/{case_id}/realism/route")
+def api_realism_route(case_id: str):
+    return _route_realism(case_id, "route_status")
+
+
+@app.post("/api/cases/{case_id}/realism/route/start")
+def api_realism_route_start(case_id: str):
+    return _route_realism(case_id, "start_route")
+
+
+@app.post("/api/cases/{case_id}/realism/route/cancel")
+def api_realism_route_cancel(case_id: str):
+    return _route_realism(case_id, "cancel_route")
+
+
+@app.get("/api/cases/{case_id}/realism/route/{key}/kf-{index}.png")
+def api_realism_route_png(case_id: str, key: str, index: int):
+    try:
+        from app.realism.route_keyframes import route_png_path
+    except ImportError:
+        raise HTTPException(status_code=404, detail="Not Found") from None
+    try:
+        path = route_png_path(case_id, key, index)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    if path is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(path, media_type="image/png")
+
+
 @app.get("/api/cases/{case_id}/realism/{key}/{name}.png")
 def api_realism_png(case_id: str, key: str, name: str):
     try:

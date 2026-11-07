@@ -40,6 +40,12 @@ assert response.json() == expected, response.text
 response = client.post('/api/cases/local-001/realism/start')
 assert response.status_code == 200, response.text
 assert response.json() == expected, response.text
+for method, suffix in [('get', ''), ('post', '/start'), ('post', '/cancel')]:
+    response = getattr(client, method)('/api/cases/local-001/realism/route' + suffix)
+    assert response.status_code == 200, response.text
+    assert response.json() == {**expected, 'done': 0, 'total': 0}, response.text
+response = client.get('/api/cases/local-001/realism/route/key/kf-0.png')
+assert response.status_code == 404, response.text
 response = client.get('/api/cases/local-001/realism/key/frame.png')
 assert response.status_code == 404, response.text
 with patch.object(app.server, '_require_clinician', return_value={'clinician': 'test'}), \

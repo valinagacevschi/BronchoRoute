@@ -163,3 +163,8 @@
 - Model hosting (#58): a safe filename and manifest entry alone do not prevent
   a staged symlink from exposing a file outside `models/`. Resolve the target,
   require its parent to be the models directory, and test an escaping symlink.
+- Realism route exports (#65): fork and route images use distinct keys under the same
+  cache root. Fork cache cleanup must preserve route directories, or a later fork
+  generation silently deletes an export cache. Keep repeated-start snapshots safe
+  under the state lock; the snapshot helper acquires that lock again. A route
+  cache hit after restart must also load the fork cache before reporting ready.

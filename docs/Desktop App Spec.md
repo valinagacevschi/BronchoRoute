@@ -187,9 +187,11 @@ A depth-conditioned image model (`broncho-flow-prototype3-realism-int8.onnx`, 55
 - **Public snapshot:** code ships; the model and its key never do. Licence for public model release open.
 - **Tests:** a stub generator (env var) for UI and Playwright tests; exact-match tests for the depth and
   encoder port.
-- **Phase 2 (spike first):** whole-route tissue look. Compare same-seed keyframes crossfaded every
-  2/5 mm against a texture baked from keyframes onto a marching-cubes mesh (WebGL). Val picks from
-  side-by-side MP4s before any renderer change.
+- **Optional realistic fly-through export:** “Realistic tissue (generated, slow)” generates zero-roll
+  keyframes every 2 mm (including the route end), using one shared seed per case. Video travel frames
+  crossfade the neighbouring keyframes with signed centre scaling; fork holds retain the realistic
+  fork image and labels. Generation is on demand, cached, runs after fork frames, and can be cancelled.
+  Failure or cancellation falls back to the normal fly-through. The live view remains fork stills only.
 
 ### Topology ([Topology 360° rotation](https://git.xelasys.ro/vali/lung-navigator/-/issues/9))
 
