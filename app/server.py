@@ -1,3 +1,4 @@
+# Changes: route target accepts generate_realism so the viewer checkbox controls generation (#68).
 # Changes: route depth PNG endpoint before the RGB route so kf-N.depth.png resolves (#66).
 # Changes: load optional realism dependencies only when realism is requested.
 # Changes: register bearer-authenticated model downloads outside /api (#58).
@@ -314,6 +315,9 @@ class RouteTargetBody(BaseModel):
     edge_id: int | None = None
     sample_index: int | None = None
     ras_mm: list[float] | None = None
+    # The viewer asks for realism only when its checkbox is on; older clients
+    # omit the field and keep the previous auto-start behaviour.
+    generate_realism: bool = True
 
     @model_validator(mode="after")
     def _one_form(self) -> "RouteTargetBody":
@@ -658,12 +662,13 @@ async def api_route_target(case_id: str, request: Request):
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
-    try:
-        from app.realism.worker import start_realism
+    if body.generate_realism:
+        try:
+            from app.realism.worker import start_realism
 
-        start_realism(case_id)
-    except Exception:  # noqa: BLE001 — confirm already succeeded; realism is best-effort
-        pass
+            start_realism(case_id)
+        except Exception:  # noqa: BLE001 — confirm already succeeded; realism is best-effort
+            pass
     return result
 
 

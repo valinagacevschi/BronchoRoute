@@ -1,3 +1,4 @@
+# Changes: RouteTarget generate_realism flag controls realism start (#68).
 # Changes: candidates need a Lesion only; RouteStart confirmation is not required.
 # Changes: hide legacy review behind the default-off feature flag.
 # Changes: Phase 4d review — assert retarget yields a new route_hash (not just truthy).
@@ -280,6 +281,35 @@ def test_api_gating_and_put(client, harness, fake_home):
     stored = np.asarray(chosen["ras_mm"], dtype=float)
     assert float(np.linalg.norm(fly_end_abs - stored)) < 1e-6
     assert abs(float(top["route_length_mm"]) - float(chosen["route_length_mm"])) < 1e-6
+
+
+def test_route_target_generate_realism_flag(client, harness, fake_home, monkeypatch):
+    """The client checkbox decides whether RouteTarget confirm starts realism."""
+    _set_clinician(client)
+    _seed_through_step(client, harness, 6)
+    _place_lesion(harness["case"], [20.0, 0.0, -10.0])
+    cands = client.get("/api/cases/local-001/route-candidates").json()["candidates"]
+    assert cands
+    top = cands[0]
+
+    from app.realism import worker as realism_worker
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        realism_worker, "start_realism", lambda case_id: calls.append(case_id) or {},
+    )
+
+    payload = {"edge_id": top["edge_id"], "sample_index": top["sample_index"]}
+    res = client.put(
+        "/api/cases/local-001/route-target",
+        json={**payload, "generate_realism": False},
+    )
+    assert res.status_code == 200, res.text
+    assert calls == []
+
+    res = client.put("/api/cases/local-001/route-target", json=payload)
+    assert res.status_code == 200, res.text
+    assert calls == ["local-001"]
 
 
 def test_downstream_invalidation_on_retarget(client, harness, fake_home):

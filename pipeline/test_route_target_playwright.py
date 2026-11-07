@@ -1,3 +1,4 @@
+# Changes: accept the RouteTarget replace confirm when picking a second target (#68).
 # Changes: stamp the synthetic Case with the current pipeline version.
 # Changes: RouteTarget cards, hover highlight, selection, point pick, and target gap.
 """Place a Lesion, then choose a RouteTarget from the rail and from the CT."""
@@ -212,6 +213,7 @@ def test_route_target_cards_select_and_pick(server):
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page.on("dialog", lambda dialog: dialog.accept())
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
         def _console(message):
