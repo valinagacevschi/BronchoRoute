@@ -1,3 +1,4 @@
+// Changes: an opened Case keeps the current page, so the desktop stays in edit mode (#70).
 // Changes: Archive open shows an in-page guard instead of window.confirm.
 // Changes: drop Series initials prompt; settings auto-supply initials.
 // Changes: selection summary uses textContent (no Archive description HTML).
@@ -20,6 +21,12 @@
   let viewerOnly = false;
   let outdatedDismissed = null;
   let libraryMeta = null;
+
+  function caseUrl(caseId) {
+    const path = location.pathname === "" ? "/" : location.pathname;
+    return `${path}?case=${encodeURIComponent(caseId)}`;
+  }
+
   const CHECK_SVG = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 6.2 5 8.6l4.5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const NOTE_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5v4.2M8 11v.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
   const DROP_ICON = '<div class="drop-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 14v3.5A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>';
@@ -584,7 +591,7 @@
 
   async function openCase(caseId) {
     await releaseSession();
-    location.assign(`/?case=${encodeURIComponent(caseId)}`);
+    location.assign(caseUrl(caseId));
   }
 
   function formatMb(bytes) {
@@ -1035,7 +1042,7 @@
           }
         });
         if (job.status === "succeeded") {
-          location.assign(`/?case=${encodeURIComponent(caseId)}`);
+          location.assign(caseUrl(caseId));
           return;
         }
         if (job.status === "failed") {
