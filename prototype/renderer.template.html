@@ -1,3 +1,4 @@
+<!-- Changes: standalone viewer never POSTs realism/start (view-only, no writes). -->
 <!-- Changes: realistic route export dollies anchor frames with depth reprojection; fly waits for fork textures (#66). -->
 <!-- Changes: unsnapped orifices draw edge pills (no outline) at HUD clock on the circle (#60d). -->
 <!-- Changes: realism labels use HUD scope clock, dark pills, collision avoid; skip schematic orifices when realism opaque (#60b). -->
@@ -2296,7 +2297,8 @@ async function pollRealism() {
 }
 
 async function startRealism() {
-  if (!SERVER_MODE || !CASE_ID) return;
+  // The standalone viewer is view-only: starting generation is a write.
+  if (!SERVER_MODE || !CASE_ID || VIEWER_MODE) return;
   try {
     const res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/realism/start`, {
       method: "POST",
