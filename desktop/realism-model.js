@@ -1,3 +1,4 @@
+// Changes: export MODEL so the sidecar env uses the same file name (#67).
 "use strict";
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -253,4 +254,4 @@ function keyStore(userData, safeStorage) {
     clearKey() { fs.rmSync(file, { force: true }); },
   };
 }
-module.exports = { status, download, remove, keyStore };
+module.exports = { MODEL, status, download, remove, keyStore };

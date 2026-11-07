@@ -1,3 +1,4 @@
+// Changes: sidecar env points at the downloaded realism model (#67).
 // Changes: drop unused DISCLAIMER constant (footer/About live in the HTML template).
 // Changes: save-video names allow anatomical-orbit and topology-spin (#45).
 // Changes: validate Record names and JPEG frames, resolve ffmpeg, and the Movies/BronchoRoute path.
@@ -12,6 +13,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { MODEL: REALISM_MODEL } = require("./realism-model");
 
 const FILEVAULT_NOTE = "FileVault is off. Turn it on so Cases stored on this Mac stay encrypted.";
 const SPLASH = "Starting the AI stack… (first launch can take about a minute)";
@@ -86,6 +88,11 @@ function buildSidecarEnv(baseEnv, options) {
   env.LUNGNAV_DATA_ROOT = options.dataRoot;
   env.LUNGNAV_TMP_DIR = options.tmpDir;
   env.LUNGNAV_LOG_DIR = options.logDir;
+  const modelOverride = baseEnv && baseEnv.BRONCHOROUTE_REALISM_MODEL;
+  const hasModelOverride = typeof modelOverride === "string" && modelOverride.trim() !== "";
+  if (!hasModelOverride) {
+    env.BRONCHOROUTE_REALISM_MODEL = path.join(options.dataRoot, "models", "realism", REALISM_MODEL);
+  }
   return env;
 }
 

@@ -1,3 +1,4 @@
+// Changes: sidecar env carries the downloaded realism model path (#67).
 // Changes: research footer asserted from template text; DISCLAIMER export gone.
 // Changes: accept anatomical-orbit and topology-spin video names (#45).
 // Changes: builder publish feed, dmg+zip targets, and updater.js in the pack list.
@@ -98,6 +99,29 @@ test("buildSidecarEnv strips PYTHONPATH and sets the sidecar vars", () => {
     }),
     /non-blank/,
   );
+});
+
+test("buildSidecarEnv points the sidecar at the downloaded realism model", () => {
+  const env = buildSidecarEnv({}, {
+    token: "abc",
+    dataRoot: "/data",
+    tmpDir: "/data/tmp",
+    logDir: "/data/logs",
+  });
+  assert.equal(
+    env.BRONCHOROUTE_REALISM_MODEL,
+    path.join("/data", "models", "realism", "broncho-flow-int8.onnx"),
+  );
+});
+
+test("buildSidecarEnv keeps an explicit realism model override", () => {
+  const env = buildSidecarEnv({ BRONCHOROUTE_REALISM_MODEL: "/local/model.onnx" }, {
+    token: "abc",
+    dataRoot: "/data",
+    tmpDir: "/data/tmp",
+    logDir: "/data/logs",
+  });
+  assert.equal(env.BRONCHOROUTE_REALISM_MODEL, "/local/model.onnx");
 });
 
 test("origin filter allows only the sidecar origin", () => {
