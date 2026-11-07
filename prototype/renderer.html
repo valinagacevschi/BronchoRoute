@@ -102,6 +102,7 @@
   --axis-s:  #36c;
   --axis-f:  #888;
   --estimated: #6E4B9E;
+  --shared-marker: #2f7bff;
   --shadow:  0 1px 2px rgba(23,36,43,.10), 0 8px 24px rgba(23,36,43,.08);
 }
 @media (prefers-color-scheme: dark) {
@@ -479,10 +480,10 @@ body.walkthrough-active .walk-sim-label { display: block; }
   pointer-events: none; max-width: 46%; text-align: right;
 }
 .ct-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
-.shared-marker-3d {
+.shared-marker {
   position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px;
-  border: 2px solid #e85d4c; border-radius: 50%; pointer-events: none; z-index: 3;
-  display: none;
+  background: var(--shared-marker); border: 1px solid #fff; border-radius: 50%;
+  box-sizing: border-box; pointer-events: none; z-index: 3; display: none;
 }
 .about-link {
   color: var(--steel);
@@ -586,7 +587,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 }
 </style>
 
-<div class="stage"><canvas id="c"></canvas><div class="shared-marker-3d" id="shared-marker-3d"></div></div>
+<div class="stage"><canvas id="c"></canvas><div class="shared-marker shared-marker-3d" id="shared-marker-3d"></div><div class="shared-marker shared-marker-topology" id="shared-marker-topology"></div></div>
 <div id="ct-stage" aria-label="CT panes"></div>
 <div class="walk-sim-label" id="walk-sim-label">Simulated steering — not measured scope orientation</div>
 
@@ -1236,10 +1237,17 @@ if ((VIEWER_MODE || !features.legacy_review || features.viewer_only) && VARIANTS
 
 const originMm = A.origin_mm || [0, 0, 0];
 const toWorld = p => [p[0] + originMm[0], p[1] + originMm[1], p[2] + originMm[2]];
+const rootWorld = toWorld(A.nodes[String(A.root)].p);
 const SharedPos = (window.CtPanes && window.CtPanes.createSharedPosition)
-  ? window.CtPanes.createSharedPosition(toWorld(A.nodes[String(A.root)].p))
+  ? window.CtPanes.createSharedPosition(rootWorld)
   : { get: () => null, set() {}, subscribe() { return () => {}; } };
 let nearestHighlight = null; // { world, dist } for 3D/topology
+let lastSharedPosSource = "ct-init";
+
+/** Put the shared marker at the top of the trachea (the root node). */
+function resetSharedPositionToRoot() {
+  SharedPos.set(rootWorld, "ct-init");
+}
 let ctPanesApi = null;
 let ctPanesPromise = null;
 let ctViewPref = "feet";
@@ -4321,6 +4329,36 @@ function topoToScreen(p) {
   };
 }
 
+/** Place the shared blue marker on the nearest topology node. */
+function updateTopologySharedMarker() {
+  const marker = document.getElementById("shared-marker-topology");
+  if (!marker) return;
+  const hide = () => {
+    marker.style.display = "none";
+    delete marker.dataset.node;
+  };
+  if (variant !== 2 || !nearestHighlight || nearestHighlight.dist > 5 || !topoLayout) {
+    hide();
+    return;
+  }
+  let bestId = null, bestD = Infinity;
+  const hw = nearestHighlight.world;
+  for (const [id, node] of Object.entries(A.nodes)) {
+    const w = toWorld(node.p);
+    const d = Math.hypot(w[0] - hw[0], w[1] - hw[1], w[2] - hw[2]);
+    if (d < bestD) { bestD = d; bestId = +id; }
+  }
+  if (bestId == null || !topoLayout.has(bestId)) {
+    hide();
+    return;
+  }
+  const pt = topoToScreen(topoLayout.get(bestId));
+  marker.style.display = "block";
+  marker.style.left = `${pt.x}px`;
+  marker.style.top = `${pt.y}px`;
+  marker.dataset.node = String(bestId);
+}
+
 function drawTopology(pose) {
   const prevRot = topologyDrawRot;
   if (pose && Number.isFinite(pose.topoRot)) topologyDrawRot = pose.topoRot;
@@ -4392,21 +4430,7 @@ function drawTopology(pose) {
   ctx.textAlign = "left";
   drawTopologyLesion();
   ctx.fillText("Radial map: angle and distance are not anatomy", railRight + 16, H - 18);
-  if (nearestHighlight && nearestHighlight.dist <= 5) {
-    // Highlight nearest centreline-associated node when linked from CT.
-    let bestId = null, bestD = Infinity;
-    const hw = nearestHighlight.world;
-    for (const [id, node] of Object.entries(A.nodes)) {
-      const w = toWorld(node.p);
-      const d = Math.hypot(w[0] - hw[0], w[1] - hw[1], w[2] - hw[2]);
-      if (d < bestD) { bestD = d; bestId = +id; }
-    }
-    if (bestId != null && topoLayout.has(bestId)) {
-      const pt = topoToScreen(topoLayout.get(bestId));
-      ctx.strokeStyle = "#e85d4c"; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(pt.x, pt.y, 11, 0, 7); ctx.stroke();
-    }
-  }
+  updateTopologySharedMarker();
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
   } finally {
     topologyDrawRot = prevRot;
@@ -4751,6 +4775,7 @@ window.addEventListener("message", (ev) => {
     fly.armed = new Set(A.forks.map(f => f.fork));
     rearmRealismHolds();
     fly.playing = true;
+    resetSharedPositionToRoot();
     return;
   }
   if (data.type !== "goto-ras" || !Array.isArray(data.ras_mm)) return;
@@ -4779,6 +4804,7 @@ window.addEventListener("message", (ev) => {
 
 SharedPos.subscribe((pos, source) => {
   if (!pos) return;
+  lastSharedPosSource = source;
   if (source === "ct" || source === "ct-wheel" || source === "ct-key"
       || source === "ct-lesion-place" || source === "ct-axial-place"
       || source === "ct-init" || source === "debug") {
@@ -4787,10 +4813,15 @@ SharedPos.subscribe((pos, source) => {
     } else {
       nearestHighlight = null;
     }
-  } else if (source !== "endoluminal") {
+  } else if (source === "endoluminal") {
+    nearestHighlight = (window.CtPanes && window.CtPanes.nearestCentrelineWorld)
+      ? window.CtPanes.nearestCentrelineWorld(A, originMm, pos)
+      : null;
+  } else {
     nearestHighlight = null;
   }
 });
+resetSharedPositionToRoot();
 
 document.getElementById("presets").addEventListener("click", e => {
   const btn = e.target.closest("[data-preset]");
@@ -4824,6 +4855,7 @@ addEventListener("keydown", e => {
     fly.s = 0; fly.pausedFork = null; fly.pauseUntil = null;
     fly.armed = new Set(A.forks.map(f => f.fork));
     rearmRealismHolds();
+    resetSharedPositionToRoot();
   } else if (endoKeys && (e.key === "v" || e.key === "V")) {
     realism.on = !realism.on;
     syncRealismHook();
@@ -5051,6 +5083,8 @@ async function ensureCtPanes() {
 function setVariant(i) {
   if (variant !== i) setTopoRotation(0);
   variant = i;
+  if (i !== 2) document.getElementById("shared-marker-topology").style.display = "none";
+  if (i !== 0) document.getElementById("shared-marker-3d").style.display = "none";
   const u = new URL(location); u.searchParams.set("variant", VARIANTS[i].key);
   history.replaceState(null, "", u);
   render();
@@ -5215,6 +5249,7 @@ function setupRouteTargetPanel() {
     topoLayout = null;
     highlightRouteOis.clear();
     fly.s = 0;
+    resetSharedPositionToRoot();
     if (A.route_target && A.route_target.stale) {
       setRouteTargetStatus(A.route_target.reason, false);
     } else {
@@ -7218,6 +7253,11 @@ if (DEBUG) {
     setVariant,
     getVariant: () => VARIANTS[variant].key,
     sharedPos: () => SharedPos.get(),
+    sharedPosSource: () => lastSharedPosSource,
+    nearestHighlight: () => nearestHighlight && ({
+      world: [...nearestHighlight.world],
+      dist: nearestHighlight.dist,
+    }),
     setSharedPos: (p) => SharedPos.set(p, "debug"),
     originMm: () => [...originMm],
     airway: () => A,
