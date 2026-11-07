@@ -1,3 +1,4 @@
+<!-- Changes: realistic route export dollies anchor frames with depth reprojection; fly waits for fork textures (#66). -->
 <!-- Changes: unsnapped orifices draw edge pills (no outline) at HUD clock on the circle (#60d). -->
 <!-- Changes: realism labels use HUD scope clock, dark pills, collision avoid; skip schematic orifices when realism opaque (#60b). -->
 <!-- Changes: realistic fork frames — V toggle, roll-matched overlay, hold_s auto-play pause (#60). -->
@@ -758,6 +759,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 
 <link rel="stylesheet" href="/import.css">
 <script src="/import.js"></script>
+<script src="fisheye-reproject.js"></script>
 <script id="airway-data">
 /*__AIRWAY_EMBED__*/
 </script>
@@ -2250,7 +2252,8 @@ function applyRealismBody(body) {
     }
   }
   syncRealismHook();
-  syncRouteRealismOption();
+  // Fork-still readiness gates the fly button, so refresh it on every poll.
+  syncFlythroughUi();
 }
 
 function scheduleRealismPoll() {
@@ -2599,27 +2602,84 @@ function syncRouteRealismOption() {
     || realism.state === "unavailable" || realism.state === "off";
 }
 
+let tissuePixelsCanvas = null;
+let tissueRemapCanvas = null;
+
+function tissueFramePixels(frame) {
+  if (frame.rgba) return frame.rgba;
+  if (!frame.image) return null;
+  const size = frame.depth && frame.depth.width ? frame.depth.width : 256;
+  if (!tissuePixelsCanvas) tissuePixelsCanvas = document.createElement("canvas");
+  tissuePixelsCanvas.width = size;
+  tissuePixelsCanvas.height = size;
+  const context = tissuePixelsCanvas.getContext("2d", {willReadFrequently: true});
+  context.drawImage(frame.image, 0, 0, size, size);
+  frame.rgba = context.getImageData(0, 0, size, size).data;
+  return frame.rgba;
+}
+
+function drawTissueTiles(image, size) {
+  // Mirrored tiles implement reflected borders at the lens edge.
+  for (let y = -1; y <= 1; y += 1) for (let x = -1; x <= 1; x += 1) {
+    ctx.save();
+    ctx.translate(x * size, y * size);
+    ctx.scale(x === 0 ? 1 : -1, y === 0 ? 1 : -1);
+    ctx.drawImage(image, -size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
+}
+
+function remappedTissueCanvas(frame, dollyMm) {
+  const pixels = tissueFramePixels(frame);
+  if (!pixels || !frame.depth || !window.FisheyeReproject) return null;
+  const remap = window.FisheyeReproject.reprojectFrame(
+    pixels, frame.depth, dollyMm,
+  );
+  if (!remap) return null;
+  if (!tissueRemapCanvas) tissueRemapCanvas = document.createElement("canvas");
+  tissueRemapCanvas.width = remap.width;
+  tissueRemapCanvas.height = remap.height;
+  const context = tissueRemapCanvas.getContext("2d");
+  context.putImageData(
+    new ImageData(remap.data, remap.width, remap.height), 0, 0,
+  );
+  return tissueRemapCanvas;
+}
+
 function drawRouteTissue(phi, station) {
   const frames = routeTissue;
+  if (!frames || !frames.length) return;
   let right = frames.findIndex(f => f.s >= station);
   if (right < 0) right = frames.length - 1;
   const b = frames[right], a = frames[Math.max(0, right - 1)];
-  const mix = a.s === b.s ? 0 : (station - a.s) / (b.s - a.s);
+  const span = b.s - a.s;
+  const mix = span > 0 ? Math.max(0, Math.min(1, (station - a.s) / span)) : 0;
   const {cx, cy, R, D} = realismCircleGeom();
   ctx.save();
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
   ctx.translate(cx, cy); ctx.rotate(-phi);
-  for (const [frame, alpha] of [[a, 1], [b, mix]]) {
-    const scale = 1 + 0.025 * (station - frame.s);
+  // The next anchor is the base so disoccluded pixels fall back to it only.
+  ctx.globalAlpha = 1;
+  drawTissueTiles(b.image, D);
+  const dolly = Math.max(0, station - a.s);
+  const remapped = remappedTissueCanvas(a, dolly);
+  if (remapped) {
+    ctx.globalAlpha = 1 - mix;
+    ctx.drawImage(remapped, -D / 2, -D / 2, D, D);
+    ctx.globalAlpha = 1;
+  } else {
+    // No depth map: keep the scaled crossfade for old caches.
+    const scale = 1 + 0.025 * (station - a.s);
     const size = D * scale;
-    ctx.globalAlpha = alpha;
-    // Mirrored tiles implement reflected borders when the signed scale shrinks.
-    for (let y = -1; y <= 1; y++) for (let x = -1; x <= 1; x++) {
-      ctx.save(); ctx.translate(x * size, y * size);
+    ctx.globalAlpha = 1 - mix;
+    for (let y = -1; y <= 1; y += 1) for (let x = -1; x <= 1; x += 1) {
+      ctx.save();
+      ctx.translate(x * size, y * size);
       ctx.scale(x === 0 ? 1 : -1, y === 0 ? 1 : -1);
-      ctx.drawImage(frame.image, -size / 2, -size / 2, size, size);
+      ctx.drawImage(a.image, -size / 2, -size / 2, size, size);
       ctx.restore();
     }
+    ctx.globalAlpha = 1;
   }
   ctx.restore();
   realism.lastOrifices = []; realism.lastLabels = [];
@@ -2647,7 +2707,21 @@ async function prepareRouteTissue() {
     await pollRealism();
     const decoded = await Promise.all(body.frames.map(async frame => {
       const image = new Image(); image.src = frame.url; await image.decode();
-      return {...frame, image};
+      let depth = null;
+      if (frame.depth_url && window.FisheyeReproject) {
+        try {
+          const res = await fetch(frame.depth_url);
+          if (res.ok) {
+            depth = await window.FisheyeReproject.decodeDepthPng(
+              await res.arrayBuffer(),
+            );
+          }
+        } catch (_err) {
+          // A missing depth map keeps the old scaled crossfade for this pair.
+          depth = null;
+        }
+      }
+      return {...frame, image, depth};
     }));
     if (generation.cancelled) throw new Error("cancelled");
     return decoded;
@@ -6005,6 +6079,21 @@ function clearFlythroughProgress() {
   if (status && status.textContent === "Export in progress") status.textContent = "";
 }
 
+function forkTextureGate() {
+  // The fly-through shows one still per fork group. While the model is
+  // installed and those stills are still generating, wait instead of
+  // exporting bare canvas for the early forks.
+  if (!SERVER_MODE || !realism.available) return null;
+  if (realism.state === "unavailable" || realism.state === "off") return null;
+  if (realism.state !== "running") return null;
+  if (flythroughBlockReason()) return null;
+  const frames = realism.frames || [];
+  if (!frames.length) return null;
+  const total = frames.length;
+  const done = frames.filter(frame => frame.ready).length;
+  return done < total ? {done, total} : null;
+}
+
 function syncFlythroughUi() {
   syncRouteRealismOption();
   const view = exportViewKey();
@@ -6014,7 +6103,9 @@ function syncFlythroughUi() {
   const running = flythroughSession != null;
   const reason = onEndo ? flythroughBlockReason() : "";
   const recording = recordSession != null;
-  const key = `${view}|${running}|${reason}|${recording}`;
+  const gate = !running && onEndo ? forkTextureGate() : null;
+  const gateKey = gate ? `${gate.done}/${gate.total}` : "";
+  const key = `${view}|${running}|${reason}|${recording}|${gateKey}`;
   if (key === flythroughUiKey) return;
   flythroughUiKey = key;
   const btn = document.getElementById("flythrough-btn");
@@ -6026,8 +6117,11 @@ function syncFlythroughUi() {
   const busy = running || recording;
   if (btn) {
     btn.hidden = !onEndo;
-    btn.disabled = busy || !!reason;
-    btn.title = reason;
+    btn.disabled = busy || !!reason || !!gate;
+    btn.title = gate ? "Waiting for fork textures" : reason;
+    btn.textContent = gate
+      ? `Fork textures ${gate.done}/${gate.total}`
+      : "Export fly-through";
   }
   if (orbitBtn) {
     orbitBtn.hidden = !onAnat;

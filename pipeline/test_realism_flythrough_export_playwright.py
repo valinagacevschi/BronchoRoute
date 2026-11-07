@@ -1,7 +1,9 @@
+# Changes: route export test serves 16-bit depth PNGs for anchor reprojection (#66).
 """Mocked route export: decoded colour blends, fork stills, fallback and visibility."""
 import io
 import json
 
+import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
@@ -19,6 +21,14 @@ def png(colour, number):
     return out.getvalue()
 
 
+def depth_png(mm=50.0):
+    # uint16 = round(depth_mm × 10); uniform so the identity dolly is exact.
+    values = np.full((256, 256), int(round(mm * 10)), dtype=np.uint16)
+    out = io.BytesIO()
+    Image.fromarray(values).save(out, format='PNG')
+    return out.getvalue()
+
+
 @pytest.mark.parametrize('mode', ['done', 'cancel', 'failed'])
 def test_route_export(server, mode):
     base, _, _ = server
@@ -27,7 +37,9 @@ def test_route_export(server, mode):
     mock = _RealismMock(hold_s=hold, u=170, v=145, name=name)
     end = payload['fly']['s'][-1]
     stations = list(range(0, int(end), 2)) + [end]
-    frames = [dict(index=i, s=s, ready=True, url=f'/api/cases/local-001/realism/route/key/kf-{i}.png')
+    frames = [dict(index=i, s=s, ready=True,
+                   url=f'/api/cases/local-001/realism/route/key/kf-{i}.png',
+                   depth_url=f'/api/cases/local-001/realism/route/key/kf-{i}.depth.png')
               for i, s in enumerate(stations)]
     requests = []
     with _playwright_or_skip()() as pw:
@@ -37,7 +49,9 @@ def test_route_export(server, mode):
         mock.install(page)
         def route_api(route):
             requests.append(route.request.url)
-            if route.request.url.endswith('.png'):
+            if route.request.url.endswith('.depth.png'):
+                route.fulfill(content_type='image/png', body=depth_png())
+            elif route.request.url.endswith('.png'):
                 i = int(route.request.url.rsplit('kf-', 1)[1].split('.')[0])
                 route.fulfill(content_type='image/png', body=png((240, 20, 20) if i % 2 == 0 else (20, 20, 240), i))
             else:
