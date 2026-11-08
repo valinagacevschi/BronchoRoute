@@ -1,4 +1,5 @@
 // Changes: export MODEL so the sidecar env uses the same file name (#67).
+// Changes: default model base URL is the public GitHub release, same as weights.js; the private mirror is env-only (BRONCHOROUTE_MODELS_BASE_URL).
 "use strict";
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -221,7 +222,7 @@ async function downloadOne({ url, dest, expectedBytes, expectedSha, key, signal,
 async function download(options) {
   const { dataRoot, key, signal, onProgress = () => {}, expectedBytes, expectedSha } = { ...DEFAULTS, ...options };
   const dest = modelPath(dataRoot);
-  const base = options.baseUrl || process.env.BRONCHOROUTE_MODELS_BASE_URL || "https://lung-nav.appcenter.ro/models/";
+  const base = options.baseUrl || process.env.BRONCHOROUTE_MODELS_BASE_URL || "https://github.com/valinagcevschi/BronchoRoute/releases/download/weights-v1/";
   try {
     await downloadOne({ url: new URL(MODEL, base.endsWith("/") ? base : base + "/").href,
       dest: dest + ".partial", expectedBytes, expectedSha, key, signal,
