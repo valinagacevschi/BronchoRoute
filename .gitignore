@@ -1,0 +1,20 @@
+# Patient-derived and generated data never enters git.
+pipeline/data/
+pipeline/ts_out/
+pipeline/out/
+pipeline/.venv
+pipeline/app_state/
+pipeline/tmp/
+pipeline/logs/
+__pycache__/
+.DS_Store
+
+# Agent briefs are working notes, not project history.
+.codex-briefs/
+
+# Electron dev shell.
+desktop/node_modules
+desktop/dist/
+
+# Standalone Python build artifacts.
+desktop/build/

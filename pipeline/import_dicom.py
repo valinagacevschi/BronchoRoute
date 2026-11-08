@@ -1,0 +1,436 @@
+# Changes: store Study date on the Case for the library list.
+# Changes: retain only hashed Study grouping and allowed picker metadata.
+# Changes: apply header eligibility and vendor-aware Series ranking at import.
+"""Select and import an axial CT series without exporting DICOM identifiers.
+
+Geometry fix: build the NIfTI volume from pydicom (sort by slice normal,
+LPS→RAS affine from IOP/IPP/PixelSpacing) instead of SimpleITK ImageSeriesReader,
+which mirrored superior/inferior for local-001.
+
+Phase 4a review: symlink jail in read_series; locked next_case_id; shared
+case-document builder and duplicate message with app/imports.py.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import shutil
+from datetime import date
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import nibabel as nib
+import numpy as np
+from atomic_json import atomic_write_json, json_file_lock
+from paths import LOCAL_CASES
+from series_rule import classify_series, first_kernel, kernel_class, reject_reason
+
+if TYPE_CHECKING:
+    import pydicom as pydicom_mod
+
+
+def _pydicom():
+    import pydicom
+
+    return pydicom
+
+
+VERSION = "1.0"
+UNIFORM_SPACING_TOL_MM = 0.05
+TILT_ANGLE_TOL_DEG = 1.0
+GEOMETRY_TOL_MM = 0.01
+
+
+def _path_under_root(path: Path, root: Path) -> bool:
+    """True when path resolves inside root (rejects symlink escapes)."""
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(root)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
+    src_dir = src_dir.resolve()
+    series: dict[str, dict] = {}
+    skipped = 0
+    for path in src_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if not _path_under_root(path, src_dir):
+            skipped += 1
+            continue
+        try:
+            ds = _pydicom().dcmread(path, stop_before_pixels=True, force=False)
+            uid = series_uid_hash(str(ds.SeriesInstanceUID))
+            sop_class = str(ds.SOPClassUID.name)
+            row = series.get(uid)
+            if row is None:
+                row = {
+                    "series_uid_sha256": uid,
+                    "study_key": series_uid_hash(str(getattr(ds, "StudyInstanceUID", ""))),
+                    "study_date": str(getattr(ds, "StudyDate", "")),
+                    "study_description": str(getattr(ds, "StudyDescription", "")),
+                    "number": int(ds.SeriesNumber),
+                    "folder": (path.relative_to(src_dir).parts[0]
+                               if len(path.relative_to(src_dir).parts) > 1 else "."),
+                    "description": str(getattr(ds, "SeriesDescription", "")),
+                    "modality": str(getattr(ds, "Modality", "")),
+                    "sop_class": sop_class,
+                    "kernel": first_kernel(getattr(ds, "ConvolutionKernel", "")),
+                    "image_type": list(getattr(ds, "ImageType", []) or []),
+                    "manufacturer": str(getattr(ds, "Manufacturer", "")),
+                    "contrast_agent": bool(str(getattr(ds, "ContrastBolusAgent", "")).strip()),
+                    "slice_thickness": float(getattr(ds, "SliceThickness", 0) or 0),
+                    "orientation": np.zeros(6),
+                    "positions": [],
+                    "spacing_values": [],
+                    "in_plane_size": (0, 0),
+                    "files": [],
+                }
+                series[uid] = row
+            if sop_class != "CT Image Storage":
+                row["files"].append(str(path))
+                continue
+            orientation = np.asarray(ds.ImageOrientationPatient, dtype=float)
+            position = np.asarray(ds.ImagePositionPatient, dtype=float)
+            spacing = float(ds.SliceThickness)
+            if not row["positions"]:
+                row["slice_thickness"] = spacing
+                row["orientation"] = orientation
+                row["in_plane_size"] = (int(ds.Columns), int(ds.Rows))
+            row["positions"].append(float(position @ np.cross(orientation[:3], orientation[3:])))
+            row["spacing_values"].append(spacing)
+            row["files"].append(str(path))
+        except Exception:
+            skipped += 1
+    for row in series.values():
+        if row["sop_class"] != "CT Image Storage":
+            row["count"] = len(row["files"])
+            row["z_span_mm"] = 0.0
+            row["spacing"] = row["slice_thickness"]
+            row["uniform"] = False
+            row["axial"] = False
+            row["size"] = (*row["in_plane_size"], row["count"])
+            continue
+        coords = np.sort(np.asarray(row["positions"], dtype=float))
+        gaps = np.diff(coords)
+        row["z_span_mm"] = float(coords[-1] - coords[0]) if len(coords) > 1 else 0.0
+        row["count"] = len(row["files"])
+        row["spacing"] = float(np.median(gaps)) if len(gaps) else float(row["slice_thickness"])
+        row["uniform"] = bool(len(gaps) and np.max(np.abs(gaps - row["spacing"])) <= UNIFORM_SPACING_TOL_MM)
+        row["axial"] = abs(float(np.cross(row["orientation"][:3], row["orientation"][3:])[2])) >= 0.99
+        ordered = sorted(zip(row["positions"], row["files"]))
+        row["files"] = [name for _, name in ordered]
+        row["size"] = (*row["in_plane_size"], row["count"])
+    return series, skipped
+
+
+def skip_reason(row: dict) -> str | None:
+    return reject_reason(row)
+
+
+def pick_series(series: dict[str, dict], override: str | None) -> tuple[str, dict, dict[str, str]]:
+    classified = dict(zip(series, classify_series(list(series.values()))))
+    reasons = {key: row["reason"] for key, row in classified.items()
+               if row["status"] == "not_usable"}
+    candidates = [(key, row) for key, row in classified.items() if key not in reasons]
+    if override is not None:
+        matches = [(key, row) for key, row in classified.items()
+                   if str(row["number"]) == override or row["folder"] == override
+                   or row.get("series_uid_sha256") == override]
+        if not matches:
+            raise SystemExit("no matching Series found")
+        if len(matches) > 1:
+            raise SystemExit("ambiguous Series choice")
+        chosen_uid, chosen = matches[0]
+        if chosen_uid in reasons:
+            raise SystemExit(f"Series not usable: {reasons[chosen_uid]}")
+    else:
+        recommended = [item for item in candidates if item[1]["status"] == "recommended"]
+        if not recommended:
+            raise SystemExit("no recommended CT Series; choose a usable Series explicitly")
+        chosen_uid, chosen = recommended[0]
+    for key, row in candidates:
+        if key != chosen_uid:
+            reasons[key] = row["reason"] or "another Series selected"
+    return chosen_uid, chosen, reasons
+
+
+def next_case_id(root: Path) -> str:
+    """Allocate local-NNN under an exclusive lock (next_case_id.lock)."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / "next_case_id.lock"
+    with json_file_lock(lock_path):
+        used = {int(m.group(1)) for p in root.glob("local-*")
+                if (m := re.fullmatch(r"local-(\d{3})", p.name))}
+        number = 1
+        while number in used:
+            number += 1
+        case_id = f"local-{number:03d}"
+        # Reserve the directory so concurrent allocators skip it.
+        (root / case_id).mkdir(parents=True, exist_ok=False)
+        return case_id
+
+
+def duplicate_message(existing_id: str, chosen: dict) -> str:
+    return (
+        f"already imported as {existing_id} "
+        f"(SeriesNumber {chosen['number']})"
+    )
+
+
+def build_case_document(
+    case_id: str,
+    chosen: dict,
+    series_map: dict[str, dict],
+    reasons: dict[str, str],
+    *,
+    spacing_mm: list[float],
+    size: list[int],
+) -> dict:
+    """Shared case.json body for CLI and app import paths."""
+    return {
+        "id": case_id,
+        "source": {
+            "series_uid_sha256": chosen["series_uid_sha256"],
+            "folder": chosen["folder"],
+            "series_number": chosen["number"],
+            "series_description": chosen["description"],
+            "study_date": str(chosen.get("study_date") or ""),
+            "convolution_kernel": chosen["kernel"],
+            "spacing_mm": spacing_mm,
+            "size": list(size),
+            "status": chosen["status"],
+            "reason": chosen["reason"],
+            "kernel_class": chosen["kernel_class"],
+            "contrast": chosen["contrast"],
+            "z_span_mm": chosen["z_span_mm"],
+            "series_facts": {key: chosen[key] for key in (
+                "number", "description", "modality", "sop_class", "kernel",
+                "slice_thickness", "spacing", "count", "uniform", "axial",
+                "size", "z_span_mm", "image_type", "manufacturer", "contrast_agent",
+            )},
+        },
+        "skipped_series": [
+            {
+                "folder": series_map[uid]["folder"],
+                "series_number": series_map[uid]["number"],
+                "reason": reason,
+            }
+            for uid, reason in sorted(
+                reasons.items(), key=lambda item: series_map[item[0]]["number"]
+            )
+        ],
+        "import_tool_version": VERSION,
+        "import_date": date.today().isoformat(),
+        "records": [],
+        "versions": [],
+        "review_signoff": [],
+    }
+
+
+def series_uid_hash(uid: str) -> str:
+    return hashlib.sha256(uid.encode("utf-8")).hexdigest()
+
+
+def _hu_pixels(ds: Any) -> np.ndarray:
+    slope = float(getattr(ds, "RescaleSlope", 1) or 1)
+    intercept = float(getattr(ds, "RescaleIntercept", 0) or 0)
+    hu = ds.pixel_array.astype(np.float64) * slope + intercept
+    return np.clip(np.rint(hu), np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
+
+
+def build_volume(files: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    """Stack DICOM slices into an (x, y, z) int16 volume and RAS affine."""
+    volume, affine, _slices = _build_volume(files)
+    return volume, affine
+
+
+def _build_volume(files: list[str]) -> tuple[np.ndarray, np.ndarray, list[dict]]:
+    if len(files) < 2:
+        raise ValueError("need at least two slices to build a volume")
+
+    loaded = []
+    for path in files:
+        ds = _pydicom().dcmread(path)
+        iop = np.asarray(ds.ImageOrientationPatient, dtype=np.float64)
+        ipp = np.asarray(ds.ImagePositionPatient, dtype=np.float64)
+        spacing = np.asarray(ds.PixelSpacing, dtype=np.float64)
+        loaded.append({
+            "iop": iop,
+            "ipp": ipp,
+            "pixel_spacing": spacing,
+            "pixels": _hu_pixels(ds),
+        })
+
+    row_cosine = loaded[0]["iop"][:3]
+    col_cosine = loaded[0]["iop"][3:]
+    normal = np.cross(row_cosine, col_cosine)
+    normal_norm = np.linalg.norm(normal)
+    if normal_norm < 1e-8:
+        raise ValueError("degenerate ImageOrientationPatient")
+    normal = normal / normal_norm
+
+    loaded.sort(key=lambda item: float(item["ipp"] @ normal))
+
+    projections = np.asarray([float(item["ipp"] @ normal) for item in loaded])
+    gaps = np.diff(projections)
+    median_gap = float(np.median(gaps))
+    if np.max(np.abs(gaps - median_gap)) > UNIFORM_SPACING_TOL_MM:
+        raise ValueError("non-uniform slice spacing")
+
+    # pixel_array is (rows, cols) = (y, x); NIfTI needs (x, y, z)
+    volume = np.stack([item["pixels"].T for item in loaded], axis=-1)
+
+    sx = float(loaded[0]["pixel_spacing"][1])  # along row cosine
+    sy = float(loaded[0]["pixel_spacing"][0])  # along col cosine
+    ipp_first = loaded[0]["ipp"]
+    ipp_last = loaded[-1]["ipp"]
+    dz_lps = (ipp_last - ipp_first) / (len(loaded) - 1)
+    dz_norm = np.linalg.norm(dz_lps)
+    if dz_norm < 1e-8:
+        raise ValueError("non-uniform/tilted stack")
+    cosang = float(np.clip(np.dot(dz_lps / dz_norm, normal), -1.0, 1.0))
+    angle_deg = float(np.degrees(np.arccos(cosang)))
+    if angle_deg > TILT_ANGLE_TOL_DEG:
+        raise ValueError("non-uniform/tilted stack")
+
+    # LPS → RAS: negate x and y
+    flip = np.diag([-1.0, -1.0, 1.0])
+    affine = np.eye(4, dtype=np.float64)
+    affine[:3, 0] = flip @ row_cosine * sx
+    affine[:3, 1] = flip @ col_cosine * sy
+    affine[:3, 2] = flip @ dz_lps
+    affine[:3, 3] = flip @ ipp_first
+
+    _assert_geometry(volume, affine, loaded)
+    return volume, affine, loaded
+
+
+def _assert_geometry(volume: np.ndarray, affine: np.ndarray, slices: list[dict]) -> None:
+    for k, item in ((0, slices[0]), (len(slices) - 1, slices[-1])):
+        world = affine @ np.array([0.0, 0.0, float(k), 1.0])
+        if abs(float(world[2]) - float(item["ipp"][2])) > GEOMETRY_TOL_MM:
+            raise AssertionError(
+                f"affine world z mismatch at k={k}: "
+                f"{world[2]:.6f} vs IPP z {item['ipp'][2]:.6f}"
+            )
+        expected = item["pixels"].T
+        if not np.array_equal(volume[:, :, k], expected):
+            raise AssertionError(f"voxel data mismatch at k={k}")
+
+
+def write_ct_nifti(files: list[str], target: Path) -> tuple[np.ndarray, np.ndarray]:
+    volume, affine, slices = _build_volume(files)
+    image = nib.Nifti1Image(volume, affine)
+    image.set_qform(affine, code=1)
+    image.set_sform(affine, code=1)
+    header = image.header
+    header["descrip"] = b""
+    header["aux_file"] = b""
+    header["intent_name"] = b""
+    nib.save(image, str(target))
+
+    loaded = nib.load(str(target))
+    data = np.asanyarray(loaded.dataobj)
+    _assert_geometry(data, np.asarray(loaded.affine, dtype=np.float64), slices)
+    if any(bytes(loaded.header[key]).rstrip(b"\0") for key in ("descrip", "aux_file", "intent_name")):
+        raise AssertionError("NIfTI header contains non-empty descriptive fields")
+    return volume, affine
+
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("src_dir", type=Path, nargs="?")
+    parser.add_argument("--id")
+    parser.add_argument("--series")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--backfill-hash", nargs=3, metavar=("CASE_ID", "SRC_DIR", "SERIES"))
+    args = parser.parse_args()
+    if args.backfill_hash:
+        case_id, src_dir, series_name = args.backfill_hash
+        series_dir = Path(src_dir) / series_name
+        headers = sorted(path for path in series_dir.rglob("*") if path.is_file())
+        if not headers:
+            raise SystemExit("no DICOM header found")
+        ds = _pydicom().dcmread(headers[0], stop_before_pixels=True, force=False)
+        series_hash = series_uid_hash(str(ds.SeriesInstanceUID))
+        case_path = LOCAL_CASES / case_id / "case.json"
+        document = json.loads(case_path.read_text())
+        document.setdefault("source", {})["series_uid_sha256"] = series_hash
+        atomic_write_json(case_path, document)
+        print(f"Backfilled series hash for {case_id}")
+        return
+    if args.src_dir is None:
+        parser.error("src_dir is required unless --backfill-hash is used")
+    series, unreadable = read_series(args.src_dir)
+    chosen_uid, chosen, reasons = pick_series(series, args.series)
+
+    if not args.force:
+        local_root = LOCAL_CASES
+        for case_path in sorted(local_root.glob("*/case.json")):
+            try:
+                existing = json.loads(case_path.read_text())
+                existing_hash = existing.get("source", {}).get("series_uid_sha256")
+            except (OSError, json.JSONDecodeError):
+                continue
+            if existing_hash == chosen["series_uid_sha256"]:
+                print(duplicate_message(
+                    existing.get("id", case_path.parent.name), chosen
+                ))
+                return
+
+    for uid, row in sorted(series.items(), key=lambda item: item[1]["number"]):
+        orientation = "axial" if row["axial"] else "other"
+        print(f"SeriesNumber {row['number']} | "
+              f"{row['description']} | {row['modality']} | "
+              f"{row['sop_class']} | {row['kernel']} | "
+              f"slice {row['slice_thickness']:.2f} mm | spacing {row['spacing']:.2f} mm | "
+              f"{orientation} | {row['size']} | {row['count']} files")
+    print(f"Skipped unreadable/non-DICOM files: {unreadable}")
+    for uid, reason in sorted(reasons.items(), key=lambda item: series[item[0]]["number"]):
+        print(f"Skipped SeriesNumber "
+              f"{series[uid]['number']}: {reason}")
+    if args.dry_run:
+        case_id = args.id or "(next)"
+        print(f"Pick: SeriesNumber {chosen['number']} "
+              f"({chosen['description']}) -> {case_id}")
+        return
+
+    case_id = args.id
+    output_dir = None
+    try:
+        if case_id is None:
+            case_id = next_case_id(LOCAL_CASES)
+            output_dir = LOCAL_CASES / case_id
+        else:
+            output_dir = LOCAL_CASES / case_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Pick: SeriesNumber {chosen['number']} "
+              f"({chosen['description']}) -> {case_id}")
+        target = output_dir / f"{case_id}_CT.nii.gz"
+        volume, affine = write_ct_nifti(chosen["files"], target)
+        spacing = [float(np.linalg.norm(affine[:3, axis])) for axis in range(3)]
+        document = build_case_document(
+            case_id, chosen, series, reasons,
+            spacing_mm=spacing, size=list(volume.shape),
+        )
+        atomic_write_json(output_dir / "case.json", document)
+        print(f"Wrote {target}")
+    except Exception:
+        if output_dir is not None and output_dir.is_dir() and args.id is None:
+            # next_case_id reserved the dir; roll back on failure.
+            shutil.rmtree(output_dir, ignore_errors=True)
+        raise
+
+
+if __name__ == "__main__":
+    main()
