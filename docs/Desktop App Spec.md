@@ -188,7 +188,10 @@ A depth-conditioned image model (`broncho-flow-prototype3-realism-int8.onnx`, 55
 - **Tests:** a stub generator (env var) for UI and Playwright tests; exact-match tests for the depth and
   encoder port.
 - **Optional realistic fly-through export:** “Realistic tissue (generated, slow)” generates zero-roll
-  keyframes every 2 mm (including the route end), using one shared seed per case. Video travel frames
+  keyframes at fork-window anchors (holds ± {8, 16, 25} mm before, +{5, 12, 20} mm after) plus straight
+  gaps of at most 80 mm (including the route end). One shared seed per case starts the chain: the
+  first frame runs the full model, then each frame warm-starts from the previous frame's image.
+  Fork holds reuse the realistic fork stills. Video travel frames
   crossfade the neighbouring keyframes with signed centre scaling; fork holds retain the realistic
   fork image and labels. Generation is on demand, cached, runs after fork frames, and can be cancelled.
   Failure or cancellation falls back to the normal fly-through. The live view remains fork stills only.

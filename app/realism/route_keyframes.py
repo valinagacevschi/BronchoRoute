@@ -1,3 +1,5 @@
+# Changes: fork-window anchors around holds chained by warm-start Euler (t0=0.45,
+# 6 steps); PROTOCOL realism-route-v3 (#67).
 # Changes: route keyframes are fork-hold + ≤80 mm anchors with 16-bit depth PNGs;
 # fork anchors reuse the generated group PNG instead of rerunning the model (#66).
 """On-demand zero-roll route keyframes, queued after fork frames."""
@@ -24,7 +26,10 @@ from app.cases import case_payload
 from app.realism import worker as w
 
 MAX_GAP_MM = 80.0
-PROTOCOL = "realism-route-v2"
+FORK_WINDOW_MM = (-25.0, -16.0, -8.0, 5.0, 12.0, 20.0)
+WARM_T0 = 0.45
+WARM_STEPS = 6
+PROTOCOL = "realism-route-v3"
 _states: dict[str, dict[str, Any]] = {}
 _lock = threading.RLock()
 _start_lock = threading.Lock()
@@ -75,7 +80,7 @@ def _fill_gaps(anchors: list[dict], payload: dict) -> list[dict]:
 
 
 def plan_anchors(payload: dict) -> list[dict]:
-    """Fork-group holds plus straight-segment anchors, ordered by station."""
+    """Fork-group holds, fork-window anchors, then straight anchors, ordered."""
     groups = w.group_forks(list(payload.get("forks") or []))
     poses = w.fork_poses(payload)
     pose_by_fork = {pose["fork"]: pose for pose in poses}
@@ -89,6 +94,15 @@ def plan_anchors(payload: dict) -> list[dict]:
     ]
     fly_stations = np.asarray(payload["fly"]["s"], dtype=float)
     end = float(fly_stations[-1])
+    for group in groups:
+        hold_s = float(pose_by_fork[group[0]["fork"]]["hold_s"])
+        for delta in FORK_WINDOW_MM:
+            station = min(max(hold_s + delta, 0.0), end)
+            anchors.append({
+                "s": station,
+                "pose": _pose_at(payload, station),
+                "group": None,
+            })
     anchors.append({"s": end, "pose": _pose_at(payload, end), "group": None})
     anchors.append({"s": 0.0, "pose": _pose_at(payload, 0.0), "group": None})
     # Sort by station; on a tie a fork anchor wins so its PNG can be reused.
@@ -237,6 +251,8 @@ def _generate(case_id, key, frames, poses, anchors, cancel, previous):
         image = nib.load(str(CaseRef.parse(case_id).airways))
         mask = (np.asanyarray(image.dataobj) > 0).astype(np.uint8)
         fork_dir = w._cache_dir(case_id, fork_state["key"])
+        route_seed = w.group_seed(case_id, "route")
+        previous_image: np.ndarray | None = None
         for frame, pose, anchor in zip(frames, poses, anchors, strict=True):
             if not w._wait_while_busy(cancel):
                 return
@@ -251,12 +267,26 @@ def _generate(case_id, key, frames, poses, anchors, cancel, previous):
                 source = fork_dir / f"group-{anchor['group']}.png"
                 if not source.is_file():
                     raise RuntimeError("fork frame missing")
-                _atomic_copy(source, directory / f"kf-{frame['index']}.png")
+                destination = directory / f"kf-{frame['index']}.png"
+                _atomic_copy(source, destination)
+                previous_image = w._rgb_to_image(
+                    np.asarray(Image.open(destination).convert("RGB")),
+                )
             else:
                 encoded = w.brea_geometry_image(depth, valid, size=256)
-                rgb = w._run_euler(encoded, w.group_seed(case_id, "route"), cancel)
-                if rgb is None or cancel.is_set():
-                    return
+                if previous_image is None:
+                    rgb = w._run_euler(encoded, route_seed, cancel)
+                    if rgb is None or cancel.is_set():
+                        return
+                    previous_image = w._rgb_to_image(rgb)
+                else:
+                    result = w._run_euler_from(
+                        previous_image, encoded, WARM_T0, WARM_STEPS,
+                        route_seed, cancel,
+                    )
+                    if result is None or cancel.is_set():
+                        return
+                    previous_image, rgb = result
                 w._atomic_write_png(directory / f"kf-{frame['index']}.png", rgb)
             with _lock:
                 frame["ready"] = True
