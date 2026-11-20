@@ -4892,12 +4892,17 @@ function updateTopologySharedMarker() {
     marker.style.display = "none";
     delete marker.dataset.node;
   };
-  if (variant !== 2 || !nearestHighlight || nearestHighlight.dist > 5 || !topoLayout) {
+  if (variant !== 2 || !topoLayout) {
+    hide();
+    return;
+  }
+  // Follow the shared position continuously, not pointer hover.
+  const hw = SharedPos.get();
+  if (!hw) {
     hide();
     return;
   }
   let bestId = null, bestD = Infinity;
-  const hw = nearestHighlight.world;
   for (const [id, node] of Object.entries(A.nodes)) {
     const w = toWorld(node.p);
     const d = Math.hypot(w[0] - hw[0], w[1] - hw[1], w[2] - hw[2]);
