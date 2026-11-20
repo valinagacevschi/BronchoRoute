@@ -916,6 +916,7 @@ window.AIRWAY = {"case":"1","source":"AeroPath 1","root":0,"origin_mm":[4.026,15
 
 
 
+
 </script>
 
 <script>
@@ -4906,27 +4907,48 @@ function updateTopologySharedMarker() {
     hide();
     return;
   }
-  // Follow the shared position continuously, not pointer hover.
   const hw = SharedPos.get();
   if (!hw) {
     hide();
     return;
   }
-  let bestId = null, bestD = Infinity;
-  for (const [id, node] of Object.entries(A.nodes)) {
-    const w = toWorld(node.p);
-    const d = Math.hypot(w[0] - hw[0], w[1] - hw[1], w[2] - hw[2]);
-    if (d < bestD) { bestD = d; bestId = +id; }
+  const origin = A.origin_mm || [0, 0, 0];
+  const rel = [hw[0] - origin[0], hw[1] - origin[1], hw[2] - origin[2]];
+  // Find the nearest centreline sample and interpolate along that edge, so the
+  // marker slides continuously instead of snapping between graph nodes.
+  let bestEdge = null, bestFrac = 0, bestD = Infinity;
+  for (const edge of A.edges || []) {
+    const c = edge.c || [];
+    for (let i = 0; i < c.length; i++) {
+      const dx = c[i][0] - rel[0];
+      const dy = c[i][1] - rel[1];
+      const dz = c[i][2] - rel[2];
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < bestD) {
+        bestD = d;
+        bestEdge = edge;
+        bestFrac = c.length > 1 ? i / (c.length - 1) : 0;
+      }
+    }
   }
-  if (bestId == null || !topoLayout.has(bestId)) {
+  if (!bestEdge) {
     hide();
     return;
   }
-  const pt = topoToScreen(topoLayout.get(bestId));
+  const a = topoLayout.get(bestEdge.f);
+  const b = topoLayout.get(bestEdge.t);
+  if (!a || !b) {
+    hide();
+    return;
+  }
+  const pt = topoToScreen({
+    x: a.x + (b.x - a.x) * bestFrac,
+    y: a.y + (b.y - a.y) * bestFrac,
+  });
   marker.style.display = "block";
   marker.style.left = `${pt.x}px`;
   marker.style.top = `${pt.y}px`;
-  marker.dataset.node = String(bestId);
+  marker.dataset.node = String(bestEdge.f);
 }
 
 function drawTopology(pose) {
