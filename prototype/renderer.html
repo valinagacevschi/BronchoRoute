@@ -1205,7 +1205,7 @@ const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
     hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front) · <kbd>A</kbd> Endoluminal · <kbd>M</kbd> aids · click Lesion opens RouteTarget · dbl-click airway sets RouteTarget" },
   { key: "endoluminal", name: "Endoluminal",
-    hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>V</kbd> realistic forks · <kbd>T</kbd> reset route · <kbd>A</kbd> Anatomical · <kbd>M</kbd> aids · <kbd>Enter</kbd> back inside" },
+    hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>T</kbd> reset route · <kbd>A</kbd> Anatomical · <kbd>M</kbd> aids · <kbd>Enter</kbd> back inside" },
   { key: "topology", name: "Topology map",
     hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>[</kbd> / <kbd>]</kbd> rotate 15° · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
   { key: "ct-panes", name: "CT panes",
@@ -1884,6 +1884,8 @@ let minimapDraws = 0;
 let revealDraws = 0;
 const AID_RING_MM = 6;
 const AID_INK = "#2E9E6B";
+// Reference render (a1): warm beige mucosa, dark far lumen.
+const ENDO_GROUND = "#C9B3A8";
 const AP_DEGENERACY = 0.10;
 const AHEAD_FRACTION = 0.15;
 const ALIGN_DEG = 15;
@@ -2295,7 +2297,9 @@ const REALISM_HOLD_MM = 2.0;
 const REALISM_FADE_MS = 250;
 const REALISM_POLL_MS = 2000;
 const realism = {
-  on: true,
+  // Generated tissue frames are disabled for now: the schematic endoluminal
+  // view matches the reference render and the model output did not.
+  on: false,
   available: false,
   state: "idle",
   reason: null,
@@ -2347,10 +2351,10 @@ function realismProgressText(progress) {
 }
 
 function syncTargetRealismOption() {
+  // Realistic images are off for now; keep the option out of the RouteTarget panel.
   const option = document.getElementById("route-target-realism-option");
   if (!option) return;
-  option.hidden = VIEWER_MODE || !SERVER_MODE || !realism.available
-    || realism.state === "unavailable" || realism.state === "off";
+  option.hidden = true;
 }
 
 function syncTargetRealismProgress() {
@@ -2372,9 +2376,7 @@ function syncTargetRealismProgress() {
 }
 
 function targetRealismWanted() {
-  const option = document.getElementById("route-target-realism-option");
-  const box = document.getElementById("route-target-realism");
-  return !!option && !option.hidden && !!box && box.checked;
+  return false;
 }
 
 function realismCircleGeom() {
@@ -3532,8 +3534,29 @@ function drawAidRings(ahead, station, projectFn, toView) {
   ctx.restore();
 }
 
+/** Reference-render readout: route distance, branch points passed, airway width. */
+function drawEndoReadout(station, here) {
+  const rail = document.querySelector(".rail");
+  const railW = rail ? rail.getBoundingClientRect().width : 0;
+  const branches = A.forks.filter(fork => fork.s <= station).length;
+  const lines = [
+    `route  ${Math.round(station)} mm`,
+    `branch points  ${branches}`,
+    `airway  ${(here.r * 2).toFixed(1)} mm wide`,
+  ];
+  ctx.save();
+  ctx.font = "14px IBM Plex Mono, monospace";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = AID_INK;
+  const x = railW + 18;
+  const y = H - 260;
+  lines.forEach((line, i) => ctx.fillText(line, x, y + i * 20));
+  ctx.restore();
+}
+
 /** Corner airway map: all branches faint, the flown route green, current position a dot. */
-function drawMinimap(posRel) {
+function drawMinimap(posRel, corner = "bottom-right") {
   const nodes = A && A.nodes ? Object.values(A.nodes) : [];
   if (!nodes.length || !(W > 0) || !(H > 0)) return;
   minimapDraws += 1;
@@ -3541,7 +3564,18 @@ function drawMinimap(posRel) {
   const h = Math.max(76, Math.min(120, H * 0.26));
   const pad = 10;
   const x0 = W - w - pad;
-  const y0 = H - h - pad;
+  let y0 = H - h - pad;
+  if (corner === "top-right") {
+    // Fixed-position DOM panels sit above the full-window canvas and report
+    // offsetParent === null, so test their rects instead.
+    let top = pad;
+    for (const id of ["limitations-panel"]) {
+      const el = document.getElementById(id);
+      const rect = el && el.getBoundingClientRect();
+      if (rect && rect.height > 0) top = Math.max(top, rect.bottom + 10);
+    }
+    y0 = top + 46; // clear the Open Archive control below the panel
+  }
   const pts = nodes.map(node => [node.p[0], node.p[2]]);
   const routePts = (A.fly && A.fly.p ? A.fly.p : []).map(p => [p[0], p[2]]);
   const all = pts.concat(routePts);
@@ -3803,7 +3837,7 @@ function drawEndoluminal(pose) {
   }
   if (ahead.length < 2) {
     lastEndoluminalLesion = null;
-    ctx.fillStyle = tok("--ground");
+    ctx.fillStyle = ENDO_GROUND;
     ctx.fillRect(0, 0, W, H);
     return;
   }
@@ -3818,7 +3852,7 @@ function drawEndoluminal(pose) {
     return { x: W / 2 + v[0] * f, y: H / 2 - v[1] * f, f, z: v[2] };
   };
 
-  ctx.fillStyle = tok("--ground");
+  ctx.fillStyle = ENDO_GROUND;
   ctx.fillRect(0, 0, W, H);
   // When a fork is in view, stop the parent lumen tube at the junction so
   // child orifices read as separate openings inside the parent wall.
@@ -3826,6 +3860,16 @@ function drawEndoluminal(pose) {
     f => f.s >= station - 1e-6 && f.s - station <= FORK_ORIFICE_AHEAD_MM
       && f.children && f.children.length >= 2,
   );
+  // Lumen depth: dark far lumen fading into the beige wall (a1 reference).
+  const lumR = Math.min(W, H) * 0.58;
+  const lumen = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, lumR);
+  lumen.addColorStop(0, "rgba(24, 18, 15, 0.96)");
+  lumen.addColorStop(0.55, "rgba(38, 29, 24, 0.78)");
+  lumen.addColorStop(1, "rgba(201, 179, 168, 0)");
+  ctx.fillStyle = lumen;
+  ctx.beginPath();
+  ctx.arc(W / 2, H / 2, lumR, 0, Math.PI * 2);
+  ctx.fill();
   let ringCutoff = ahead.length;
   if (orificeFork) {
     const gap = orificeFork.s - station;
@@ -3853,24 +3897,23 @@ function drawEndoluminal(pose) {
     const pixels = ring.radius * ring.point.f;
     if (pixels < 0.5) continue;
     const depth = Math.max(0.04, 1 - ring.i / ahead.length);
-    const gradient = ctx.createRadialGradient(
-      ring.point.x, ring.point.y, pixels * 0.25,
-      ring.point.x, ring.point.y, pixels,
-    );
-    gradient.addColorStop(0, "rgba(0,0,0,0)");
-    gradient.addColorStop(1, ahead[ring.i] && ahead[ring.i].prov === "interpolated"
-      ? `rgba(217,149,32,${depth})` : mucosa(depth));
-    ctx.fillStyle = gradient;
+    const interpolated = ahead[ring.i] && ahead[ring.i].prov === "interpolated";
+    const band = Math.max(1, Math.min(pixels * 0.16, 34));
+    // Filled gradients washed the view flat; wall folds read better as wide
+    // translucent bands with a darker inner edge (a1 reference).
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = interpolated ? `rgba(217,149,32,${depth})` : mucosa(depth);
+    ctx.lineWidth = band;
     ctx.beginPath();
     ctx.arc(ring.point.x, ring.point.y, pixels, 0, 7);
-    ctx.fill();
-    if (ring.i % 6 === 0) {
-      ctx.strokeStyle = mucosa(depth * 0.5);
-      ctx.lineWidth = Math.max(0.5, pixels * 0.05);
-      ctx.beginPath();
-      ctx.arc(ring.point.x, ring.point.y, pixels * 0.97, 0, 7);
-      ctx.stroke();
-    }
+    ctx.stroke();
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = mucosa(depth * 0.7);
+    ctx.lineWidth = Math.max(0.6, band * 0.16);
+    ctx.beginPath();
+    ctx.arc(ring.point.x, ring.point.y, pixels * 0.9, 0, 7);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 
   if (aidsOn && !exportFrame.active) drawAidRings(ahead, station, project, toView);
@@ -3905,7 +3948,10 @@ function drawEndoluminal(pose) {
   drawAnteriorTick(rings, right, up, dir, lastGuidance, station);
   drawEndoluminalLesion(toView);
   drawRealismLayer(phi, station);
-  if (aidsOn && !exportFrame.active) drawMinimap(here.p);
+  if (aidsOn && !exportFrame.active) {
+    drawMinimap(here.p, "top-right");
+    drawEndoReadout(station, here);
+  }
   // Video frames paint the clocks in output pixels after letterboxing so the
   // panel sits on the frame's bottom-left inset, not the on-screen rail.
   if (!(exportFrame.active && exportFrame.deferHud)) paintEndoHud(hud);
@@ -4338,8 +4384,9 @@ function drawAnteriorTick(rings, right, up, dir, hud, station) {
 
 
 function mucosa(d) {
+  // Warm beige near the camera, dark in the far lumen (a1 reference palette).
   const t = Math.max(0, Math.min(1, d));
-  return `rgba(${Math.round(201 * t)},${Math.round(96 * t)},${Math.round(63 * t)},1)`;
+  return `rgba(${Math.round(43 + 157 * t)},${Math.round(33 + 146 * t)},${Math.round(28 + 140 * t)},1)`;
 }
 
 /* --------------------------------------------------- variant C: topology */
@@ -5229,8 +5276,7 @@ addEventListener("keydown", e => {
     rearmRealismHolds();
     resetSharedPositionToRoot();
   } else if (endoKeys && (e.key === "v" || e.key === "V")) {
-    realism.on = !realism.on;
-    syncRealismHook();
+    showViewerToast("Realistic images are off");
     e.preventDefault();
   }
   if (e.key === " " && endoKeys) {
@@ -7700,7 +7746,7 @@ async function setupCasePicker() {
 
 setupCasePicker().catch(err => console.warn(err));
 setupRouteTargetPanel();
-startRealism().catch(() => {});
+// Realistic image generation is disabled for now.
 resize(); render(); frame();
 }).catch((err) => console.error(err));
 </script>
