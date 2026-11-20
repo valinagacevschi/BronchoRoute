@@ -12,8 +12,9 @@
     #title { position:fixed; top:16px; left:20px; font-size:15px; color:var(--muted); pointer-events:none; }
     #title b { color:var(--fg); }
     #status { position:fixed; top:38px; left:20px; font-size:12px; color:var(--route); pointer-events:none; }
-    #hud { position:fixed; left:20px; bottom:64px; font:600 22px/1.4 ui-monospace, Menlo, monospace;
-      color:var(--route); white-space:pre; pointer-events:none; text-shadow:0 1px 6px #000; }
+    #hud { position:fixed; right:20px; bottom:96px; font:600 16px/1.35 ui-monospace, Menlo, monospace;
+      color:#ffffff; white-space:pre; pointer-events:none; text-align:right;
+      text-shadow:0 1px 3px #000, 0 0 12px #000; }
     #final { position:fixed; left:20px; right:20px; bottom:56px; display:none; gap:48px; pointer-events:none; }
     #final div { font-size:13px; color:var(--muted); }
     #final b { display:block; font-size:34px; color:var(--route); }
@@ -21,8 +22,11 @@
     #legend { position:fixed; left:20px; bottom:20px; font-size:13px; color:var(--muted); pointer-events:none; }
     #legend i { display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 5px 0 12px; }
     #legend i:first-child { margin-left:0; }
-    #help { position:fixed; right:20px; bottom:20px; font-size:12px; color:var(--muted); text-align:right; pointer-events:none; }
-    #mini { position:fixed; top:16px; right:16px; width:200px; height:250px; border-radius:10px;
+    #help { position:fixed; right:20px; bottom:20px; font-size:12px; color:#ffffff; text-align:right;
+      pointer-events:none; text-shadow:0 1px 3px #000, 0 0 8px #000; }
+    #clocks { position:fixed; left:20px; bottom:20px; width:260px; height:170px;
+      pointer-events:none; }
+  #mini { position:fixed; top:16px; right:16px; width:200px; height:250px; border-radius:10px;
       border:1px solid #262d3b; display:none; pointer-events:none; }
     #gaplabel { position:fixed; padding:2px 7px; border-radius:5px; background:#000c; color:#fff;
       font:600 13px ui-monospace, Menlo, monospace; display:none; pointer-events:none; transform:translate(-50%,-50%); }
@@ -40,6 +44,7 @@
   </div>
   <div id="legend"></div>
   <div id="help">click a nodule or vessel to set the target · ↑ ↓ move (shift = faster)<br>V inside / outside view · R back to start · drag to orbit</div>
+  <canvas id="clocks" width="260" height="170"></canvas>
   <div id="mini"></div>
   <div id="gaplabel"></div>
   <div id="error"></div>
@@ -57,7 +62,7 @@
     const PARAMS = new URLSearchParams(location.search);
     const BASE = PARAMS.get('case') || '';
     const A1 = PARAMS.get('mode') === 'a1'; // a1 video: start inside the airway, reveal the nodule at the end
-    const ROUTE = 0x63e6be, BG_OUT = 0x0b0f17, BG_IN = 0x1c1412;
+    const ROUTE = 0x2a1a12, BG_OUT = 0x0b0f17, BG_IN = 0x140d0a;
     const LABELS = { airways:'airways', arteries:'arteries', veins:'veins', nodule:'target nodule' };
 
     // ---------- renderer, cameras, scenes ----------
@@ -118,7 +123,7 @@
     }));
     const airways = meshes.airways;
     const outsideAirMat = airways.material;
-    const insideAirMat = new THREE.MeshStandardMaterial({ color: 0xcdb2a5, roughness: 0.85, side: THREE.DoubleSide });
+    const insideAirMat = new THREE.MeshStandardMaterial({ color: 0xb06644, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
     const revealAirMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, side: THREE.DoubleSide,
       transparent: true, opacity: 0.3, depthWrite: false });
     $('legend').innerHTML = sceneInfo.layers.filter(L => LABELS[L.name])
@@ -315,7 +320,7 @@
       routeGroup.visible = !inside; ringGroup.visible = inside;
       world.background.set(inside ? BG_IN : BG_OUT);
       world.fog = inside ? new THREE.Fog(BG_IN, 8, 70) : null;
-      headLight.intensity = inside ? 2.2 : 0;
+      headLight.intensity = inside ? 2.5 : 0;
       keyLight.intensity = inside ? 0.4 : 1.6;
       camera.near = inside ? 0.05 : 1; camera.fov = inside ? 70 : 40; camera.updateProjectionMatrix();
       controls.enabled = !inside;
@@ -477,7 +482,62 @@ airway ${w.toFixed(1)} mm wide`;
         renderer.setClearColor(0x151a24); renderer.clear(); renderer.setClearColor(0x000000);
         renderer.render(mini, miniCam);
       }
+      drawClocks();
       requestAnimationFrame(frame);
+    }
+
+    const clockCtx = document.getElementById('clocks').getContext('2d');
+    const clockFwd = new THREE.Vector3(), clockUp = new THREE.Vector3();
+    function drawClocks() {
+      const g = clockCtx, cw = 260, chh = 170;
+      g.clearRect(0, 0, cw, chh);
+      if (!inside) return;
+      g.fillStyle = 'rgba(17, 27, 33, 0.88)';
+      g.beginPath();
+      g.roundRect(0, 0, cw, chh, 8);
+      g.fill();
+      g.font = '11px system-ui';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      camera.getWorldDirection(clockFwd);
+      clockUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+      // three.js mesh axes: x = patient left, y = superior, z = anterior
+      const patient = [
+        ['A', 0, -1], ['R', 1, 0], ['P', 0, 1], ['L', -1, 0],
+      ];
+      const dials = [
+        { x: 70, fwd: clockFwd },
+        { x: 190, fwd: clockUp },
+      ];
+      for (const dial of dials) {
+        const cy = 68, r = 40;
+        g.strokeStyle = '#a9bbc4';
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(dial.x, cy, r, 0, Math.PI * 2);
+        g.stroke();
+        g.fillStyle = '#f4f7f8';
+        for (const [label, dx, dy] of patient) {
+          g.fillText(label, dial.x + dx * (r + 10), cy + dy * (r + 10));
+        }
+        const ax = -dial.fwd.x;      // patient right
+        const az = dial.fwd.z;       // anterior
+        const ang = Math.atan2(ax, -az);
+        g.strokeStyle = '#ffd166';
+        g.lineWidth = 2;
+        g.beginPath();
+        g.moveTo(dial.x, cy);
+        g.lineTo(dial.x + Math.sin(ang) * r * 0.78, cy - Math.cos(ang) * r * 0.78);
+        g.stroke();
+        g.fillStyle = '#48a9ff';
+        g.beginPath();
+        g.arc(dial.x, cy, 3, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.fillStyle = '#f4f7f8';
+      g.font = '11px system-ui';
+      g.fillText('Patient (supine)', 70, 128);
+      g.fillText('Scope view', 190, 128);
     }
 
     // start with the whole chest in view
