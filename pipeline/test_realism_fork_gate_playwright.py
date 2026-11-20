@@ -8,6 +8,9 @@ from test_realism_viewer_playwright import (
 from test_viewer_v2_playwright import VIEWPORT, _playwright_or_skip
 
 
+pytestmark = pytest.mark.skip(reason="realistic image support is disabled for now")
+
+
 class _GateMock(_RealismMock):
     """Fork worker status with a controllable ready count."""
 

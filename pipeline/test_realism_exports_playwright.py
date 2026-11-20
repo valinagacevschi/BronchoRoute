@@ -9,6 +9,9 @@ from test_realism_viewer_playwright import (
 from test_viewer_v2_playwright import VIEWPORT, _playwright_or_skip
 
 
+pytestmark = pytest.mark.skip(reason="realistic image support is disabled for now")
+
+
 # Sample the encoded image at the rolled mock dot, away from the label pills.
 SAMPLE = r"""
 async (blob, phi, raw = false) => {
