@@ -155,15 +155,16 @@ canvas.dragging { cursor: grabbing; }
 .stage { position: fixed; inset: 0; }
 #endo3d { position: absolute; top: 0; right: 0; bottom: 0; left: 236px; z-index: 6; background: #1c1412; }
 body.endo3d-active .limitations-panel { display: none; }
-body.endo3d-active .proto { display: none; }
-body.endo3d-active #archive-open {
-  left: 254px; right: auto; top: 14px;
-  width: auto !important; max-width: 170px; flex: none;
-  color: #000 !important;
-  border-color: #000 !important;
-  background: rgba(236, 241, 243, 0.85) !important;
+.proto { display: none !important; }
+#archive-open {
+  background: #5E93A8 !important;
+  color: #071014 !important;
+  border: 0 !important;
+  font-size: 12px !important;
+  font-family: "IBM Plex Sans", sans-serif !important;
 }
-#endo3d[hidden] { display: none; }
+
+
 #endo3d-frame { width: 100%; height: 100%; border: 0; display: block; }
 
 /* Instrument rail ------------------------------------------------------- */
@@ -736,6 +737,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <li>Inspiratory CT vs procedural lung volume</li>
     <li>Respiratory motion</li><li>Atelectasis</li>
     <li>Patient positioning</li><li>Incomplete distal segmentation</li>
+    <li>Surface view is a smoothed CT-derived mesh; wall texture is illustrative</li>
   </ul>
   <div class="prov-legend" id="prov-legend" hidden>
     <span style="color:#d99520">━ ━</span> interpolated — not CT airway<br>
@@ -4930,6 +4932,12 @@ function updateTopologySharedMarker() {
     hide();
     return;
   }
+  let nodeId = bestEdge.f, nodeD = Infinity;
+  for (const [id, node] of Object.entries(A.nodes)) {
+    const w = toWorld(node.p);
+    const d = Math.hypot(w[0] - hw[0], w[1] - hw[1], w[2] - hw[2]);
+    if (d < nodeD) { nodeD = d; nodeId = +id; }
+  }
   const pt = topoToScreen({
     x: a.x + (b.x - a.x) * bestFrac,
     y: a.y + (b.y - a.y) * bestFrac,
@@ -4937,7 +4945,7 @@ function updateTopologySharedMarker() {
   marker.style.display = "block";
   marker.style.left = `${pt.x}px`;
   marker.style.top = `${pt.y}px`;
-  marker.dataset.node = String(bestEdge.f);
+  marker.dataset.node = String(nodeId);
 }
 
 function drawTopology(pose) {
@@ -5286,6 +5294,27 @@ function endo3dMessageToWorld(data) {
   return rasWorld;
 }
 
+function moveSharedAlongRoute(deltaMm) {
+  if (!A || !A.fly || !Array.isArray(A.fly.p) || A.fly.p.length < 2) return;
+  const current = SharedPos.get();
+  if (!current) return;
+  const origin = A.origin_mm || [0, 0, 0];
+  const rel = [current[0] - origin[0], current[1] - origin[1], current[2] - origin[2]];
+  let best = 0, bestD = Infinity;
+  A.fly.p.forEach((p, i) => {
+    const d = (p[0] - rel[0]) ** 2 + (p[1] - rel[1]) ** 2 + (p[2] - rel[2]) ** 2;
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  const end = A.fly.s[A.fly.s.length - 1];
+  const next = Math.max(0, Math.min(end, A.fly.s[best] + deltaMm));
+  const world = toWorld(flyAt(next).p);
+  SharedPos.set(world, "keyboard");
+  const frame = document.getElementById("endo3d-frame");
+  if (frame && frame.contentWindow) {
+    try { frame.contentWindow.postMessage({ type: "endo3d-goto-world", world }, location.origin); } catch (err) { /* not loaded */ }
+  }
+}
+
 function handleViewClick(clientX, clientY) {
   const rect = cv.getBoundingClientRect();
   const sx = clientX - rect.left, sy = clientY - rect.top;
@@ -5384,8 +5413,15 @@ window.addEventListener("message", (ev) => {
     return;
   }
   if (data.type === "endo3d-position") {
+    if (variant !== 1) return;
     const world = endo3dMessageToWorld(data);
     if (world) SharedPos.set(world, "endoluminal");
+    return;
+  }
+  if (data.type === "endo3d-shortcut" && data.key >= "1" && data.key <= "4") {
+    const target = SWITCHER_VARIANTS[+data.key - 1];
+    const idx = target ? VARIANTS.findIndex(v => v.key === target.key) : -1;
+    if (idx >= 0) setVariant(idx);
     return;
   }
   if (data.type === "arm-route-target-pick") {
@@ -5506,6 +5542,12 @@ addEventListener("keydown", e => {
     return;
   }
   const endoKeys = variant === 1 || variant === 4;
+  if ((variant === 0 || variant === 2)
+    && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    moveSharedAlongRoute(e.key === "ArrowUp" ? 3 : -3);
+    e.preventDefault();
+    return;
+  }
   if (variant === 0) {
     if (e.key === "f" || e.key === "F") applyPreset("radiologist");
     if (e.key === "h" || e.key === "H") applyPreset("head45");
@@ -5753,6 +5795,7 @@ window.setVariant = setVariant;
 window.ensureCtPanes = ensureCtPanes;
 window.SharedPos = SharedPos;
 let endo3dAssets = null;
+let endo3dWasVisible = false;
 async function syncEndo3d() {
   const wrap = document.getElementById("endo3d");
   const frame = document.getElementById("endo3d-frame");
@@ -5760,6 +5803,10 @@ async function syncEndo3d() {
   if (!wrap || !frame || !canvas) return;
   const wanted = variant === 1 && !exportFrame.active && !!CASE_ID;
   if (!wanted) {
+    if (endo3dWasVisible) {
+      endo3dWasVisible = false;
+      try { frame.contentWindow.postMessage({ type: "endo3d-set-active", active: false }, location.origin); } catch (err) { /* not loaded */ }
+    }
     wrap.hidden = true;
     document.body.classList.remove("endo3d-active");
     canvas.style.visibility = "visible";
@@ -5781,6 +5828,15 @@ async function syncEndo3d() {
   wrap.hidden = false;
   document.body.classList.add("endo3d-active");
   canvas.style.visibility = "hidden";
+  try {
+    frame.contentWindow.postMessage({ type: "endo3d-set-active", active: true }, location.origin);
+    if (!endo3dWasVisible) {
+      // Start flying with the arrows as soon as the view opens.
+      frame.focus();
+      frame.contentWindow.focus();
+    }
+  } catch (err) { /* still loading */ }
+  endo3dWasVisible = true;
 }
 window.__syncEndo3d = syncEndo3d;
 

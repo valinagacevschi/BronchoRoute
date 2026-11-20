@@ -351,7 +351,7 @@ def test_p3_ct_panes(server, case_id):
                 ok: !!(st && sc && st.y < sc.y),
               };
 
-              // Arrow keys inert outside CT view
+              // Arrow keys outside CT view navigate the shared position
               const slicesBefore = { ...ct.getSlices() };
               d.setVariant(0);
               await new Promise(r => setTimeout(r, 50));
@@ -361,9 +361,11 @@ def test_p3_ct_panes(server, case_id):
               await new Promise(r => setTimeout(r, 50));
               out.checks.arrowsOutside = {
                 before: slicesBefore, mid: slicesMid,
-                ok: slicesMid.axial === slicesBefore.axial
-                  && slicesMid.coronal === slicesBefore.coronal
-                  && slicesMid.sagittal === slicesBefore.sagittal,
+                // Arrows outside CT now navigate the shared airway position;
+                // CT panes follow that position, so slices track the move.
+                ok: slicesMid.axial !== slicesBefore.axial
+                  || slicesMid.coronal !== slicesBefore.coronal
+                  || slicesMid.sagittal !== slicesBefore.sagittal,
               };
 
               // (f) Mark Lesion in the coronal pane → Confirm → panes → DELETE
