@@ -1115,6 +1115,25 @@ def viewer_page():
     return FileResponse(PROTOTYPE / "renderer.template.html")
 
 
+@app.get("/case-web/{case_id}/{name}")
+def case_web(case_id: str, name: str):
+    """Surface mesh assets for the 3D endoluminal view."""
+    try:
+        ref = CaseRef.parse(case_id)
+    except UnknownCase as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    base = (ref.case_json.parent / "web").resolve()
+    target = (base / name).resolve()
+    if base not in target.parents and target != base:
+        return JSONResponse({"error": "invalid path"}, status_code=404)
+    if not target.is_file():
+        return JSONResponse({"error": "not built"}, status_code=404)
+    media = "application/octet-stream"
+    if name.endswith(".json"):
+        media = "application/json"
+    return FileResponse(target, media_type=media)
+
+
 app.mount(
     "/",
     StaticFiles(directory=str(PROTOTYPE), html=False),
