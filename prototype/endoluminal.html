@@ -9,12 +9,10 @@
     html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); overflow:hidden;
       font-family: Inter, -apple-system, system-ui, sans-serif; }
     canvas { display:block; }
-    #title { position:fixed; top:16px; left:20px; font-size:15px; color:var(--muted); pointer-events:none; }
+    #title { position:fixed; top:14px; left:20px; font-size:12px; color:var(--muted); pointer-events:none; }
     #title b { color:var(--fg); }
-    #status { position:fixed; top:38px; left:20px; font-size:12px; color:var(--route); pointer-events:none; }
-    #hud { position:fixed; right:20px; bottom:96px; font:600 16px/1.35 ui-monospace, Menlo, monospace;
-      color:#ffffff; white-space:pre; pointer-events:none; text-align:right;
-      text-shadow:0 1px 3px #000, 0 0 12px #000; }
+    #status { position:fixed; top:32px; left:20px; font-size:10px; color:var(--route); pointer-events:none; }
+    #hud { display:none !important; }
     #final { position:fixed; left:20px; right:20px; bottom:56px; display:none; gap:48px; pointer-events:none; }
     #final div { font-size:13px; color:var(--muted); }
     #final b { display:block; font-size:34px; color:var(--route); }
@@ -24,7 +22,7 @@
     #legend i:first-child { margin-left:0; }
     #help { position:fixed; right:20px; bottom:20px; font-size:12px; color:#ffffff; text-align:right;
       pointer-events:none; text-shadow:0 1px 3px #000, 0 0 8px #000; }
-    #clocks { position:fixed; left:20px; bottom:20px; width:260px; height:170px;
+    #clocks { position:fixed; left:16px; top:64px; width:190px; height:124px;
       pointer-events:none; }
   #mini { position:fixed; top:16px; right:16px; width:200px; height:250px; border-radius:10px;
       border:1px solid #262d3b; display:none; pointer-events:none; }
@@ -43,7 +41,7 @@
     <div class="gap"><b id="f-gap"></b><span id="l-gap">short of the target</span></div>
   </div>
   <div id="legend"></div>
-  <div id="help">click a nodule or vessel to set the target · ↑ ↓ move (shift = faster)<br>V inside / outside view · R back to start · drag to orbit</div>
+  <div id="help">click a nodule or vessel to set the target<br> · ↑ ↓ move (shift = faster)<br>V inside / outside view · R back to start · drag to orbit</div>
   <canvas id="clocks" width="260" height="170"></canvas>
   <div id="mini"></div>
   <div id="gaplabel"></div>
@@ -286,7 +284,7 @@
       // rings for the inside view, every 6 mm, sized to the airway
       for (let sv = 3; sv < length; sv += 6) {
         const r = lookup(route.radius, sv) * 0.8;
-        const ring = new THREE.Mesh(new THREE.TorusGeometry(r, Math.max(0.06, r * 0.05), 8, 48),
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(r, Math.max(0.03, r * 0.022), 8, 48),
           new THREE.MeshBasicMaterial({ color: ROUTE, transparent: true, opacity: 0.85 }));
         ring.position.copy(curve.getPointAt(sv / length));
         ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), curve.getTangentAt(sv / length));
