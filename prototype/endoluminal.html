@@ -606,6 +606,33 @@ airway ${w.toFixed(1)} mm wide`;
         ev.source.postMessage({ type: "endo3d-capture-result", dataUrl }, ev.origin);
         return;
       }
+      if (data.type === "endo3d-route-info" && ev.source) {
+        const forks = [];
+        let last = 0;
+        for (let i = 1; i < route.s.length; i++) {
+          if (route.branches[i] > last) { last = route.branches[i]; forks.push(route.s[i]); }
+        }
+        ev.source.postMessage({
+          type: "endo3d-route-result", id: data.id,
+          length: route.length, forks,
+        }, ev.origin);
+        return;
+      }
+      if (data.type === "endo3d-render-at" && ev.source) {
+        const id = data.id;
+        (async () => {
+          if (!inside) setInside(true);
+          progress = Math.max(0, Math.min(route.length, Number(data.s) || 0));
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          let dataUrl = null;
+          try {
+            dataUrl = composeEndoFrame(Number(data.width) || 0, Number(data.height) || 0)
+              .toDataURL("image/jpeg", 0.92);
+          } catch (err) { dataUrl = null; }
+          ev.source.postMessage({ type: "endo3d-render-result", id, dataUrl }, ev.origin);
+        })();
+        return;
+      }
       if (data.type === "endo3d-record-start") {
         rec3d = { fps: Number(data.fps) || 30, width: Number(data.width) || 0,
           height: Number(data.height) || 0, last: 0, origin: ev.origin, source: ev.source };
