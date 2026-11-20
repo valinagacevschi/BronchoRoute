@@ -356,6 +356,11 @@
     // ---------- input ----------
     const keys = {};
     addEventListener('keydown', e => {
+      if (e.key >= '1' && e.key <= '4') {
+        parent.postMessage({ type: 'endo3d-shortcut', key: e.key }, location.origin);
+        e.preventDefault();
+        return;
+      }
       keys[e.key] = true;
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') e.preventDefault();
       if (e.key === 'v' || e.key === 'V') setInside(!inside);
@@ -500,7 +505,7 @@ airway ${w.toFixed(1)} mm wide`;
       drawClocks();
       // Report the live 3D position so Anatomical 3D and Topology follow.
       const nowPos = performance.now();
-      if (inside && nowPos - lastPosPost > 100) {
+      if (inside && active3d && nowPos - lastPosPost > 100) {
         lastPosPost = nowPos;
         const c = camera.position;
         parent.postMessage({
@@ -608,6 +613,7 @@ airway ${w.toFixed(1)} mm wide`;
 
     let rec3d = null;
     let lastPosPost = 0;
+    let active3d = false;
     addEventListener("message", (ev) => {
       if (ev.origin !== location.origin) return;
       const data = ev.data;
@@ -616,6 +622,24 @@ airway ${w.toFixed(1)} mm wide`;
         let dataUrl = null;
         try { dataUrl = composeEndoFrame().toDataURL("image/png"); } catch (err) { dataUrl = null; }
         ev.source.postMessage({ type: "endo3d-capture-result", dataUrl }, ev.origin);
+        return;
+      }
+      if (data.type === "endo3d-set-active") {
+        active3d = !!data.active;
+        return;
+      }
+      if (data.type === "endo3d-goto-world" && Array.isArray(data.world)) {
+        const center = sceneInfo.center_mm || [0, 0, 0];
+        const ras = data.world;
+        const target = new THREE.Vector3(-ras[0] - center[0], ras[2] - center[2], ras[1] - center[1]);
+        let bestU = 0, bestD = Infinity;
+        for (let i = 0; i <= 200; i++) {
+          const u = i / 200;
+          const d = route.curve.getPointAt(u).distanceToSquared(target);
+          if (d < bestD) { bestD = d; bestU = u; }
+        }
+        if (!inside) setInside(true);
+        progress = Math.max(0, Math.min(route.length, bestU * route.length));
         return;
       }
       if (data.type === "endo3d-route-info" && ev.source) {
