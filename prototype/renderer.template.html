@@ -5247,6 +5247,19 @@ function nearestProjectedEdge(sx, sy, edges, hitPx) {
   return { edge: best, point: bestPt, dist: bestD };
 }
 
+function endo3dMessageToWorld(data) {
+  const pos = data && Array.isArray(data.pos) ? data.pos : null;
+  if (!pos || pos.length !== 3) return null;
+  const center = Array.isArray(data.center) && data.center.length === 3 ? data.center : [0, 0, 0];
+  // three.js coords: x = patient left, y = superior, z = anterior, tree-centred.
+  const rasWorld = [
+    -pos[0] - center[0],
+    pos[2] + center[2],
+    pos[1] + center[1],
+  ];
+  return rasWorld;
+}
+
 function handleViewClick(clientX, clientY) {
   const rect = cv.getBoundingClientRect();
   const sx = clientX - rect.left, sy = clientY - rect.top;
@@ -5327,7 +5340,9 @@ function handleViewClick(clientX, clientY) {
 
 window.addEventListener("message", (ev) => {
   if (ev.origin !== location.origin) return;
-  if (ev.source !== window.parent && ev.source !== window) return;
+  const endoFrame = document.getElementById("endo3d-frame");
+  const fromEndo = !!(endoFrame && ev.source === endoFrame.contentWindow);
+  if (ev.source !== window.parent && ev.source !== window && !fromEndo) return;
   const data = ev.data;
   if (!data) return;
   if (data.type === "highlight-route") {
@@ -5340,6 +5355,11 @@ window.addEventListener("message", (ev) => {
     if (ctPanesApi && typeof ctPanesApi.setHighlightRoute === "function") {
       ctPanesApi.setHighlightRoute([...highlightRouteOis]);
     }
+    return;
+  }
+  if (data.type === "endo3d-position") {
+    const world = endo3dMessageToWorld(data);
+    if (world) SharedPos.set(world, "endoluminal");
     return;
   }
   if (data.type === "arm-route-target-pick") {
@@ -5712,9 +5732,7 @@ async function syncEndo3d() {
   const frame = document.getElementById("endo3d-frame");
   const canvas = document.getElementById("c");
   if (!wrap || !frame || !canvas) return;
-  // Debug builds keep the canvas renderer so headless checks stay deterministic.
-  const debugMode = new URLSearchParams(location.search).get("debug") === "1";
-  const wanted = variant === 1 && !exportFrame.active && !!CASE_ID && !debugMode;
+  const wanted = variant === 1 && !exportFrame.active && !!CASE_ID;
   if (!wanted) {
     wrap.hidden = true;
     document.body.classList.remove("endo3d-active");

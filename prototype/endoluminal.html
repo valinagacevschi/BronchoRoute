@@ -498,6 +498,17 @@ airway ${w.toFixed(1)} mm wide`;
         renderer.render(mini, miniCam);
       }
       drawClocks();
+      // Report the live 3D position so Anatomical 3D and Topology follow.
+      const nowPos = performance.now();
+      if (inside && nowPos - lastPosPost > 100) {
+        lastPosPost = nowPos;
+        const c = camera.position;
+        parent.postMessage({
+          type: "endo3d-position",
+          pos: [c.x, c.y, c.z],
+          center: sceneInfo.center_mm || [0, 0, 0],
+        }, location.origin);
+      }
       requestAnimationFrame(frame);
     }
 
@@ -596,6 +607,7 @@ airway ${w.toFixed(1)} mm wide`;
     }
 
     let rec3d = null;
+    let lastPosPost = 0;
     addEventListener("message", (ev) => {
       if (ev.origin !== location.origin) return;
       const data = ev.data;
