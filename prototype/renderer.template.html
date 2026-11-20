@@ -7143,6 +7143,63 @@ function yieldToEventLoop() {
   });
 }
 
+let endo3dRequestSeq = 0;
+function endo3dRequest(payload, resultType, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    const frame = document.getElementById("endo3d-frame");
+    if (!frame || !frame.contentWindow) {
+      reject(new Error("Endoluminal view is not ready"));
+      return;
+    }
+    const id = ++endo3dRequestSeq;
+    const onMessage = (ev) => {
+      if (ev.origin !== location.origin) return;
+      const data = ev.data;
+      if (!data || data.type !== resultType || data.id !== id) return;
+      removeEventListener("message", onMessage);
+      resolve(data);
+    };
+    addEventListener("message", onMessage);
+    frame.contentWindow.postMessage({ ...payload, id }, location.origin);
+    setTimeout(() => {
+      removeEventListener("message", onMessage);
+      reject(new Error("Timed out rendering the 3D view"));
+    }, timeoutMs);
+  });
+}
+
+async function renderEndo3dFlythrough(options, info) {
+  const length = Number(info.length) || 0;
+  if (!(length > 0)) throw new Error("No route to fly");
+  const width = options.width;
+  const height = options.height;
+  const signal = options.signal;
+  const sink = options.sink;
+  const onProgress = options.onProgress;
+  // Match the live 20 mm/s flight: one frame per 1/30 s of route travel.
+  const step = 20 / RECORD_FPS;
+  const poses = [];
+  for (let s = 0; s < length; s += step) poses.push(s);
+  poses.push(length);
+  const total = poses.length;
+  let sent = 0;
+  setFlythroughProgress(0, total);
+  for (let i = 0; i < poses.length; i += 1) {
+    if (signal && signal.aborted) break;
+    const result = await endo3dRequest({
+      type: "endo3d-render-at", s: poses[i], width, height,
+    }, "endo3d-render-result");
+    if (!result.dataUrl) throw new Error("Could not render the 3D view");
+    const bytes = dataUrlToBytes(result.dataUrl);
+    if (sink) await sink(bytes, { index: i, s: poses[i] });
+    sent += 1;
+    setFlythroughProgress(sent, total);
+    if (onProgress) onProgress(sent, total);
+    if (sent % 5 === 0) await yieldToEventLoop();
+  }
+  return { frames: sent, total, cancelled: !!(signal && signal.aborted), length };
+}
+
 async function renderFlythrough(options) {
   const opts = options && typeof options === "object" ? options : {};
   const blocked = flythroughBlockReason();
@@ -7151,6 +7208,16 @@ async function renderFlythrough(options) {
   const width = size.width;
   const height = size.height;
   if (!offlineFrameSize(width, height)) throw new Error("Unsupported record size");
+  if (endo3dVisible()) {
+    const info = await endo3dRequest({ type: "endo3d-route-info" }, "endo3d-route-result");
+    return renderEndo3dFlythrough({
+      width,
+      height,
+      signal: opts.signal || null,
+      sink: typeof opts.sink === "function" ? opts.sink : null,
+      onProgress: typeof opts.onProgress === "function" ? opts.onProgress : null,
+    }, info);
+  }
   const hud = opts.hud !== false;
   const lesion = opts.lesion !== false;
   const when = opts.when instanceof Date && !Number.isNaN(opts.when.getTime())
