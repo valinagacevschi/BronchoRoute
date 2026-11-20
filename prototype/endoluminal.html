@@ -474,6 +474,21 @@ airway ${w.toFixed(1)} mm wide`;
       renderer.setScissorTest(false);
       renderer.clear();
       renderer.render(world, camera);
+      if (rec3d && rec3d.source) {
+        const nowMs = performance.now();
+        if (nowMs - rec3d.last >= 1000 / rec3d.fps - 1) {
+          rec3d.last = nowMs;
+          try {
+            const out = composeEndoFrame(rec3d.width, rec3d.height);
+            rec3d.source.postMessage({
+              type: "endo3d-video-frame",
+              dataUrl: out.toDataURL("image/jpeg", 0.92),
+            }, rec3d.origin);
+          } catch (err) {
+            rec3d = null;
+          }
+        }
+      }
       if (inside || reveal) {
         const r = $('mini').getBoundingClientRect(), y = innerHeight - r.bottom;
         renderer.setScissorTest(true);
@@ -540,53 +555,63 @@ airway ${w.toFixed(1)} mm wide`;
       g.fillText('Scope view', 190, 128);
     }
 
-    // Product export: render one frame and return the composed canvas as PNG.
+    // Product export: render one frame and return the composed canvas.
+    function composeEndoFrame(width, height) {
+      renderer.setScissorTest(false);
+      renderer.setViewport(0, 0, innerWidth, innerHeight);
+      renderer.render(world, camera);
+      const src = renderer.domElement;
+      const out = document.createElement("canvas");
+      out.width = width || src.width;
+      out.height = height || src.height;
+      const g = out.getContext("2d");
+      g.drawImage(src, 0, 0, out.width, out.height);
+      const base = src.getBoundingClientRect();
+      const sx = out.width / base.width;
+      const sy = out.height / base.height;
+      const clocks = document.getElementById("clocks");
+      if (inside && clocks) {
+        const r = clocks.getBoundingClientRect();
+        g.drawImage(clocks, (r.left - base.left) * sx, (r.top - base.top) * sy,
+          r.width * sx, r.height * sy);
+      }
+      const hud = document.getElementById("hud");
+      if (hud && getComputedStyle(hud).display !== "none" && hud.textContent.trim()) {
+        const r = hud.getBoundingClientRect();
+        const style = getComputedStyle(hud);
+        g.font = `${style.fontWeight} ${parseFloat(style.fontSize) * sy}px ui-monospace, Menlo, monospace`;
+        g.textAlign = "right";
+        g.textBaseline = "alphabetic";
+        g.fillStyle = "#ffffff";
+        g.shadowColor = "#000";
+        g.shadowBlur = 4 * sy;
+        const lines = hud.textContent.split("\n");
+        lines.forEach((line, i) => {
+          g.fillText(line, (r.right - base.left) * sx,
+            (r.top - base.top) * sy + parseFloat(style.fontSize) * sy * (i + 0.9));
+        });
+        g.shadowBlur = 0;
+      }
+      return out;
+    }
+
+    let rec3d = null;
     addEventListener("message", (ev) => {
       if (ev.origin !== location.origin) return;
       const data = ev.data;
-      if (!data || data.type !== "endo3d-capture" || !ev.source) return;
-      let dataUrl = null;
-      try {
-        renderer.setScissorTest(false);
-        renderer.setViewport(0, 0, innerWidth, innerHeight);
-        renderer.render(world, camera);
-        const src = renderer.domElement;
-        const out = document.createElement("canvas");
-        out.width = src.width;
-        out.height = src.height;
-        const g = out.getContext("2d");
-        g.drawImage(src, 0, 0);
-        const base = src.getBoundingClientRect();
-        const sx = out.width / base.width;
-        const sy = out.height / base.height;
-        const clocks = document.getElementById("clocks");
-        if (inside && clocks) {
-          const r = clocks.getBoundingClientRect();
-          g.drawImage(clocks, (r.left - base.left) * sx, (r.top - base.top) * sy,
-            r.width * sx, r.height * sy);
-        }
-        const hud = document.getElementById("hud");
-        if (hud && getComputedStyle(hud).display !== "none" && hud.textContent.trim()) {
-          const r = hud.getBoundingClientRect();
-          const style = getComputedStyle(hud);
-          g.font = `${style.fontWeight} ${parseFloat(style.fontSize) * sy}px ui-monospace, Menlo, monospace`;
-          g.textAlign = "right";
-          g.textBaseline = "alphabetic";
-          g.fillStyle = "#ffffff";
-          g.shadowColor = "#000";
-          g.shadowBlur = 4 * sy;
-          const lines = hud.textContent.split("\n");
-          lines.forEach((line, i) => {
-            g.fillText(line, (r.right - base.left) * sx,
-              (r.top - base.top) * sy + parseFloat(style.fontSize) * sy * (i + 0.9));
-          });
-          g.shadowBlur = 0;
-        }
-        dataUrl = out.toDataURL("image/png");
-      } catch (err) {
-        dataUrl = null;
+      if (!data) return;
+      if (data.type === "endo3d-capture" && ev.source) {
+        let dataUrl = null;
+        try { dataUrl = composeEndoFrame().toDataURL("image/png"); } catch (err) { dataUrl = null; }
+        ev.source.postMessage({ type: "endo3d-capture-result", dataUrl }, ev.origin);
+        return;
       }
-      ev.source.postMessage({ type: "endo3d-capture-result", dataUrl }, ev.origin);
+      if (data.type === "endo3d-record-start") {
+        rec3d = { fps: Number(data.fps) || 30, width: Number(data.width) || 0,
+          height: Number(data.height) || 0, last: 0, origin: ev.origin, source: ev.source };
+        return;
+      }
+      if (data.type === "endo3d-record-stop") rec3d = null;
     });
 
     // start with the whole chest in view

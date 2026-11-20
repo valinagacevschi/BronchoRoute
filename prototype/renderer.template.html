@@ -6793,6 +6793,10 @@ async function finishRecording(reason) {
   setRecordUi("stopping");
   const api = recordApi();
   try {
+    if (session.endo3d) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (session.onMessage) removeEventListener("message", session.onMessage);
+    }
     try {
       await session.chain;
     } catch (err) {
@@ -6815,6 +6819,55 @@ async function finishRecording(reason) {
     if (recordSession === session) recordSession = null;
     setRecordUi("idle");
   }
+}
+
+function startEndo3dRecording(api, started, size) {
+  const frame = document.getElementById("endo3d-frame");
+  const session = {
+    id: started.recordingId,
+    view: "endoluminal",
+    sent: 0,
+    error: null,
+    stopping: false,
+    statusSet: false,
+    chain: Promise.resolve(),
+    endo3d: true,
+    onMessage: null,
+    scheduler: {
+      stop() {
+        try { frame.contentWindow.postMessage({ type: "endo3d-record-stop" }, location.origin); } catch (err) { /* frame gone */ }
+      },
+    },
+  };
+  recordSession = session;
+  setRecordUi("recording");
+  const indicator = document.getElementById("record-indicator");
+  if (indicator) indicator.textContent = "\u25cf REC 00:00";
+  const onMessage = (ev) => {
+    if (ev.origin !== location.origin) return;
+    const data = ev.data;
+    if (!data || data.type !== "endo3d-video-frame" || !data.dataUrl) return;
+    if (session.error) return;
+    const bytes = dataUrlToBytes(data.dataUrl);
+    session.chain = session.chain.then(() => {
+      if (session.error) return false;
+      return api.recordFrame({ recordingId: session.id, bytes }).then(() => true);
+    }).then((wrote) => {
+      if (!wrote) return;
+      session.sent += 1;
+      const live = document.getElementById("record-indicator");
+      if (live) live.textContent = `\u25cf REC ${formatRecordClock(session.sent)}`;
+    }).catch((err) => {
+      session.error = err;
+      session.scheduler.stop();
+    });
+  };
+  session.onMessage = onMessage;
+  addEventListener("message", onMessage);
+  frame.contentWindow.postMessage({
+    type: "endo3d-record-start", fps: RECORD_FPS,
+    width: size && size.width, height: size && size.height,
+  }, location.origin);
 }
 
 async function startRecording() {
@@ -6846,6 +6899,10 @@ async function startRecording() {
   if (!started || started.saved === false || !started.recordingId) return;
   if (exportViewKey() !== view) {
     try { await api.recordCancel({ recordingId: started.recordingId }); } catch (err) { /* dialog closed */ }
+    return;
+  }
+  if (endo3dVisible()) {
+    startEndo3dRecording(api, started, size);
     return;
   }
   const source = createVideoFrameSource({
