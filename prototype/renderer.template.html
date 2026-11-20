@@ -1203,9 +1203,9 @@ const tok = n => css.getPropertyValue(n).trim();
 
 const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
-    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front)" },
+    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front) · <kbd>A</kbd> Endoluminal · <kbd>M</kbd> aids · click Lesion opens RouteTarget · dbl-click airway sets RouteTarget" },
   { key: "endoluminal", name: "Endoluminal",
-    hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>V</kbd> realistic forks · <kbd>T</kbd> reset route" },
+    hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>V</kbd> realistic forks · <kbd>T</kbd> reset route · <kbd>A</kbd> Anatomical · <kbd>M</kbd> aids · <kbd>Enter</kbd> back inside" },
   { key: "topology", name: "Topology map",
     hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>[</kbd> / <kbd>]</kbd> rotate 15° · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
   { key: "ct-panes", name: "CT panes",
@@ -1750,6 +1750,11 @@ function drawAnatomical(pose) {
   drawOrientationGizmo();
   drawPatientEdgeLabels();
   drawSharedPositionMarker3d();
+  if (aidsOn && !exportFrame.active) {
+    const world = SharedPos.get();
+    const origin = A.origin_mm || [0, 0, 0];
+    drawMinimap(world ? [world[0] - origin[0], world[1] - origin[1], world[2] - origin[2]] : null);
+  }
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
   } finally {
     anatomicalDrawCam = prevCam;
@@ -1868,6 +1873,17 @@ let rigDial = null;
 let rigDragging = false;
 let lastGuidance = null;
 let lastForkLabels = [];
+// Navigation aids ported from the standalone demo: green distance rings and a
+// corner airway minimap, both hidden by M. Reveal pulls the camera outside when
+// the route tip is reached; Enter dismisses it until the scope moves back.
+let aidsOn = true;
+let revealDismissed = false;
+let viewerToast = null;
+let aidRingDraws = 0;
+let minimapDraws = 0;
+let revealDraws = 0;
+const AID_RING_MM = 6;
+const AID_INK = "#2E9E6B";
 const AP_DEGENERACY = 0.10;
 const AHEAD_FRACTION = 0.15;
 const ALIGN_DEG = 15;
@@ -3491,6 +3507,246 @@ function flyAt(s) {
   };
 }
 
+function showViewerToast(text, ms = 2200) {
+  viewerToast = { text, until: performance.now() + ms };
+}
+
+/** Green distance rings every AID_RING_MM along the route, sized by the local radius. */
+function drawAidRings(ahead, station, projectFn, toView) {
+  ctx.save();
+  ctx.strokeStyle = AID_INK;
+  ctx.lineWidth = 1.5;
+  for (let i = 1; i < ahead.length; i++) {
+    const s = Math.round(station + i);
+    if (s % AID_RING_MM !== 0) continue;
+    const point = projectFn(toView(ahead[i].p));
+    if (!point) continue;
+    const pixels = ahead[i].r * point.f;
+    if (pixels < 1) continue;
+    ctx.globalAlpha = Math.max(0.35, 1 - i / ahead.length);
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, pixels, 0, Math.PI * 2);
+    ctx.stroke();
+    aidRingDraws += 1;
+  }
+  ctx.restore();
+}
+
+/** Corner airway map: all branches faint, the flown route green, current position a dot. */
+function drawMinimap(posRel) {
+  const nodes = A && A.nodes ? Object.values(A.nodes) : [];
+  if (!nodes.length || !(W > 0) || !(H > 0)) return;
+  minimapDraws += 1;
+  const w = Math.max(96, Math.min(150, W * 0.22));
+  const h = Math.max(76, Math.min(120, H * 0.26));
+  const pad = 10;
+  const x0 = W - w - pad;
+  const y0 = H - h - pad;
+  const pts = nodes.map(node => [node.p[0], node.p[2]]);
+  const routePts = (A.fly && A.fly.p ? A.fly.p : []).map(p => [p[0], p[2]]);
+  const all = pts.concat(routePts);
+  if (Array.isArray(posRel)) all.push([posRel[0], posRel[2]]);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of all) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const spanX = Math.max(1, maxX - minX);
+  const spanY = Math.max(1, maxY - minY);
+  const k = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanY);
+  const offX = x0 + (w - spanX * k) / 2;
+  const offY = y0 + (h - spanY * k) / 2;
+  const map = ([x, y]) => [offX + (x - minX) * k, offY + (maxY - y) * k];
+  ctx.save();
+  ctx.fillStyle = "rgba(11, 15, 23, 0.72)";
+  ctx.fillRect(x0, y0, w, h);
+  ctx.strokeStyle = "rgba(139, 148, 167, 0.55)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+  ctx.strokeStyle = "rgba(139, 148, 167, 0.5)";
+  for (const edge of A.edges || []) {
+    const from = A.nodes[String(edge.f)];
+    const to = A.nodes[String(edge.t)];
+    if (!from || !to) continue;
+    const p = map([from.p[0], from.p[2]]);
+    const q = map([to.p[0], to.p[2]]);
+    ctx.beginPath();
+    ctx.moveTo(p[0], p[1]);
+    ctx.lineTo(q[0], q[1]);
+    ctx.stroke();
+  }
+  if (routePts.length > 1) {
+    ctx.strokeStyle = AID_INK;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    routePts.forEach((point, i) => {
+      const [x, y] = map(point);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+  if (Array.isArray(posRel)) {
+    const [x, y] = map([posRel[0], posRel[2]]);
+    ctx.fillStyle = "#F2B632";
+    ctx.beginPath();
+    ctx.arc(x, y, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/**
+ * Outside reveal at the route tip: airway translucent from outside, the lesion,
+ * the gap line and the last measured width. Camera basis is fixed by the route
+ * tangent so the scene does not spin while the scope is held at the end.
+ */
+function drawEndoluminalReveal(station, pathEnd, here) {
+  revealDraws += 1;
+  const tip = flyAt(pathEnd);
+  const origin = A.origin_mm || [0, 0, 0];
+  const lesion = A.lesion && Array.isArray(A.lesion.ras_mm)
+    ? [A.lesion.ras_mm[0] - origin[0], A.lesion.ras_mm[1] - origin[1],
+       A.lesion.ras_mm[2] - origin[2]]
+    : null;
+  const end = tip.p;
+  const routePts = (A.fly && A.fly.p ? A.fly.p : []).slice(-30).map(p => p.slice(0, 3));
+  const focus = lesion
+    ? [(end[0] + lesion[0]) / 2, (end[1] + lesion[1]) / 2, (end[2] + lesion[2]) / 2]
+    : end.slice();
+  let side = cross([0, 0, 1], tip.t);
+  if (hypot3(side) < 1e-3) side = [1, 0, 0];
+  side = norm(side);
+  const fwd = norm(cross(tip.t, side));
+  let right = norm(cross(fwd, [0, 0, 1]));
+  if (hypot3(right) < 1e-3) right = [1, 0, 0];
+  const up = norm(cross(right, fwd));
+  const framePts = routePts.concat(lesion ? [lesion] : []);
+  let radius = 30;
+  for (const point of framePts) radius = Math.max(radius, hypot3(sub(point, focus)));
+  const dist = radius * 2.1 + 40;
+  const focal = Math.min(W, H) * 0.9 * 0.62;
+  const proj = point => {
+    const rel = sub(point, focus);
+    const z = dot(rel, fwd) + dist;
+    if (z < 1) return null;
+    const f = focal / z;
+    return {
+      x: W / 2 + dot(rel, right) * f,
+      y: H / 2 - dot(rel, up) * f,
+      z, f,
+    };
+  };
+  ctx.save();
+  ctx.fillStyle = tok("--ground");
+  ctx.fillRect(0, 0, W, H);
+  const routeEdges = new Set((A.route || []).map(Number));
+  const segs = [];
+  for (let ei = 0; ei < (A.edges || []).length; ei++) {
+    const edge = A.edges[ei];
+    for (let i = 1; i < edge.c.length; i++) {
+      const p = proj(edge.c[i - 1]);
+      const q = proj(edge.c[i]);
+      if (!p || !q) continue;
+      segs.push({
+        p, q, e: edge, route: routeEdges.has(ei),
+        z: (p.z + q.z) / 2,
+      });
+    }
+  }
+  segs.sort((a, b) => b.z - a.z);
+  ctx.lineCap = "round";
+  for (const s of segs) {
+    const width = Math.max(0.7, s.e.r * 2 * s.p.f * 0.5);
+    const fog = Math.max(0.18, Math.min(1, 320 / s.z));
+    ctx.globalAlpha = s.route ? 0.95 : 0.30;
+    ctx.strokeStyle = s.route ? AID_INK : depthColor(s.e.g, fog);
+    ctx.lineWidth = s.route ? width + 1.2 : width;
+    ctx.beginPath();
+    ctx.moveTo(s.p.x, s.p.y);
+    ctx.lineTo(s.q.x, s.q.y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  const endPt = proj(end);
+  if (lesion) {
+    const lp = proj(lesion);
+    if (lp) {
+      const radiusPx = Math.max(3, lesionRadiusMm(A.lesion) * lp.f);
+      ctx.fillStyle = "rgba(180, 82, 47, 0.35)";
+      ctx.strokeStyle = "rgba(180, 82, 47, 0.95)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(lp.x, lp.y, radiusPx, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      if (endPt) {
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = "#727d84";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(endPt.x, endPt.y);
+        ctx.lineTo(lp.x, lp.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+  if (endPt) {
+    ctx.strokeStyle = "#2E6E88";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(endPt.x, endPt.y, 7, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  const gap = Number.isFinite(Number(A.target_gap_mm))
+    ? Number(A.target_gap_mm)
+    : (lesion ? hypot3(sub(lesion, end)) : null);
+  const lines = [
+    "Route end",
+    `airway ${here.r.toFixed(1)} mm wide`,
+  ];
+  if (gap != null) lines.push(`${gap.toFixed(0)} mm to lesion`);
+  lines.push("Enter: back inside", "A: Anatomical 3D");
+  ctx.font = "12px IBM Plex Mono, monospace";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const boxW = 176;
+  const boxH = lines.length * 16 + 14;
+  ctx.fillStyle = "rgba(11, 15, 23, 0.78)";
+  ctx.fillRect(14, H - boxH - 14, boxW, boxH);
+  ctx.fillStyle = "#E9EDF5";
+  lines.forEach((line, i) => ctx.fillText(line, 24, H - boxH - 6 + 16 * i));
+  ctx.restore();
+  setReadout({
+    gen: here.g.toFixed(0),
+    rad: here.r.toFixed(2) + " mm",
+    togo: "0 mm",
+    turns: "0",
+  });
+  SharedPos.set(toWorld(here.p), "endoluminal");
+  syncFlythroughUi();
+}
+
+function drawViewerToast() {
+  if (!viewerToast || performance.now() > viewerToast.until) {
+    viewerToast = null;
+    return;
+  }
+  ctx.save();
+  ctx.font = "12px IBM Plex Mono, monospace";
+  const text = viewerToast.text;
+  const width = ctx.measureText(text).width + 20;
+  const x = (W - width) / 2;
+  const y = H - 52;
+  ctx.fillStyle = "rgba(11, 15, 23, 0.82)";
+  ctx.fillRect(x, y, width, 24);
+  ctx.fillStyle = "#E9EDF5";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, W / 2, y + 12);
+  ctx.restore();
+}
+
 function drawEndoluminal(pose) {
   // Interactive navigation omits pose and keeps the manual roll in fly.phi.
   // Offline fly-through passes {s, phi} and does not write those globals.
@@ -3509,6 +3765,12 @@ function drawEndoluminal(pose) {
     w: W, h: H, focalPx: Math.min(W, H) * 0.62, s: station, phi,
   };
   const pathEnd = A.fly.s[A.fly.s.length - 1];
+  if (station < pathEnd - 1.5) revealDismissed = false;
+  // Offline fly-through frames keep their own end-hold, so reveal is interactive only.
+  if (!posed && station >= pathEnd - 0.6 && !revealDismissed && A.lesion) {
+    drawEndoluminalReveal(station, pathEnd, here);
+    return;
+  }
   const aheadEnd = Math.min(pathEnd, station + 90);
   const ahead = [];
   for (let s = station; s <= aheadEnd + 1e-9; s += 1) {
@@ -3605,6 +3867,8 @@ function drawEndoluminal(pose) {
     }
   }
 
+  if (aidsOn && !exportFrame.active) drawAidRings(ahead, station, project, toView);
+
   const nextFork = A.forks.find(fork => fork.s >= station);
   let guideSample = Math.min(20, ahead.length - 1);
   if (nextFork && nextFork.s + 5 <= aheadEnd) {
@@ -3635,6 +3899,7 @@ function drawEndoluminal(pose) {
   drawAnteriorTick(rings, right, up, dir, lastGuidance, station);
   drawEndoluminalLesion(toView);
   drawRealismLayer(phi, station);
+  if (aidsOn && !exportFrame.active) drawMinimap(here.p);
   // Video frames paint the clocks in output pixels after letterboxing so the
   // panel sits on the frame's bottom-left inset, not the on-screen rail.
   if (!(exportFrame.active && exportFrame.deferHud)) paintEndoHud(hud);
@@ -4510,6 +4775,7 @@ function frame(now) {
   if (variant === 0) drawAnatomical();
   else if (variant === 1 || variant === 4) drawEndoluminal();
   else drawTopology();
+  drawViewerToast();
   requestAnimationFrame(frame);
 }
 
@@ -4575,6 +4841,19 @@ cv.addEventListener("pointermove", e => {
     else { cam.panX += dx; cam.panY += dy; }
   }
 });
+cv.addEventListener("dblclick", e => {
+  // Double-click a branch to set the RouteTarget directly. Single click keeps
+  // its review meaning (select branch / remove panel).
+  if (variant !== 0 || VIEWER_MODE || !CASE_ID) return;
+  const rect = cv.getBoundingClientRect();
+  const hit = nearestProjectedEdge(e.clientX - rect.left, e.clientY - rect.top, A.edges || [], 8);
+  if (!hit.edge || !hit.point) return;
+  if (!A.lesion || !A.lesion.ras_mm) {
+    showViewerToast("Confirm a lesion first");
+    return;
+  }
+  setRouteTargetAt(hit.point);
+});
 cv.addEventListener("pointerleave", () => { topoPointer = null; });
 cv.addEventListener("wheel", e => {
   if (variant === 3) return;
@@ -4586,6 +4865,7 @@ let selectedEdgeOi = null;
 let highlightRouteOis = new Set();
 let routeTargetPickArmed = false;
 let chooseRouteTargetFromPick = async () => {};
+let setRouteTargetAt = async () => {};
 let refreshRouteTargetPanel = async () => {};
 let refreshCasePayload = async () => {};
 
@@ -4722,6 +5002,17 @@ function handleViewClick(clientX, clientY) {
   const rect = cv.getBoundingClientRect();
   const sx = clientX - rect.left, sy = clientY - rect.top;
   if (variant === 0) {
+    const lesionHit = lastAnatomicalLesion;
+    if (lesionHit && !exportFrame.active) {
+      const reach = Math.max(4, lesionHit.radiusPx) + 5;
+      if (Math.hypot(sx - lesionHit.x, sy - lesionHit.y) <= reach) {
+        const panel = document.getElementById("route-target-panel");
+        if (panel) panel.hidden = false;
+        refreshRouteTargetPanel();
+        showViewerToast(A.lesion ? "Choose a RouteTarget" : "Confirm a lesion first");
+        return;
+      }
+    }
     const live = nearestProjectedEdge(sx, sy, A.edges || [], 8);
     const ghost = nearestProjectedEdge(sx, sy, A.removed || [], 8);
     if (ghost.edge && (!live.edge || ghost.dist <= live.dist)) {
@@ -4885,6 +5176,29 @@ addEventListener("keydown", e => {
   if (document.querySelector("dialog[open]")) return;
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
+  if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+    const key = e.key.toLowerCase();
+    if (key === "a" && (variant === 0 || variant === 1 || variant === 4)) {
+      setVariant(variant === 0 ? 1 : 0);
+      e.preventDefault();
+      return;
+    }
+    if (key === "m") {
+      aidsOn = !aidsOn;
+      showViewerToast(aidsOn ? "Aids on" : "Aids off");
+      e.preventDefault();
+      return;
+    }
+    if (key === "enter" && (variant === 1 || variant === 4)) {
+      const pathEnd = A.fly.s[A.fly.s.length - 1];
+      if (fly.s >= pathEnd - 0.6) {
+        revealDismissed = true;
+        showViewerToast("Back inside");
+        e.preventDefault();
+      }
+      return;
+    }
+  }
   if (e.key >= "1" && e.key <= String(SWITCHER_VARIANTS.length)) {
     const key = SWITCHER_VARIANTS[+e.key - 1].key;
     const idx = VARIANTS.findIndex(v => v.key === key);
@@ -5407,6 +5721,10 @@ function setupRouteTargetPanel() {
 
   chooseRouteTargetFromPick = async function (ras) {
     if (!routeTargetPickArmed) return;
+    if (!Array.isArray(ras) || ras.length !== 3) return;
+    await putRouteTarget({ ras_mm: ras.map(Number) });
+  };
+  setRouteTargetAt = async function (ras) {
     if (!Array.isArray(ras) || ras.length !== 3) return;
     await putRouteTarget({ ras_mm: ras.map(Number) });
   };
@@ -7181,6 +7499,25 @@ if (DEBUG) {
     spinPoses,
     flythroughBlockReason,
     flyState: () => ({ s: fly.s, phi: fly.phi, playing: fly.playing }),
+    aids: () => ({
+      on: aidsOn,
+      atEnd: fly.s >= A.fly.s[A.fly.s.length - 1] - 0.6,
+      revealDismissed,
+      toast: viewerToast ? viewerToast.text : null,
+      rings: aidRingDraws,
+      minimap: minimapDraws,
+      reveal: revealDraws,
+    }),
+    setAids(on) { aidsOn = !!on; return aidsOn; },
+    edgeHitPoint() {
+      for (const edge of A.edges || []) {
+        for (const c of edge.c || []) {
+          const pr = project(c, cam);
+          if (pr) return { x: pr.x, y: pr.y, oi: edge.oi };
+        }
+      }
+      return null;
+    },
     topoState: () => ({
       topoRot,
       topoSpin,
