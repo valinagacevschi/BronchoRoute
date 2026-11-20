@@ -153,6 +153,10 @@ canvas { display: block; width: 100%; height: 100%; cursor: grab; }
 canvas.dragging { cursor: grabbing; }
 
 .stage { position: fixed; inset: 0; }
+#endo3d { position: absolute; top: 0; right: 0; bottom: 0; left: 236px; z-index: 6; background: #1c1412; }
+body.endo3d-active .limitations-panel { display: none; }
+#endo3d[hidden] { display: none; }
+#endo3d-frame { width: 100%; height: 100%; border: 0; display: block; }
 
 /* Instrument rail ------------------------------------------------------- */
 .rail {
@@ -587,7 +591,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 }
 </style>
 
-<div class="stage"><canvas id="c"></canvas><div class="shared-marker shared-marker-3d" id="shared-marker-3d"></div><div class="shared-marker shared-marker-topology" id="shared-marker-topology"></div></div>
+<div class="stage"><canvas id="c"></canvas><div id="endo3d" hidden><iframe id="endo3d-frame" title="Endoluminal 3D"></iframe></div><div class="shared-marker shared-marker-3d" id="shared-marker-3d"></div><div class="shared-marker shared-marker-topology" id="shared-marker-topology"></div></div>
 <div id="ct-stage" aria-label="CT panes"></div>
 <div class="walk-sim-label" id="walk-sim-label">Simulated steering — not measured scope orientation</div>
 
@@ -4430,6 +4434,7 @@ function drawForkOrifices(toView, projectFn, hud, station) {
   }
 
 
+
   // Labels just outside each orifice (and outside the parent face); deconflict.
   const labels = openings.map(o => {
     const clockTxt = o.clock == null ? "" : ` · ${o.clock} o'clock`;
@@ -4998,6 +5003,11 @@ function frame(now) {
     topologyEstimatedLabels = 0;
   }
   if (variant === 3) {
+    requestAnimationFrame(frame);
+    return;
+  }
+  const endoWrap = document.getElementById("endo3d");
+  if (variant === 1 && endoWrap && !endoWrap.hidden) {
     requestAnimationFrame(frame);
     return;
   }
@@ -5688,6 +5698,40 @@ function setVariant(i) {
 window.setVariant = setVariant;
 window.ensureCtPanes = ensureCtPanes;
 window.SharedPos = SharedPos;
+let endo3dAssets = null;
+async function syncEndo3d() {
+  const wrap = document.getElementById("endo3d");
+  const frame = document.getElementById("endo3d-frame");
+  const canvas = document.getElementById("c");
+  if (!wrap || !frame || !canvas) return;
+  // Debug builds keep the canvas renderer so headless checks stay deterministic.
+  const debugMode = new URLSearchParams(location.search).get("debug") === "1";
+  const wanted = variant === 1 && !exportFrame.active && !!CASE_ID && !debugMode;
+  if (!wanted) {
+    wrap.hidden = true;
+    document.body.classList.remove("endo3d-active");
+    canvas.style.visibility = "visible";
+    return;
+  }
+  if (endo3dAssets === null) {
+    endo3dAssets = fetch(`/case-web/${encodeURIComponent(CASE_ID)}/scene.json`)
+      .then(r => r.ok)
+      .catch(() => false);
+  }
+  const ok = await endo3dAssets;
+  if (!ok) {
+    wrap.hidden = true;
+    canvas.style.visibility = "visible";
+    return;
+  }
+  const src = `/endoluminal.html?mode=a1&case=/case-web/${encodeURIComponent(CASE_ID)}`;
+  if (frame.getAttribute("src") !== src) frame.setAttribute("src", src);
+  wrap.hidden = false;
+  document.body.classList.add("endo3d-active");
+  canvas.style.visibility = "hidden";
+}
+window.__syncEndo3d = syncEndo3d;
+
 function render() {
   topoControls.hidden = variant !== 2;
   sw.innerHTML = "";
@@ -5709,6 +5753,7 @@ function render() {
   const estimatedLayers = document.getElementById("g-layers");
   if (estimatedLayers) estimatedLayers.hidden = variant !== 0 && variant !== 2 && variant !== 3;
   syncPresetButtons();
+  syncEndo3d();
   const ctOnly = variant === 3;
   const ctActive = ctOnly || walkActive;
   ctStage.classList.toggle("active", ctOnly);
