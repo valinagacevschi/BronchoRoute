@@ -3710,12 +3710,18 @@ function drawEndoluminalReveal(station, pathEnd, here) {
   ctx.font = "12px IBM Plex Mono, monospace";
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
+  // The canvas spans the whole window; the rail and HUD sit on top of it.
+  // Place the readout in the free top-left of the drawing area, right of the rail.
+  const rail = document.querySelector(".rail");
+  const railW = rail ? rail.getBoundingClientRect().width : 0;
   const boxW = 176;
   const boxH = lines.length * 16 + 14;
+  const boxX = railW + 18;
+  const boxY = 14;
   ctx.fillStyle = "rgba(11, 15, 23, 0.78)";
-  ctx.fillRect(14, H - boxH - 14, boxW, boxH);
+  ctx.fillRect(boxX, boxY, boxW, boxH);
   ctx.fillStyle = "#E9EDF5";
-  lines.forEach((line, i) => ctx.fillText(line, 24, H - boxH - 6 + 16 * i));
+  lines.forEach((line, i) => ctx.fillText(line, boxX + 10, boxY + 8 + 16 * i));
   ctx.restore();
   setReadout({
     gen: here.g.toFixed(0),
