@@ -23,12 +23,28 @@ def _affine(scale=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0)) -> np.ndarray:
 
 def test_single_voxel_is_a_half_voxel_diamond():
     slice_mask = np.zeros((5, 5), dtype=bool)
-    slice_mask[2, 3] = True  # row (y) 2, column (x) 3
+    slice_mask[2, 3] = True  # row (axis 0) 2, column (axis 1) 3
 
     polygons = trace_slice(slice_mask)
 
     assert len(polygons) == 1
-    assert set(polygons[0]) == {(3.0, 1.5), (2.5, 2.0), (3.0, 2.5), (3.5, 2.0)}
+    assert set(polygons[0]) == {(1.5, 3.0), (2.0, 2.5), (2.5, 3.0), (2.0, 3.5)}
+
+
+def test_non_square_mask_keeps_axis0_then_axis1_order():
+    # 4 rows x 9 columns: the swap is invisible only when the mask is square.
+    slice_mask = np.zeros((4, 9), dtype=bool)
+    slice_mask[1, 7] = True  # row (axis 0) 1, column (axis 1) 7
+
+    polygons = trace_slice(slice_mask)
+
+    assert len(polygons) == 1
+    assert set(polygons[0]) == {
+        (0.5, 7.0), (1.0, 6.5), (1.5, 7.0), (1.0, 7.5),
+    }
+    # Centroid is (row, column) = (1, 7), never (7, 1).
+    assert sum(point[0] for point in polygons[0]) / 4 == 1.0
+    assert sum(point[1] for point in polygons[0]) / 4 == 7.0
 
 
 def test_empty_slice_has_no_polygons():
@@ -43,8 +59,8 @@ def test_disconnected_components_trace_separate_polygons_in_order():
     polygons = trace_slice(slice_mask)
 
     assert len(polygons) == 2
-    # Deterministic order: the component with the lowest y then x comes first.
-    assert min(point[1] for point in polygons[0]) < min(point[1] for point in polygons[1])
+    # Deterministic order: the component with the lowest row then column first.
+    assert min(polygons[0]) < min(polygons[1])
     assert len(polygons[0]) == len(polygons[1]) == 4
 
 
@@ -68,16 +84,16 @@ def test_polygon_points_stay_on_the_mask_boundary_inside_its_bounding_box():
     polygons = trace_slice(slice_mask)
 
     ys, xs = np.nonzero(slice_mask)
-    box = (xs.min() - 0.5, xs.max() + 0.5, ys.min() - 0.5, ys.max() + 0.5)
+    box = (ys.min() - 0.5, ys.max() + 0.5, xs.min() - 0.5, xs.max() + 0.5)
     assert polygons
     for polygon in polygons:
-        for x, y in polygon:
-            assert box[0] <= x <= box[1]
-            assert box[2] <= y <= box[3]
+        for row, column in polygon:
+            assert box[0] <= row <= box[1]
+            assert box[2] <= column <= box[3]
             # A half-voxel boundary point sits midway between a mask voxel and
             # a background voxel (or on the padded edge of a border voxel).
-            assert x * 2 == int(x * 2)
-            assert y * 2 == int(y * 2)
+            assert row * 2 == int(row * 2)
+            assert column * 2 == int(column * 2)
 
 
 def test_every_point_sits_between_a_mask_voxel_and_a_background_voxel():
@@ -85,19 +101,25 @@ def test_every_point_sits_between_a_mask_voxel_and_a_background_voxel():
     slice_mask[3:7, 4:9] = True
     height, width = slice_mask.shape
 
-    def value(x: int, y: int) -> bool:
-        return 0 <= x < width and 0 <= y < height and bool(slice_mask[y, x])
+    def value(row: int, column: int) -> bool:
+        return (
+            0 <= row < height
+            and 0 <= column < width
+            and bool(slice_mask[row, column])
+        )
 
     for polygon in trace_slice(slice_mask):
-        for x, y in polygon:
-            if x != int(x):
-                x0 = int(x - 0.5)
-                assert value(x0, int(y)) != value(x0 + 1, int(y))
-            elif y != int(y):
-                y0 = int(y - 0.5)
-                assert value(int(x), y0) != value(int(x), y0 + 1)
+        for row, column in polygon:
+            if row != int(row):
+                row0 = int(row - 0.5)
+                assert value(row0, int(column)) != value(row0 + 1, int(column))
+            elif column != int(column):
+                column0 = int(column - 0.5)
+                assert value(int(row), column0) != value(int(row), column0 + 1)
             else:
-                raise AssertionError(f"point {x},{y} is not on a half-voxel edge")
+                raise AssertionError(
+                    f"point {row},{column} is not on a half-voxel edge"
+                )
 
 
 def test_a_hole_produces_an_inner_polygon():
@@ -132,7 +154,7 @@ def test_mask_tracing_skips_empty_slices_and_keeps_slice_indices():
     assert [entry["slice_index"] for entry in slices] == [1, 5]
     assert len(slices[0]["polygons"]) == 1
     assert len(slices[1]["polygons"]) == 1
-    # Points are in-plane voxel coordinates; the slice is the integer k.
+    # Points are (axis 0, axis 1); the slice is the integer k on axis 2.
     assert set(slices[0]["polygons"][0]) == {
         (2.0, 1.5), (1.5, 2.0), (2.0, 2.5), (2.5, 2.0),
     }

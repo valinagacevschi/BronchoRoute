@@ -113,9 +113,9 @@ def test_synthetic_mask_writes_all_three_artifacts(tmp_path):
     assert [entry["slice_index"] for entry in first_slices] == [10, 11, 12]
     assert first_slices[0]["polygons"]
     for polygon in first_slices[0]["polygons"]:
-        for x, y in polygon:
-            assert 9.0 <= x <= 14.0
-            assert 9.0 <= y <= 14.0
+        for row, column in polygon:
+            assert 9.0 <= row <= 14.0
+            assert 9.0 <= column <= 14.0
 
 
 def test_detector_candidates_are_fused_into_the_instances(tmp_path):

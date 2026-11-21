@@ -1,10 +1,12 @@
 """Pure axial contour builder for nodule masks.
 
 Coordinates are continuous voxel coordinates in the CT array frame: voxel
-``(i, j, k)`` has its centre at ``(i, j, k)``.  A polygon point ``[x, y]`` is
-therefore a half-voxel boundary point such as ``(3.5, 2.0)``.  Add ``0.5`` per
-axis to reach the viewer's continuous corner coordinates.  The slice index is
-the integer ``k``.
+``(i, j, k)`` has its centre at ``(i, j, k)``.  A polygon point is
+``[axis0, axis1]``: ``point[0]`` is the row index on CT array axis 0 (``i``)
+and ``point[1]`` is the column index on axis 1 (``j``).  Boundary points sit at
+the half-voxel offset, such as ``(1.5, 7.0)``.  Add ``0.5`` per in-plane axis
+to reach the viewer's continuous corner coordinates.  The slice index is the
+integer ``k`` on axis 2.
 """
 
 from __future__ import annotations
@@ -111,9 +113,10 @@ def build_contours(
           ]
         }
 
-    Points are continuous voxel coordinates in the CT array frame (voxel centre
-    at the integer index, boundary at the half-voxel offset).  The z axis is
-    the axial slice axis, so ``index`` is the integer ``k`` of that slice.
+    Each polygon point is ``[axis0, axis1]``: ``point[0]`` is the CT array row
+    index (axis 0) and ``point[1]`` is the column index (axis 1).  Voxel
+    centres sit at integer indices; boundaries sit at the half-voxel offset.
+    The axial slice stays the integer ``k`` on axis 2.
     """
     shape = tuple(int(size) for size in target_shape)
     if len(shape) != 3 or any(size <= 0 for size in shape):
@@ -140,12 +143,13 @@ def build_contours(
     return {"shape": list(shape), "nodules": records}
 
 
-def _cell_segments(x: int, y: int, case: int) -> list[_Segment]:
+def _cell_segments(row: int, column: int, case: int) -> list[_Segment]:
+    """Return a cell's segments as ``(axis0, axis1)`` row-then-column points."""
     edges = {
-        "T": (x + 0.5, float(y)),
-        "R": (float(x + 1), y + 0.5),
-        "B": (x + 0.5, float(y + 1)),
-        "L": (float(x), y + 0.5),
+        "T": (float(row), column + 0.5),
+        "R": (row + 0.5, float(column + 1)),
+        "B": (float(row + 1), column + 0.5),
+        "L": (row + 0.5, float(column)),
     }
     return [(edges[a], edges[b]) for a, b in _SEGMENTS[case]]
 
@@ -188,7 +192,12 @@ def _stitch(segments: list[_Segment]) -> list[list[_Point]]:
 
 
 def trace_slice(slice_mask: np.ndarray) -> list[list[tuple[float, float]]]:
-    """Return closed polygons on the half-voxel boundary of one axial slice."""
+    """Return closed polygons on the half-voxel boundary of one axial slice.
+
+    ``slice_mask`` is indexed ``[axis0, axis1]``.  Each polygon point is also
+    ``[axis0, axis1]``: row index first, column index second.  Boundary points
+    sit at the half-voxel offset.
+    """
     grid = np.asarray(slice_mask).astype(bool)
     if grid.ndim != 2:
         raise ValueError("slice_mask must be 2-D")
@@ -204,14 +213,15 @@ def trace_slice(slice_mask: np.ndarray) -> list[list[tuple[float, float]]]:
                 | (_BL if padded[row + 1, column] else 0)
             )
             if case:
-                segments.extend(_cell_segments(column - 1, row - 1, case))
+                segments.extend(_cell_segments(row - 1, column - 1, case))
     return _stitch(segments)
 
 
 def trace_mask_axial(mask: np.ndarray) -> list[dict]:
     """Trace every non-empty axial slice, in ascending slice order.
 
-    Each entry is ``{"slice_index": k, "polygons": [[[x, y], ...], ...]}``.
+    Each entry is ``{"slice_index": k, "polygons": [[[axis0, axis1], ...], ...]}``.
+    ``slice_index`` is axis 2; polygon points are row then column.
     """
     volume = np.asarray(mask).astype(bool)
     if volume.ndim != 3:
