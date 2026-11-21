@@ -18,7 +18,8 @@ Artifacts are written next to the other TotalSegmentator masks::
     TS_OUT/<case>/nodule_instances.json               {"nodules": [instance...]}
     TS_OUT/<case>/nodule_contours.json                {"shape": [...], "nodules": [...]}
 
-An instance has these fields: ``id, center_ras_mm, volume_mm3, diameter_mm,
+The fused candidates also replace the Case record's candidate block, as
+suggestions for clinician review. An instance has these fields: ``id, center_ras_mm, volume_mm3, diameter_mm,
 axial_diameter_mm, hu_mean, hu_min, hu_max, lobe, to_airway_mm, score, match,
 box_size_mm``. Contours are ``build_contours`` output: ``shape`` and
 ``nodules[].slices[].{slice_index, polygons}`` in CT voxel coordinates.
@@ -32,14 +33,15 @@ import re
 import subprocess
 import sys
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
 
-from atomic_json import atomic_write_json
+from atomic_json import atomic_write_json, json_file_lock
 from nodule_candidates import build_candidates
-from nodule_contours import build_contours, resample_to_grid
+from nodule_contours import resample_to_grid, trace_mask_axial
 from paths import TS_OUT
 from run_totalsegmentator import require_task
 from snomed import LOBES as LOBE_TABLE
@@ -190,6 +192,50 @@ def _instance_record(candidate: Mapping) -> dict:
     }
 
 
+def _candidate_item(candidate: Mapping) -> dict:
+    """One candidate-list entry; suggestions only, never the Lesion."""
+    box = candidate.get("box_size_mm")
+    diameter = candidate.get("diameter_mm")
+    if diameter is None and box is not None:
+        diameter = max(float(v) for v in box)
+    item = {
+        "ras_mm": [float(v) for v in candidate["center_ras_mm"]],
+        "diameter_mm": _float_or_none(diameter),
+        "score": _float_or_none(candidate.get("score")),
+        "id": int(candidate["id"]),
+        "volume_mm3": _float_or_none(candidate.get("volume_mm3")),
+        "lobe": candidate.get("lobe"),
+        "to_airway_mm": _float_or_none(candidate.get("to_airway_mm")),
+    }
+    if box is not None:
+        item["size_mm"] = [float(v) for v in box]
+    if candidate.get("match") == "mask_only":
+        # A component with no detector proposal has no score; ask for review.
+        item["review"] = True
+    return item
+
+
+def _publish_candidates(case_json: Path | None, candidates: Iterable[Mapping]) -> None:
+    """Write the fused candidates into the Case record's existing candidate block."""
+    if case_json is None:
+        return
+    path = Path(case_json)
+    if not path.is_file():
+        return
+    items = [_candidate_item(candidate) for candidate in candidates]
+    with json_file_lock(path):
+        record = json.loads(path.read_text())
+        if not isinstance(record, dict):
+            return
+        record["candidates"] = {
+            "source": "lung_nodules",
+            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "by": "pipeline",
+            "items": items,
+        }
+        atomic_write_json(path, record)
+
+
 def _remove_artifacts(out_dir: Path) -> None:
     for name in ARTIFACTS:
         Path(out_dir, name).unlink(missing_ok=True)
@@ -203,6 +249,7 @@ def write_artifacts(
     lobes_path: Path | None = None,
     graph_path: Path | None = None,
     proposals: Iterable[Mapping] = (),
+    case_json: Path | None = None,
 ) -> dict | None:
     """Build and write the three nodule artifacts; None when the mask is empty."""
     out = Path(out_dir)
@@ -238,18 +285,20 @@ def write_artifacts(
         airway_points_ras_mm=_graph_points(graph_path),
     )
 
-    contour_inputs = []
+    # Each component is already on the CT grid, so trace it directly instead
+    # of resampling it a second time through build_contours.
+    contours = {"shape": list(ct_data.shape), "nodules": []}
     for candidate in candidates:
         voxels = candidate.get("voxels")
         if voxels is None:
             continue
         component = np.zeros(ct_data.shape, dtype=bool)
         component[tuple(np.asarray(voxels, dtype=np.intp).T)] = True
-        contour_inputs.append({
-            "id": candidate["id"],
-            "mask": component,
-            "affine": ct_img.affine,
+        contours["nodules"].append({
+            "id": int(candidate["id"]),
+            "slices": trace_mask_axial(component),
         })
+    contours["nodules"].sort(key=lambda record: record["id"])
 
     header = ct_img.header.copy()
     header.set_data_dtype(np.uint8)
@@ -260,9 +309,12 @@ def write_artifacts(
     atomic_write_json(out / INSTANCES, {
         "nodules": [_instance_record(candidate) for candidate in candidates],
     })
-    atomic_write_json(out / CONTOURS, build_contours(
-        contour_inputs, ct_data.shape, ct_img.affine,
-    ))
+    atomic_write_json(out / CONTOURS, contours)
+    try:
+        _publish_candidates(case_json, candidates)
+    except (OSError, ValueError) as exc:
+        # The artifacts are valid; a stale Case record must not fail the stage.
+        print(f"nodules: candidate list not updated: {exc}", flush=True)
     return {"nodules": len(candidates)}
 
 
@@ -298,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
             lobes_path=out / "lobes.nii.gz",
             graph_path=args.graph,
             proposals=proposals_from_case(args.case_json),
+            case_json=args.case_json,
         )
     except Exception as exc:  # noqa: BLE001
         _remove_artifacts(out)

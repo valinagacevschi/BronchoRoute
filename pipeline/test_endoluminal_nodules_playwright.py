@@ -33,12 +33,16 @@ def _seed(root: Path) -> None:
     layers = [
         {"name": "airways", "file": "airways.bin", "color": "#ece6e8",
          "opacity": 1.0, "vertices": 3, "triangles": 1},
+        # Historical merged entry. The viewer must render it only when no
+        # per-nodule ids exist, or every nodule would be drawn twice.
+        {"name": "nodule", "file": "nodule.bin", "color": "#f2b632",
+         "opacity": 1.0, "vertices": 3, "triangles": 1},
         {"name": "nodule", "id": 1, "file": "nodule-1.bin", "color": "#f2b632",
          "opacity": 1.0, "vertices": 3, "triangles": 1},
         {"name": "nodule", "id": 2, "file": "nodule-2.bin", "color": "#f2b632",
          "opacity": 1.0, "vertices": 3, "triangles": 1},
     ]
-    for layer, offset in zip(layers, [(0, 0, 0), (0, 0, -40), (10, 0, -40)]):
+    for layer, offset in zip(layers, [(0, 0, 0), (0, 0, -20), (0, 0, -40), (10, 0, -40)]):
         (web / layer["file"]).write_bytes(_triangle(offset))
     (web / "scene.json").write_text(
         json.dumps({"layers": layers, "center_mm": [0, 0, 0]}))
@@ -116,6 +120,8 @@ def test_two_nodules_render_two_meshes_and_two_legend_items(server):
 
         keys = page.evaluate("() => Object.keys(window.__endoDebug.meshes)")
         assert "nodule-1" in keys and "nodule-2" in keys
+        # The merged compatibility entry is not drawn when ids exist.
+        assert "nodule" not in keys
         ids = page.evaluate(
             "() => window.__endoDebug.noduleMeshes.map(m => m.userData.noduleId)")
         assert ids == [1, 2]

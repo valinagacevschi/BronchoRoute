@@ -140,24 +140,47 @@ def _measured(record, key, fallback):
 
 
 def build_nodule_layers(nodule, spec, center, out, seg_dir):
-    """One layer and one unsmoothed mesh per nodule mask component."""
+    """The merged compatibility layer plus one entry and mesh per component."""
     binary, affine = nodule
     instances = load_nodule_instances(seg_dir)
     entries = []
+    flip = np.linalg.det(affine[:3, :3]) < 0
+
+    # Keep the historical merged layer name for older viewer code. The viewer
+    # renders the per-nodule entries when their ids exist and skips this one,
+    # so no geometry draws twice.
+    merged = mesh(IsoGrid(binary, affine, spec.iso_mm), spec.sigma, center, flip)
+    if merged is not None:
+        verts, faces = merged
+        name = f"{spec.name}.bin"
+        (out / name).write_bytes(verts.tobytes() + faces.tobytes())
+        entries.append({
+            "name": spec.name,
+            "file": name,
+            "color": spec.color,
+            "opacity": spec.opacity,
+            "vertices": len(verts),
+            "triangles": len(faces),
+        })
+
     for component in nodule_candidates.split_components(binary, affine):
         crop = np.zeros(binary.shape, dtype=bool)
         crop[tuple(component["voxels"].T)] = True
         grid = IsoGrid(crop, affine, spec.iso_mm)
-        m = mesh(grid, spec.sigma, center,
-                 flip=np.linalg.det(affine[:3, :3]) < 0)
+        m = mesh(grid, spec.sigma, center, flip)
         if m is None:
             continue
         verts, faces = m
         identifier = component["id"]
         name = f"{spec.name}-{identifier}.bin"
         (out / name).write_bytes(verts.tobytes() + faces.tobytes())
-        measured = nodule_candidates.measure_component(component, None, affine)
         record = instances.get(identifier, {})
+        # The stage already measured every component; recompute only when its
+        # instance record is absent.
+        measured = (
+            None if identifier in instances
+            else nodule_candidates.measure_component(component, None, affine)
+        )
         entries.append({
             "name": spec.name,
             "id": identifier,
@@ -168,7 +191,10 @@ def build_nodule_layers(nodule, spec, center, out, seg_dir):
             "triangles": len(faces),
             "center_mm": np.round(to_three(
                 np.asarray(component["center_ras_mm"], float), center), 2).tolist(),
-            "diameter_mm": _measured(record, "diameter_mm", measured["diameter_mm"]),
+            "diameter_mm": _measured(
+                record, "diameter_mm",
+                None if measured is None else measured["diameter_mm"],
+            ),
             "volume_mm3": _measured(record, "volume_mm3", component["volume_mm3"]),
             "score": record.get("score"),
             "lobe": record.get("lobe"),

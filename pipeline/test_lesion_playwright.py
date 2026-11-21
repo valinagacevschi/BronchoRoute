@@ -388,6 +388,8 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
             {
                 "ras_mm": near, "diameter_mm": 6.0, "score": 0.91,
                 "id": 7, "volume_mm3": 113.1,
+                "lobe": "lung_upper_lobe_left", "to_airway_mm": 4.5,
+                "size_mm": [7.0, 6.0, 5.0],
             },
             {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
         ],
@@ -413,11 +415,17 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         assert labels[0].startswith("Candidate 1")
         assert "0.91" in labels[0] and "6.0 mm" in labels[0]
         assert "113.1 mm³" in labels[0]
-        assert "nodule 7" in labels[0]
+        assert "id 7" in labels[0]
+        assert "lung_upper_lobe_left" in labels[0]
+        assert "4.5 mm to airway" in labels[0]
+        # The list says candidate, not nodule: the glossary term is
+        # "Nodule candidate", and the id keeps the stable link.
+        assert "nodule" not in labels[0].lower()
         assert box.locator("button").nth(0).get_attribute("data-nodule-id") == "7"
         assert labels[1].startswith("Candidate 2")
         assert "0.42" in labels[1] and "9.0 mm" in labels[1]
         assert "mm³" not in labels[1]
+        assert "to airway" not in labels[1]
         assert box.locator("button").nth(1).get_attribute("data-nodule-id") is None
         assert labels[2] == "Clear candidates"
 
@@ -517,21 +525,37 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
     reach = 3
     contour_world = _world_of(affine, cx + 0.5, cy + 0.5, ck + 0.5)
     box_world = _world_of(affine, cx + 12.5, cy + 0.5, ck + 0.5)
-    polygon = [
-        [cx - reach + offset[0], cy - reach + offset[1]],
-        [cx + reach + offset[0], cy - reach + offset[1]],
-        [cx + reach + offset[0], cy + reach + offset[1]],
-        [cx - reach + offset[0], cy + reach + offset[1]],
-    ]
+    null_world = _world_of(affine, cx - 12.5, cy + 0.5, ck + 0.5)
+    far_world = _world_of(affine, cx + 0.5, cy + 12.5, ck + 0.5)
+
+    def square(origin_x, origin_y):
+        return [
+            [origin_x - reach + offset[0], origin_y - reach + offset[1]],
+            [origin_x + reach + offset[0], origin_y - reach + offset[1]],
+            [origin_x + reach + offset[0], origin_y + reach + offset[1]],
+            [origin_x - reach + offset[0], origin_y + reach + offset[1]],
+        ]
+
     artifact = {
         "shape": [shape[axis] + offset[axis] for axis in range(3)],
-        "nodules": [{
-            "id": 2,
-            "slices": [{
-                "slice_index": ck + offset[2],
-                "polygons": [polygon],
-            }],
-        }],
+        "nodules": [
+            {
+                "id": 2,
+                "slices": [{
+                    "slice_index": ck + offset[2],
+                    "polygons": [square(cx, cy)],
+                }],
+            },
+            # A contour at id 3 must never be borrowed by the id-less
+            # candidate at list position 3.
+            {
+                "id": 3,
+                "slices": [{
+                    "slice_index": ck + offset[2],
+                    "polygons": [square(cx, cy + 12)],
+                }],
+            },
+        ],
     }
     artifact_path = _CASE_ROOT / "ts_out" / "local-001" / "nodule_contours.json"
     artifact_path.write_text(json.dumps(artifact))
@@ -546,6 +570,9 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
                 "ras_mm": box_world, "diameter_mm": 6.0, "score": 0.42,
                 "id": 1,
             },
+            # No id: this is the dashed-circle path, even though the contour
+            # artifact has an entry with id 3 at the same list position.
+            {"ras_mm": null_world, "diameter_mm": 6.0, "score": 0.10},
         ],
     })
     with sync_playwright() as playwright:
@@ -607,24 +634,28 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
                 const scr = ct.screenOfWorld('axial', world(i, j, k));
                 return {scr, hit: orangeAt(scr)};
               });
-              ct.setWorld(args.boxWorld);
-              const centre = ct.screenOfWorld('axial', args.boxWorld);
-              const edge = ct.screenOfWorld('axial', [
-                args.boxWorld[0] + 3, args.boxWorld[1], args.boxWorld[2],
-              ]);
-              const radius = Math.hypot(edge.x - centre.x, edge.y - centre.y);
-              let ring = 0;
-              for (let a = 0; a < 72; a++) {
-                const ang = a * Math.PI / 36;
-                if (orangeAt({
-                  x: centre.x + Math.cos(ang) * radius,
-                  y: centre.y + Math.sin(ang) * radius,
-                })) ring += 1;
-              }
+              const ringAt = (world) => {
+                ct.setWorld(world);
+                const centre = ct.screenOfWorld('axial', world);
+                const edge = ct.screenOfWorld('axial', [
+                  world[0] + 3, world[1], world[2],
+                ]);
+                const radius = Math.hypot(edge.x - centre.x, edge.y - centre.y);
+                let ring = 0;
+                for (let a = 0; a < 72; a++) {
+                  const ang = a * Math.PI / 36;
+                  if (orangeAt({
+                    x: centre.x + Math.cos(ang) * radius,
+                    y: centre.y + Math.sin(ang) * radius,
+                  })) ring += 1;
+                }
+                return ring;
+              };
               return {
                 onSliceHits: onSlice.filter(e => e.hit).length,
                 offSliceHits: offSlice.filter(e => e.hit).length,
-                ring,
+                ring: ringAt(args.boxWorld),
+                nullRing: ringAt(args.nullWorld),
                 pane: {w: canvas.clientWidth, h: canvas.clientHeight},
                 screens: onSlice.map(e => e.scr),
               };
@@ -632,6 +663,7 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
             {
                 "aff": affine, "cx": cx, "cy": cy, "ck": ck, "reach": reach,
                 "contourWorld": contour_world, "boxWorld": box_world,
+                "nullWorld": null_world,
             },
         )
         assert not errors, errors
@@ -640,6 +672,8 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
     assert result["onSliceHits"] >= 12, result
     assert result["offSliceHits"] == 0, result
     assert result["ring"] >= 6, result
+    # The id-less candidate keeps its dashed circle; it must not draw contour 3.
+    assert result["nullRing"] >= 6, result
     for scr in result["screens"]:
         assert 0 <= scr["x"] <= result["pane"]["w"], scr
         assert 0 <= scr["y"] <= result["pane"]["h"], scr

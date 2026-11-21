@@ -125,7 +125,6 @@ def measure_component(
 def lobe_for_component(
     component: Mapping,
     lobe_labels: np.ndarray | None,
-    lobe_names: Mapping[int, str] | None = None,
 ) -> str | None:
     """Name the lobe that holds most of the component's voxels."""
     if lobe_labels is None:
@@ -139,8 +138,7 @@ def lobe_for_component(
         return None
     values, counts = np.unique(labels, return_counts=True)
     chosen = int(values[int(np.argmax(counts))])
-    names = _LOBE_NAMES if lobe_names is None else lobe_names
-    return names.get(chosen)
+    return _LOBE_NAMES.get(chosen)
 
 
 def distance_to_airway(
@@ -178,11 +176,11 @@ def fuse_candidates(
     component inside the match distance; otherwise it becomes a box-only
     candidate. Components without a proposal become mask-only candidates.
     """
-    ordered = sorted(enumerate(proposals), key=lambda item: _proposal_key(item[1]))
+    ordered = sorted(proposals, key=_proposal_key)
     used: set[int] = set()
     matched: dict[int, Mapping] = {}
     box_only: list[Mapping] = []
-    for _, proposal in ordered:
+    for proposal in ordered:
         proposal_center = np.asarray(proposal["ras_mm"], dtype=float)
         threshold = _match_distance(proposal)
         best: tuple[float, int] | None = None
@@ -237,7 +235,6 @@ def build_candidates(
     hu: np.ndarray | None = None,
     proposals: Iterable[Mapping] = (),
     lobe_labels: np.ndarray | None = None,
-    lobe_names: Mapping[int, str] | None = None,
     airway_points_ras_mm: np.ndarray | None = None,
     min_volume_mm3: float = VOLUME_FLOOR_MM3,
 ) -> list[dict]:
@@ -259,7 +256,7 @@ def build_candidates(
         measured = measure_component(candidate, hu, affine)
         for key in ("diameter_mm", "axial_diameter_mm", "hu_mean", "hu_min", "hu_max"):
             candidate[key] = measured[key]
-        candidate["lobe"] = lobe_for_component(candidate, lobe_labels, lobe_names)
+        candidate["lobe"] = lobe_for_component(candidate, lobe_labels)
         candidate["to_airway_mm"] = distance_to_airway(
             candidate["center_ras_mm"], airway_points_ras_mm
         )

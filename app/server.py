@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import logging
 import math
 import os
 import socket
@@ -296,6 +297,12 @@ class CandidateItem(LesionBody):
     )
     id: int | None = Field(default=None, ge=1)
     volume_mm3: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    lobe: str | None = None
+    to_airway_mm: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    size_mm: list[float] | None = Field(
+        default=None, min_length=3, max_length=3
+    )
+    review: bool = False
 
 
 class CandidatesBody(BaseModel):
@@ -952,8 +959,10 @@ def api_nodule_contours(case_id: str):
     # crop. Send the CT affine so the viewer can bridge the two grids.
     try:
         artifact["affine"] = nib.load(ref.ct).affine.tolist()
-    except Exception:  # noqa: BLE001 - optional bridge; the viewer falls back
-        pass
+    except Exception as exc:  # noqa: BLE001 - optional bridge; the viewer falls back
+        logging.getLogger(__name__).warning(
+            "nodule contours: CT affine unavailable for %s: %s", case_id, exc
+        )
     # A rebuild rewrites the artifact under the same path.
     return JSONResponse(artifact, headers={"Cache-Control": "no-cache"})
 
