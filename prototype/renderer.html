@@ -180,7 +180,9 @@ body.endo3d-active .limitations-panel { display: none; }
 .rail-body {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
   display: flex; flex-direction: column; gap: 22px;
+  scrollbar-width: none;
 }
+.rail-body::-webkit-scrollbar { display: none; }
 #g-layers {
   flex: 0 0 auto;
   background: var(--surface);
@@ -229,6 +231,9 @@ body.endo3d-active .limitations-panel { display: none; }
 .readout dt { color: var(--muted); }
 .readout dd { margin: 0; text-align: right; }
 .readout dd.warm { color: var(--mucosa); }
+/* Case and Position rows sit closer than the default dl margin: 16px between rows, not 32. */
+.group-case .readout,
+#g-nav .readout { margin: 1px 0; }
 
 .case-picker-label {
   display: flex; flex-direction: column; gap: 4px;
@@ -253,6 +258,7 @@ kbd {
   border-radius: 4px; padding: 1px 5px; color: var(--ink);
   background: var(--ground);
 }
+kbd + kbd { margin-left: 4px; }
 
 /* Depth legend ---------------------------------------------------------- */
 .ramp { height: 7px; border-radius: 4px; border: 1px solid var(--edge); }
@@ -411,8 +417,7 @@ body.ct-panes-active .limitations-panel.collapsed h2::after { content: " ▸"; }
     border-bottom: 1px solid var(--edge); overflow: visible; }
   .rail-body { overflow: visible; flex: none; min-height: 0;
     flex-direction: row; flex-wrap: wrap; gap: 14px; }
-  .rail .group-depth,
-  .rail .group-question { display: none; }
+  .rail .group-depth { display: none; }
   .switcher { left: 50%; bottom: 40px; }
   .research-footer { width: auto; right: 0; text-align: center; }
   body.ct-panes-active .limitations-panel,
@@ -707,13 +712,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
       </label>
     </div>
   </div>
-
-  <div class="group group-question">
-    <h2>Question</h2>
-    <p class="hint">Does a navigable airway tree read as anatomy? Compare a
-    truthful 3D tree against a legible 2D map, and fly the lumen to judge
-    whether moving through it teaches anything.</p>
-  </div>
   </div>
   <div class="group" id="g-layers">
     <h2>Layers</h2>
@@ -789,38 +787,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
 </dialog>
 
 <template id="help-content">
-  <section class="help-section" aria-labelledby="help-realistic">
-    <h2 id="help-realistic">Realistic images</h2>
-    <p>Realistic images replace the drawn fork view with generated tissue pictures.
-    The app makes one still for each group of forks on the route.
-    <!-- app/realism/worker.py:58 group_forks; prototype/renderer.template.html:2339 activeRealismFrame --></p>
-    <ol>
-      <li>Confirm a lesion. The RouteTarget panel then appears with the Generate realistic images checkbox.
-      <!-- prototype/renderer.template.html:5270-5277 --></li>
-      <li>Leave Generate realistic images checked to make the images. Clear it to keep the drawn view.
-      <!-- prototype/renderer.template.html:609, 2304-2307, 5245 --></li>
-      <li>Choose a target. The app starts generation after it saves the target.
-      <!-- prototype/renderer.template.html:5245-5262 --></li>
-    </ol>
-    <p>While images generate, the panel shows a progress bar and a count such as 5/14 fork stills.
-    The total is the number of fork groups on the route. It can differ from 14.
-    The panel reads progress every two seconds.
-    <!-- prototype/renderer.template.html:2226, 2264-2277 --></p>
-    <p>If you confirm a new target, the app asks "Replace the current route target? Its tissue images will be deleted."
-    If you agree, it deletes the old stills and generates new ones.
-    <!-- prototype/renderer.template.html:5235-5244; app/realism/worker.py:398-404, 471 --></p>
-    <p>To turn realistic images off, clear Generate realistic images before you confirm a new target.
-    In Endoluminal view, press V to hide or show the generated tissue layer.
-    The layer toggle does not delete images.
-    <!-- prototype/renderer.template.html:4828-4830, 2339-2340 --></p>
-    <p>The model is a separate download. Open Settings. Under Realistic fork views, type the model access key,
-    then click Download. Ask the maintainer for the access key.
-    <!-- prototype/renderer.template.html:758-767; desktop/realism-model.js:221 --></p>
-    <p>Tissue shows only at forks that have a finished image. Until then the app draws the normal view.
-    Export fly-through waits for all fork stills, so it can stay disabled while generation runs.
-    <!-- prototype/renderer.template.html:2339-2354, 6279-6291, 6316-6323 --></p>
-  </section>
-
   <section class="help-section" aria-labelledby="help-lesion">
     <h2 id="help-lesion">Mark a lesion</h2>
     <ol>
@@ -888,10 +854,9 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <p>Endoluminal shows the airway as a 3D surface. Click the view, then press V to switch between
     inside and outside.
     <!-- prototype/endoluminal.html:383 --></p>
-    <p>Inside, you fly through the lumen. Press Up or Down to move, hold Shift for faster movement,
-    press Left or Right to roll, and press Space to play or pause. Press T or R to go back to the
-    start.
-    <!-- prototype/endoluminal.html:380-386; prototype/renderer.template.html:5591-5606 --></p>
+    <p>Inside, you fly through the lumen. Press Up or Down to move, hold Shift for faster movement.
+    Press R to go back to the start.
+    <!-- prototype/endoluminal.html:388 --></p>
     <p>Outside, the view shows the whole chest, upright and fitted to the window. The airway is white,
     the arteries are blue, the veins are red, and the lungs are translucent. The heart, aorta and
     pulmonary vein show when the case has those masks. The route is mint green. Drag to move the view, hold Shift and drag to rotate, and
@@ -1287,6 +1252,12 @@ const params = new URLSearchParams(location.search);
 const DEBUG = params.get("debug") === "1";
 const CASE_ID = params.get("case");
 const SERVER_MODE = !!CASE_ID;
+// With a case, the Endoluminal panel is the endoluminal.html iframe, which owns
+// its own keys: V toggles inside/outside, R returns to the start.
+if (SERVER_MODE) {
+  VARIANTS.find(v => v.key === "endoluminal").hint =
+    "<kbd>↑</kbd><kbd>↓</kbd> fly (shift = faster) · <kbd>V</kbd> inside / outside · <kbd>R</kbd> back to start · drag to orbit · click a nodule or vessel to set the target";
+}
 const CT_PANES_IDX = VARIANTS.findIndex(v => v.key === "ct-panes");
 let variant = VARIANTS.findIndex(v => v.key === params.get("variant"));
 if (variant < 0) variant = VIEWER_MODE ? CT_PANES_IDX : 0;
@@ -5855,6 +5826,7 @@ async function syncEndo3d() {
     wrap.hidden = true;
     document.body.classList.remove("endo3d-active");
     canvas.style.visibility = "visible";
+    syncSaveImageControl();
     return;
   }
   if (endo3dAssets === null) {
@@ -5873,6 +5845,8 @@ async function syncEndo3d() {
   wrap.hidden = false;
   document.body.classList.add("endo3d-active");
   canvas.style.visibility = "hidden";
+  // Record needs the iframe in view; refresh the Export buttons now that it is.
+  syncSaveImageControl();
   try {
     frame.contentWindow.postMessage({ type: "endo3d-set-active", active: true }, location.origin);
     if (!endo3dWasVisible) {
@@ -6885,6 +6859,13 @@ function recordApi() {
   return api;
 }
 
+/** Browser fallback: record the Endoluminal iframe without the desktop bridge. */
+function browserRecordAvailable() {
+  return endo3dVisible()
+    && typeof MediaRecorder !== "undefined"
+    && typeof HTMLCanvasElement.prototype.captureStream === "function";
+}
+
 function recordSize() {
   const select = document.getElementById("record-size");
   if (select && select.value === "720") return { width: 1280, height: 720 };
@@ -6911,6 +6892,7 @@ function recordErrorText(err) {
 
 function setRecordUi(mode) {
   const api = recordApi();
+  const can = !!api || browserRecordAvailable();
   const onView = exportViewKey() != null;
   const recording = mode === "recording";
   const stopping = mode === "stopping";
@@ -6920,12 +6902,12 @@ function setRecordUi(mode) {
   const sizeLabel = document.getElementById("record-size-label");
   const size = document.getElementById("record-size");
   if (start) {
-    start.hidden = !api || !onView || recording || stopping;
+    start.hidden = !can || !onView || recording || stopping;
     start.disabled = stopping || flythroughSession != null;
   }
   if (stop) stop.hidden = !recording;
   if (indicator) indicator.hidden = !recording;
-  if (sizeLabel) sizeLabel.hidden = !api || !onView;
+  if (sizeLabel) sizeLabel.hidden = !can || !onView;
   if (size) size.disabled = recording || stopping || flythroughSession != null;
   syncFlythroughUi();
 }
@@ -6934,6 +6916,7 @@ async function finishRecording(reason) {
   const session = recordSession;
   if (!session || session.stopping) return;
   session.stopping = true;
+  if (session.recorder) return finishBrowserRecording(session, reason);
   session.scheduler.stop();
   setRecordUi("stopping");
   const api = recordApi();
@@ -7015,13 +6998,97 @@ function startEndo3dRecording(api, started, size) {
   }, location.origin);
 }
 
+const BROWSER_RECORD_TYPES = [
+  "video/webm;codecs=vp9",
+  "video/webm;codecs=vp8",
+  "video/webm",
+  "video/mp4",
+];
+
+/** Browser fallback: the iframe sends JPEG frames; a canvas stream feeds MediaRecorder. */
+function startBrowserRecording(name) {
+  const size = recordSize();
+  const frame = document.getElementById("endo3d-frame");
+  const mime = BROWSER_RECORD_TYPES.find(type => MediaRecorder.isTypeSupported(type));
+  if (!mime || !frame || !frame.contentWindow) {
+    showRecordStatus("This browser cannot record video");
+    setRecordUi("idle");
+    return;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = size.width;
+  canvas.height = size.height;
+  const paint = canvas.getContext("2d");
+  const recorder = new MediaRecorder(canvas.captureStream(RECORD_FPS), {
+    mimeType: mime,
+    videoBitsPerSecond: 8_000_000,
+  });
+  const chunks = [];
+  const session = { view: "endoluminal", sent: 0, recorder, mime, chunks, name,
+    stopping: false, onMessage: null };
+  recorder.ondataavailable = (ev) => {
+    if (ev.data && ev.data.size) chunks.push(ev.data);
+  };
+  recorder.onstop = () => {
+    for (const track of recorder.stream.getTracks()) track.stop();
+    removeEventListener("message", session.onMessage);
+    if (recordSession === session) recordSession = null;
+    setRecordUi("idle");
+    const blob = new Blob(chunks, { type: mime });
+    if (blob.size) {
+      const ext = mime.startsWith("video/mp4") ? ".mp4" : ".webm";
+      downloadPngBlob(blob, name.replace(/\.mp4$/, ext));
+    } else {
+      showRecordStatus("No frames were recorded");
+    }
+  };
+  session.onMessage = (ev) => {
+    if (ev.origin !== location.origin) return;
+    const data = ev.data;
+    if (!data || data.type !== "endo3d-video-frame" || !data.dataUrl) return;
+    if (session.stopping) return;
+    const img = new Image();
+    img.onload = () => {
+      if (session.stopping) return;
+      paint.drawImage(img, 0, 0, size.width, size.height);
+      session.sent += 1;
+      const live = document.getElementById("record-indicator");
+      if (live) live.textContent = `● REC ${formatRecordClock(session.sent)}`;
+    };
+    img.src = data.dataUrl;
+  };
+  recordSession = session;
+  addEventListener("message", session.onMessage);
+  setRecordUi("recording");
+  const indicator = document.getElementById("record-indicator");
+  if (indicator) indicator.textContent = "● REC 00:00";
+  showRecordStatus("");
+  recorder.start(250);
+  frame.contentWindow.postMessage({
+    type: "endo3d-record-start", fps: RECORD_FPS,
+    width: size.width, height: size.height,
+  }, location.origin);
+}
+
+function finishBrowserRecording(session) {
+  setRecordUi("stopping");
+  const frame = document.getElementById("endo3d-frame");
+  try {
+    frame.contentWindow.postMessage({ type: "endo3d-record-stop" }, location.origin);
+  } catch (err) { /* frame gone */ }
+  session.recorder.stop(); // onstop writes the file and clears the session
+}
+
 async function startRecording() {
   if (recordSession || flythroughSession) return;
   const api = recordApi();
-  if (!api) return;
   const view = exportViewKey();
   const name = exportVideoFileName(new Date());
   if (!view || !name) return;
+  if (!api) {
+    if (browserRecordAvailable()) startBrowserRecording(name);
+    return;
+  }
   const size = recordSize();
   const hud = document.getElementById("save-image-hud").checked;
   const lesion = document.getElementById("save-image-lesion").checked;
