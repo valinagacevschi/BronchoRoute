@@ -975,13 +975,13 @@ window.CtPanes = (function () {
       return fitPlane(w, h, planeSizeUV, currentSharedMmPerPx());
     }
 
-    function drawOutlinedText(ctx, text, x, y, align) {
+    function drawOutlinedText(ctx, text, x, y, align, fill) {
       ctx.save();
       ctx.textAlign = align || "center";
       ctx.textBaseline = "middle";
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(0,0,0,0.85)";
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = fill || "#fff";
       ctx.strokeText(text, x, y);
       ctx.fillText(text, x, y);
       ctx.restore();
@@ -1026,19 +1026,27 @@ window.CtPanes = (function () {
         const uv = map.uvFromIjk(ijk[0], ijk[1], ijk[2]);
         const sx = fit.ox + uv.u * fit.drawW;
         const sy = fit.oy + uv.v * fit.drawH;
-        const radiusPx = geom.inPlaneRadiusMm / (fit.mmPerPx || 1);
+        const radiusPx = Math.max(geom.inPlaneRadiusMm / (fit.mmPerPx || 1), 4);
         ctx.save();
-        ctx.strokeStyle = "#d99520";
         ctx.setLineDash([4, 3]);
-        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(sx, sy, Math.max(radiusPx, 3), 0, Math.PI * 2);
+        ctx.arc(sx, sy, radiusPx, 0, Math.PI * 2);
+        ctx.lineWidth = 3.5;
+        ctx.strokeStyle = "rgba(0,0,0,0.65)";
+        ctx.stroke();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#b8860b";
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = "#d99520";
-        ctx.font = "10px monospace";
+        ctx.beginPath();
+        ctx.arc(sx, sy, 1.6, 0, Math.PI * 2);
+        ctx.fillStyle = "#b8860b";
+        ctx.fill();
+        ctx.font = "600 10px monospace";
         const score = item.score == null ? "" : ` ${Number(item.score).toFixed(2)}`;
-        ctx.fillText(`#${index + 1}${score}`, sx + radiusPx + 6, sy - 4);
+        drawOutlinedText(
+          ctx, `#${index + 1}${score}`, sx + radiusPx + 6, sy - 4, "left", "#e0b53a",
+        );
         ctx.restore();
       });
     }
