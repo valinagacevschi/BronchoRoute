@@ -44,11 +44,11 @@ TILT_ANGLE_TOL_DEG = 1.0
 GEOMETRY_TOL_MM = 0.01
 
 
-def _path_under_root(path: Path, root: Path) -> bool:
+def path_under_root(path: Path, root: Path) -> bool:
     """True when path resolves inside root (rejects symlink escapes)."""
     try:
         resolved = path.resolve()
-        resolved.relative_to(root)
+        resolved.relative_to(root.resolve())
         return True
     except (OSError, ValueError):
         return False
@@ -61,7 +61,7 @@ def read_series(src_dir: Path) -> tuple[dict[str, dict], int]:
     for path in src_dir.rglob("*"):
         if not path.is_file():
             continue
-        if not _path_under_root(path, src_dir):
+        if not path_under_root(path, src_dir):
             skipped += 1
             continue
         try:

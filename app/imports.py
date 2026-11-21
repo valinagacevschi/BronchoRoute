@@ -16,8 +16,11 @@ import subprocess
 import tempfile
 import threading
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import PurePosixPath, PureWindowsPath
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import rarfile
@@ -29,6 +32,7 @@ from import_dicom import (
     classify_series,
     duplicate_message,
     next_case_id,
+    path_under_root,
     pick_series,
     read_series,
     write_ct_nifti,
@@ -61,7 +65,10 @@ def validate_src_dir(src_dir: str | Path) -> Path:
     return path
 
 
-def _archive_kind(archive: Path) -> str | None:
+ArchiveKind = Literal["zip", "rar"]
+
+
+def _archive_kind(archive: Path) -> ArchiveKind | None:
     """Identify an Archive by its first bytes, or fall back to the suffix."""
     try:
         with archive.open("rb") as source:
@@ -75,52 +82,69 @@ def _archive_kind(archive: Path) -> str | None:
     return {".rar": "rar", ".zip": "zip"}.get(archive.suffix.lower())
 
 
-def _safe_member(name: str, *, link: bool) -> bool:
+def _safe_member(name: str, *, is_link: bool) -> bool:
     name = name.replace("\\", "/")
     return (PurePosixPath(name).is_absolute() or PureWindowsPath(name).drive
-            or ".." in PurePosixPath(name).parts or link)
+            or ".." in PurePosixPath(name).parts or is_link)
 
 
-def _inside(root: Path, path: Path) -> bool:
+_JUNK_NAMES = {"autorun.inf", ".ds_store"}
+_JUNK_SUFFIXES = {".exe", ".dll", ".bat", ".cmd"}
+
+
+def _skip_entry(name: PurePosixPath) -> bool:
+    return ("__MACOSX" in name.parts or name.name.lower() in _JUNK_NAMES
+            or name.suffix.lower() in _JUNK_SUFFIXES)
+
+
+def _keep_dicom(target: Path) -> None:
+    import pydicom
+
     try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except (OSError, ValueError):
-        return False
+        ds = pydicom.dcmread(target, stop_before_pixels=True)
+        if not getattr(ds, "SeriesInstanceUID", None):
+            target.unlink()
+    except Exception:
+        target.unlink(missing_ok=True)
 
 
-def extract_archive(archive: Path) -> Path:
-    kind = _archive_kind(archive)
-    if kind == "rar":
-        return _extract_rar(archive)
-    if kind == "zip":
-        return _extract_zip(archive)
-    raise ValueError("Archive could not be read")
+def _validate_members(members: list[tuple[str, int, bool]]) -> None:
+    if len(members) > MAX_ARCHIVE_FILES:
+        raise ValueError("Archive file-count limit exceeded")
+    if sum(size for _name, size, _is_link in members) > MAX_ARCHIVE_BYTES:
+        raise ValueError("Archive size limit exceeded")
+    for name, _size, is_link in members:
+        if _safe_member(name, is_link=is_link):
+            raise ValueError("unsafe Archive entry")
+
+
+@contextmanager
+def _extraction_root() -> Iterator[Path]:
+    paths.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="import-", dir=paths.TMP_DIR))
+    try:
+        yield root
+    except Exception as exc:
+        shutil.rmtree(root, ignore_errors=True)
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("Archive could not be read") from None
 
 
 def _extract_zip(archive: Path) -> Path:
     """Validate every member before writing; never retain Archive member names."""
-    import pydicom
-
-    paths.TMP_DIR.mkdir(parents=True, exist_ok=True)
-    root = Path(tempfile.mkdtemp(prefix="import-", dir=paths.TMP_DIR))
-    try:
+    with _extraction_root() as root:
         with zipfile.ZipFile(archive) as source:
             members = source.infolist()
-            if len(members) > MAX_ARCHIVE_FILES:
-                raise ValueError("Archive file-count limit exceeded")
-            if sum(member.file_size for member in members) > MAX_ARCHIVE_BYTES:
-                raise ValueError("Archive size limit exceeded")
-            for member in members:
-                if _safe_member(member.filename,
-                                link=stat.S_ISLNK(member.external_attr >> 16)):
-                    raise ValueError("unsafe Archive entry")
+            _validate_members([
+                (member.filename, member.file_size,
+                 stat.S_ISLNK(member.external_attr >> 16))
+                for member in members
+            ])
             total = 0
             for index, member in enumerate(members):
                 name = PurePosixPath(member.filename.replace("\\", "/"))
-                if (member.is_dir() or "__MACOSX" in name.parts
-                        or name.name.lower() in {"autorun.inf", ".ds_store"}
-                        or name.suffix.lower() in {".exe", ".dll", ".bat", ".cmd"}):
+                if member.is_dir() or _skip_entry(name):
                     continue
                 target = root / f"{index:05d}.dcm"
                 with source.open(member) as src, target.open("wb") as dst:
@@ -129,75 +153,77 @@ def _extract_zip(archive: Path) -> Path:
                         if total > MAX_ARCHIVE_BYTES:
                             raise ValueError("Archive size limit exceeded")
                         dst.write(chunk)
-                try:
-                    ds = pydicom.dcmread(target, stop_before_pixels=True)
-                    if not getattr(ds, "SeriesInstanceUID", None):
-                        target.unlink()
-                except Exception:
-                    target.unlink(missing_ok=True)
+                _keep_dicom(target)
         return root
-    except Exception as exc:
-        shutil.rmtree(root, ignore_errors=True)
-        if isinstance(exc, ValueError):
-            raise
-        raise ValueError("Archive could not be read") from None
 
 
 def _extract_rar(archive: Path) -> Path:
-    """Validate RAR members, then extract once with bsdtar and keep DICOM files."""
-    import pydicom
-
+    """Validate RAR members, then extract the wanted entries once with bsdtar."""
     tool = shutil.which("bsdtar")
     if tool is None:
         raise ValueError("RAR support is unavailable")
-    paths.TMP_DIR.mkdir(parents=True, exist_ok=True)
-    root = Path(tempfile.mkdtemp(prefix="import-", dir=paths.TMP_DIR))
-    raw = root / "raw"
-    try:
+    with _extraction_root() as root:
         with rarfile.RarFile(archive) as source:
             members = source.infolist()
-            if len(members) > MAX_ARCHIVE_FILES:
-                raise ValueError("Archive file-count limit exceeded")
-            if sum(int(member.file_size or 0) for member in members) > MAX_ARCHIVE_BYTES:
-                raise ValueError("Archive size limit exceeded")
-            for member in members:
-                if _safe_member(member.filename, link=member.is_symlink()):
-                    raise ValueError("unsafe Archive entry")
+            _validate_members([
+                (member.filename, int(member.file_size or 0), member.is_symlink())
+                for member in members
+            ])
+            selected = [
+                member.filename for member in members
+                if not member.is_dir()
+                and not _skip_entry(PurePosixPath(member.filename.replace("\\", "/")))
+            ]
+        raw = root / "raw"
         raw.mkdir()
+        listing = root / "members"
+        listing.write_bytes(b"".join(
+            name.encode("utf-8", "surrogateescape") + b"\0" for name in selected
+        ))
         result = subprocess.run(
-            [tool, "-x", "--no-same-owner", "-f", str(archive), "-C", str(raw)],
+            [tool, "-x", "--no-same-owner", "--null", "-f", str(archive),
+             "-C", str(raw), "-T", str(listing)],
             capture_output=True, text=True,
         )
+        listing.unlink(missing_ok=True)
         if result.returncode != 0:
             raise ValueError("Archive could not be read")
-        files = sorted(path for path in raw.rglob("*") if path.is_file())
         total = 0
-        for index, path in enumerate(files):
-            if path.is_symlink() or not _inside(raw, path):
+        for index, path in enumerate(sorted(p for p in raw.rglob("*") if p.is_file())):
+            if path.is_symlink() or not path_under_root(path, raw):
                 raise ValueError("unsafe Archive entry")
-            name = PurePosixPath(path.relative_to(raw).as_posix())
-            if ("__MACOSX" in name.parts
-                    or name.name.lower() in {"autorun.inf", ".ds_store"}
-                    or name.suffix.lower() in {".exe", ".dll", ".bat", ".cmd"}):
-                continue
             total += path.stat().st_size
             if total > MAX_ARCHIVE_BYTES:
                 raise ValueError("Archive size limit exceeded")
             target = root / f"{index:05d}.dcm"
             path.rename(target)
-            try:
-                ds = pydicom.dcmread(target, stop_before_pixels=True)
-                if not getattr(ds, "SeriesInstanceUID", None):
-                    target.unlink()
-            except Exception:
-                target.unlink(missing_ok=True)
+            _keep_dicom(target)
         shutil.rmtree(raw, ignore_errors=True)
         return root
-    except Exception as exc:
-        shutil.rmtree(root, ignore_errors=True)
-        if isinstance(exc, ValueError):
-            raise
-        raise ValueError("Archive could not be read") from None
+
+
+def _extract_kind(archive: Path, kind: ArchiveKind) -> Path:
+    if kind == "rar":
+        return _extract_rar(archive)
+    return _extract_zip(archive)
+
+
+def extract_archive(archive: Path) -> Path:
+    kind = _archive_kind(archive)
+    if kind is None:
+        raise ValueError("Archive could not be read")
+    return _extract_kind(archive, kind)
+
+
+def _load_source(source: Path) -> tuple[Path, bool]:
+    """Return the DICOM root and whether a temporary Archive was extracted."""
+    if not source.is_file():
+        return validate_src_dir(source), False
+    kind = _archive_kind(source)
+    if kind is not None:
+        return _extract_kind(source, kind), True
+    folder = source.parent if source.name.upper() == "DICOMDIR" else source
+    return validate_src_dir(folder), False
 
 
 def release_import(import_id: str) -> None:
@@ -272,10 +298,7 @@ def _public_row(row: dict, *, skip: str | None, proposed: bool) -> dict:
 def scan_series(path: str | Path) -> dict:
     """Return approved Series facts, grouped by opaque Study keys."""
     source = Path(path).expanduser().resolve()
-    extracted = source.is_file() and _archive_kind(source) is not None
-    root = extract_archive(source) if extracted else validate_src_dir(
-        source.parent if source.is_file() and source.name.upper() == "DICOMDIR" else source
-    )
+    root, extracted = _load_source(source)
     try:
         series, unreadable = read_series(root)
         if not series:
