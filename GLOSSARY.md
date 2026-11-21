@@ -42,6 +42,10 @@ _Avoid_: cache, history, recent files
 The clinical target the clinician marks on the CT: one point with a diameter, fixed in patient space; one per Case.
 _Avoid_: marker, target, nodule
 
+**Nodule candidate**:
+A possible nodule produced by detection or segmentation and shown as a suggestion; it stays a candidate until a clinician confirms it, and only then becomes a Lesion.
+_Avoid_: lesion, finding, nodule annotation
+
 **RouteTarget**:
 The endpoint of the airway route that the CT demonstrates, chosen near the Lesion; the distance between them is the target gap.
 _Avoid_: target, endpoint
