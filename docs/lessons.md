@@ -174,3 +174,10 @@
   `Cache-Control: no-cache` from the route and fetch with `cache: 'no-cache'` in
   `prototype/endoluminal.html`; either alone is not enough for a cache entry
   written before the header existed.
+- Nodule candidates (#68): link a candidate to its contour by the stable nodule
+  id, never the list position. A box-only candidate has no id and keeps the
+  dashed circle; a position fallback can draw another candidate's outline.
+  Emit the merged `nodule` scene entry for compatibility, but render the
+  per-id entries when ids exist, or every nodule draws twice. Carry the
+  detector `size_mm` with the stored candidate so fusion uses the real box;
+  fall back to the diameter only when no box reached the store.
