@@ -456,6 +456,8 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
                 "ras_mm": [round(float(v), 3) for v in item["ras_mm"]],
                 "diameter_mm": lesion_diameter_mm(item),
                 "score": item.get("score"),
+                "id": item.get("id"),
+                "volume_mm3": item.get("volume_mm3"),
             })
 
     lesion_out = None

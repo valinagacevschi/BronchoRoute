@@ -284,7 +284,7 @@ class LesionBody(BaseModel):
 
 
 class CandidateItem(LesionBody):
-    """A detector suggestion: a lesion shape plus a confidence score."""
+    """A detector suggestion: a lesion shape plus score and nodule measurements."""
 
     score: float | None = Field(
         default=None,
@@ -292,6 +292,8 @@ class CandidateItem(LesionBody):
         le=CANDIDATE_SCORE_MAX,
         allow_inf_nan=False,
     )
+    id: int | None = Field(default=None, ge=1)
+    volume_mm3: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 class CandidatesBody(BaseModel):

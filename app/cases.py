@@ -491,6 +491,38 @@ CANDIDATE_SCORE_MIN = 0.0
 CANDIDATE_SCORE_MAX = 1.0
 
 
+def _clean_nodule_id(value: object) -> int | None:
+    """Stable nodule id from the instance record, or None for a box-only candidate."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("candidate id must be an integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("candidate id must be an integer") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("candidate id must be an integer")
+    if number < 1:
+        raise ValueError("candidate id must be a positive integer")
+    return number
+
+
+def _clean_volume(value: object) -> float | None:
+    """Mask-derived volume in mm3, or None when the candidate has no mask."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("volume_mm3 must be a number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("volume_mm3 must be a number") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("volume_mm3 must be a non-negative number")
+    return number
+
+
 def _clean_candidate(case_id: str, item: object) -> dict:
     """Validate one detection candidate against the CT crop."""
     if not isinstance(item, dict):
@@ -510,7 +542,13 @@ def _clean_candidate(case_id: str, item: object) -> dict:
                 f"candidate score must be between {CANDIDATE_SCORE_MIN:g} and "
                 f"{CANDIDATE_SCORE_MAX:g}"
             )
-    return {"ras_mm": ras, "diameter_mm": diameter, "score": score}
+    return {
+        "ras_mm": ras,
+        "diameter_mm": diameter,
+        "score": score,
+        "id": _clean_nodule_id(item.get("id")),
+        "volume_mm3": _clean_volume(item.get("volume_mm3")),
+    }
 
 
 def set_candidates(
