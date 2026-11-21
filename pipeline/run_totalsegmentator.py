@@ -28,7 +28,7 @@ from paths import TS_OUT
 from snomed import LOBES as LOBE_TABLE
 
 LOBES = {info["key"]: value for value, info in LOBE_TABLE.items()}
-ROIS = [*LOBES, "trachea"]
+ROIS = [*LOBES, "trachea", "heart", "aorta", "pulmonary_vein"]
 ALLOWED_TASKS = frozenset({"lung_vessels", "lung_vessels_LEGACY", "total", "total_v2"})
 
 
@@ -305,7 +305,7 @@ def main() -> None:
     # Lobe step never passes --legacy; keep it out of the cache key.
     lobe_options = {
         "ct": ct, "device": args.device, "fast": args.fast,
-        "higher_order_resampling": args.higher_order,
+        "higher_order_resampling": args.higher_order, "rois": list(ROIS),
     }
     run_cached(cmd, [lobe_dir / f"{name}.nii.gz" for name in ROIS],
                lobe_dir / "run.json", lobe_options,

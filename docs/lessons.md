@@ -168,3 +168,9 @@
   generation silently deletes an export cache. Keep repeated-start snapshots safe
   under the state lock; the snapshot helper acquires that lock again. A route
   cache hit after restart must also load the fork cache before reporting ready.
+- Endoluminal context layers (#74): `/case-web` assets keep their names across a
+  rebuild, so a browser that already cached `scene.json` keeps rendering the old
+  layer list even after the build adds lungs and vessels. Send
+  `Cache-Control: no-cache` from the route and fetch with `cache: 'no-cache'` in
+  `prototype/endoluminal.html`; either alone is not enough for a cache entry
+  written before the header existed.
