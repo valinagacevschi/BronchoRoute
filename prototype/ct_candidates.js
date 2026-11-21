@@ -152,7 +152,8 @@ window.CtCandidates = (function () {
         btn.className = "secondary";
         const parts = [`Candidate ${index + 1}`];
         if (item && item.id != null) {
-          parts.push(`nodule ${item.id}`);
+          // The stable nodule id links the list entry to its contour and mesh.
+          parts.push(`id ${item.id}`);
           btn.dataset.noduleId = String(item.id);
         }
         if (item && item.score != null) {
@@ -162,6 +163,16 @@ window.CtCandidates = (function () {
         const volume = item && Number(item.volume_mm3);
         if (item && item.volume_mm3 != null && Number.isFinite(volume)) {
           parts.push(`${volume.toFixed(1)} mm³`);
+        }
+        if (item && item.lobe) {
+          parts.push(String(item.lobe));
+        }
+        const toAirway = item && Number(item.to_airway_mm);
+        if (item && item.to_airway_mm != null && Number.isFinite(toAirway)) {
+          parts.push(`${toAirway.toFixed(1)} mm to airway`);
+        }
+        if (item && item.review === true) {
+          parts.push("review");
         }
         btn.textContent = parts.join(" · ");
         btn.onclick = () => confirm(index);
@@ -209,8 +220,10 @@ window.CtCandidates = (function () {
         if (!item || !item.ras_mm) return;
         const score = item.score == null ? "" : ` ${Number(item.score).toFixed(2)}`;
         const label = `#${index + 1}${score}`;
-        const contourId = item.id != null ? Number(item.id) : index + 1;
-        const noduleSlices = view.key === "axial" && contours
+        // Only a mask-backed candidate has an id. A box-only candidate must not
+        // borrow the contour of the candidate at the same list position.
+        const contourId = item.id == null ? null : Number(item.id);
+        const noduleSlices = view.key === "axial" && contours && contourId != null
           ? contours.get(contourId)
           : null;
         if (noduleSlices) {
