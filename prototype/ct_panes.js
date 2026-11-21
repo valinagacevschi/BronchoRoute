@@ -1,3 +1,4 @@
+// Changes: load the axial nodule contour artifact and hand it to the candidate glyphs.
 // Changes: CT estimated airway is a #D2B4F0 stroke over a 1 px halo, faded no lower than 0.5.
 // Changes: estimated airway overlay uses the shared session toggle and the centreline slab.
 // Changes: bridge decisions beside CT controls and slice-slab midpoint rings.
@@ -1543,6 +1544,43 @@ window.CtPanes = (function () {
       return true;
     }
 
+    // The stage traces in the CT array frame; the browser shows a canonical
+    // crop. Map contour points through the CT affine into crop voxels. Without
+    // an affine, fall back to the crop offset when the grids share a shape.
+    function contourMapPoint(artifact) {
+      const affine = artifact && artifact.affine;
+      if (Array.isArray(affine) && affine.length === 4) {
+        return (x, y, k) => worldToVoxelCont(mat4MulVec(affine, [x, y, k, 1]));
+      }
+      const shape = artifact && artifact.shape;
+      if (!Array.isArray(shape) || shape.length !== 3) return null;
+      const crop = ctMeta.shape;
+      if (shape[0] === crop[0] && shape[1] === crop[1] && shape[2] === crop[2]) {
+        return (x, y, k) => [x, y, k];
+      }
+      const offset = ctMeta.crop_offset_voxels;
+      if (!Array.isArray(offset) || offset.length !== 3) return null;
+      return (x, y, k) => [x - offset[0], y - offset[1], k - offset[2]];
+    }
+
+    async function loadNoduleContours() {
+      try {
+        const res = await fetch(
+          `/api/cases/${encodeURIComponent(caseId)}/nodule-contours`,
+        );
+        if (!res.ok) {
+          candidates.setContours(null);
+          return;
+        }
+        const artifact = await res.json();
+        const mapPoint = contourMapPoint(artifact);
+        // An ambiguous grid must not draw the outline in the wrong place.
+        candidates.setContours(mapPoint ? artifact : null, mapPoint);
+      } catch (err) {
+        candidates.setContours(null);
+      }
+    }
+
     async function load() {
       buildToolbar();
       try {
@@ -1580,6 +1618,8 @@ window.CtPanes = (function () {
             }
           }
         }
+
+        await loadNoduleContours();
 
         const presets = ctMeta.window_presets || {};
         if (presets.lung) {

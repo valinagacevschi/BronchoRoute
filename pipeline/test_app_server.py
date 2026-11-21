@@ -1,3 +1,4 @@
+# Changes: the nodule contour route serves the artifact read-only and empty when absent.
 # Changes: records/lesion no longer 412 for missing initials (auto-generated).
 # Changes: stamp a freshly built synthetic Case as the current pipeline version.
 # Changes: About, bundled LICENSE, notices, and sponsors are same-origin.
@@ -794,6 +795,36 @@ def test_candidates_carry_nodule_measurements(client, harness):
     )
     assert bad_id.status_code == 422
     client.delete("/api/cases/local-001/candidates")
+
+
+def test_nodule_contours_artifact_is_served_read_only(client, harness, monkeypatch):
+    """The viewer reads the axial contour artifact; the route never writes."""
+    artifact = {
+        "shape": [24, 20, 16],
+        "nodules": [{
+            "id": 1,
+            "slices": [{
+                "slice_index": 5,
+                "polygons": [[[9.0, 7.0], [10.0, 7.0], [10.0, 8.0], [9.0, 8.0]]],
+            }],
+        }],
+    }
+    (harness["ts"] / "nodule_contours.json").write_text(json.dumps(artifact))
+
+    monkeypatch.setenv("LUNGNAV_VIEWER_ONLY", "1")
+    served = client.get("/api/cases/local-001/nodule-contours")
+    assert served.status_code == 200
+    body = served.json()
+    assert body["shape"] == artifact["shape"]
+    assert body["nodules"] == artifact["nodules"]
+    # The viewer needs the CT affine to bridge the traced grid to its crop.
+    assert body["affine"] == nib.load(harness["ct"]).affine.tolist()
+    monkeypatch.delenv("LUNGNAV_VIEWER_ONLY", raising=False)
+
+    (harness["ts"] / "nodule_contours.json").unlink()
+    empty = client.get("/api/cases/local-001/nodule-contours")
+    assert empty.status_code == 200
+    assert empty.json() == {"shape": [], "nodules": []}
 
 
 def test_about_licence_notices_and_sponsors(client):
