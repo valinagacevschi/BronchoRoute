@@ -134,7 +134,7 @@
           <li data-state="pending"><div class="track"><i></i></div><div class="n">02</div><div class="t">Segmentation</div><div class="s"></div></li>
           <li data-state="pending"><div class="track"><i></i></div><div class="n">03</div><div class="t">Airway model</div><div class="s"></div></li>
           <li data-state="pending"><div class="track"><i></i></div><div class="n">04</div><div class="t">Graph</div><div class="s"></div></li>
-          <li data-state="pending"><div class="track"><i></i></div><div class="n">05</div><div class="t">Nodules</div><div class="s"></div></li>
+          <li data-state="pending"><div class="track"><i></i></div><div class="n">05</div><div class="t">Nodules &amp; 3D</div><div class="s"></div></li>
         </ol>
         <div class="processing-clock"><span><span id="processing-elapsed">0 s</span> elapsed</span><span>Estimated 7–8 min</span></div>
         <div class="processing-actions">

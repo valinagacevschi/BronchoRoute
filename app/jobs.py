@@ -128,6 +128,7 @@ def _step_for_command(cmd: list[str]) -> str:
     for script, step in (
         ("build_graph.py", "graph"),
         ("run_nodules.py", "nodules"),
+        ("build_endoluminal_web.py", "nodules"),
     ):
         if script in cmd:
             return step
@@ -407,6 +408,7 @@ def _segment_commands(ref: CaseRef) -> list[list[str]]:
             "--graph", str(out_dir / f"{ref.case_id}_graph.json"),
             "--device", "mps",
         ],
+        [sys.executable, "build_endoluminal_web.py", ref.case_id],
     ]
 
 
