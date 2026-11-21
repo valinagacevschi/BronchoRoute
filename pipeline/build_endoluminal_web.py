@@ -2,6 +2,10 @@
 
 Writes scene.json, graph.json and one .bin per mesh into
 <case dir>/web, served by /case-web/<case>/.
+
+The merged nodule mask is split into its components so each nodule gets its own
+unsmoothed mesh and a scene entry keyed by id. Measurements and match state come
+from the optional ``nodule_instances.json`` written by the nodule stage.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 from skimage.morphology import skeletonize
 
+import nodule_candidates
 import paths
 
 # Ported from examples/airway_nav/prepare.py so the product viewer can show the
@@ -53,9 +58,14 @@ LAYERS = [
     LayerSpec("arteries", ("lung_arteries",), "#3b5bdb", 0.9, 0.9, 0.6, "airways_source"),
     LayerSpec("veins", ("lung_veins",), "#e03131", 0.9, 0.9, 0.6, "airways_source"),
     LayerSpec("airways", ("airways",), "#ece6e8", 1.0, 0.7, 0.7, required=True),
-    LayerSpec("nodule", ("nodule",), "#f2b632", 1.0, 0.7, 1.0),
+    # No smoothing: a 1.0 sigma erases the shape of a small nodule.
+    LayerSpec("nodule", ("nodule",), "#f2b632", 1.0, 0.7, 0.0),
 ]
 AIRWAYS = next(layer for layer in LAYERS if layer.required)
+NODULES = next(layer for layer in LAYERS if layer.name == "nodule")
+CONTEXT_LAYERS = [layer for layer in LAYERS if layer.name != NODULES.name]
+# Optional output of the nodule stage: one record per mask component.
+NODULE_INSTANCES = "nodule_instances.json"
 
 
 class IsoGrid:
@@ -97,6 +107,8 @@ def load_mask(seg_dir, names, extra):
 
 
 def smoothed(grid, sigma):
+    if sigma <= 0.0:
+        return grid.vol
     # smooth thick-slice axes more, or the slice steps (e.g. 2.5 mm) show on the surface
     return ndimage.gaussian_filter(grid.vol, np.maximum(sigma, 0.6 * grid.source_spacing / grid.spacing))
 
@@ -109,6 +121,61 @@ def mesh(grid, sigma, center, flip):
     if flip:
         faces = faces[:, ::-1]
     return to_three(grid.to_world(verts), center).astype(np.float32), faces.astype(np.uint32)
+
+
+def load_nodule_instances(seg_dir):
+    """Read the optional nodule instance records, keyed by component id."""
+    path = Path(seg_dir) / NODULE_INSTANCES
+    if not path.is_file():
+        return {}
+    records = json.loads(path.read_text())
+    if isinstance(records, dict):
+        records = records.get("nodules", [])
+    return {int(record["id"]): record for record in records if "id" in record}
+
+
+def _measured(record, key, fallback):
+    value = record.get(key)
+    return fallback if value is None else value
+
+
+def build_nodule_layers(nodule, spec, center, out, seg_dir):
+    """One layer and one unsmoothed mesh per nodule mask component."""
+    binary, affine = nodule
+    instances = load_nodule_instances(seg_dir)
+    entries = []
+    for component in nodule_candidates.split_components(binary, affine):
+        crop = np.zeros(binary.shape, dtype=bool)
+        crop[tuple(component["voxels"].T)] = True
+        grid = IsoGrid(crop, affine, spec.iso_mm)
+        m = mesh(grid, spec.sigma, center,
+                 flip=np.linalg.det(affine[:3, :3]) < 0)
+        if m is None:
+            continue
+        verts, faces = m
+        identifier = component["id"]
+        name = f"{spec.name}-{identifier}.bin"
+        (out / name).write_bytes(verts.tobytes() + faces.tobytes())
+        measured = nodule_candidates.measure_component(component, None, affine)
+        record = instances.get(identifier, {})
+        entries.append({
+            "name": spec.name,
+            "id": identifier,
+            "file": name,
+            "color": spec.color,
+            "opacity": spec.opacity,
+            "vertices": len(verts),
+            "triangles": len(faces),
+            "center_mm": np.round(to_three(
+                np.asarray(component["center_ras_mm"], float), center), 2).tolist(),
+            "diameter_mm": _measured(record, "diameter_mm", measured["diameter_mm"]),
+            "volume_mm3": _measured(record, "volume_mm3", component["volume_mm3"]),
+            "score": record.get("score"),
+            "lobe": record.get("lobe"),
+            "to_airway_mm": record.get("to_airway_mm"),
+            "match": record.get("match"),
+        })
+    return entries
 
 
 def skeleton_graph(binary, spacing, max_gap_mm=8.0):
@@ -212,7 +279,7 @@ def build_case(case_id: str) -> Path:
               for c in (np.zeros(3), np.array(air_grid.vol.shape) - 1))
     center = (lo + hi) / 2
     layers = []
-    for layer in LAYERS:
+    for layer in CONTEXT_LAYERS:
         mask = load_mask(masks.parent / layer.mask_dir, layer.masks, {})
         if mask is None or not mask[0].any():
             if layer.required:
@@ -232,6 +299,15 @@ def build_case(case_id: str) -> Path:
         layers.append({"name": layer.name, "file": f"{layer.name}.bin",
                        "color": layer.color, "opacity": layer.opacity,
                        "vertices": len(verts), "triangles": len(faces)})
+    nodule = load_mask(masks.parent / NODULES.mask_dir, NODULES.masks, {})
+    if nodule is None or not nodule[0].any():
+        print(f"{case_id}: no {NODULES.name} mask, layer skipped")
+    else:
+        nodule_layers = build_nodule_layers(
+            nodule, NODULES, center, out, masks.parent)
+        if not nodule_layers:
+            print(f"{case_id}: empty {NODULES.name} mesh, layer skipped")
+        layers.extend(nodule_layers)
     graph = build_graph(air_grid, center, 4.0, sigma=AIRWAYS.sigma)
     (out / "graph.json").write_text(json.dumps(graph, separators=(",", ":")))
     (out / "scene.json").write_text(json.dumps(
