@@ -1,3 +1,4 @@
+# Changes: allow the open lung_nodules task for the nodule stage.
 # Changes: run the lobe step on total_v2 so TotalSegmentator 3 keeps v2 weights.
 # Changes: refuse TotalSegmentator tasks outside lung_vessels and total.
 # Changes: empty or missing lobe masks exit as segmentation: no lungs found.
@@ -31,7 +32,9 @@ from snomed import LOBES as LOBE_TABLE
 
 LOBES = {info["key"]: value for value, info in LOBE_TABLE.items()}
 ROIS = [*LOBES, "trachea", "heart", "aorta", "pulmonary_vein"]
-ALLOWED_TASKS = frozenset({"lung_vessels", "lung_vessels_LEGACY", "total", "total_v2"})
+ALLOWED_TASKS = frozenset({
+    "lung_vessels", "lung_vessels_LEGACY", "total", "total_v2", "lung_nodules",
+})
 
 
 def require_task(task: str) -> str:

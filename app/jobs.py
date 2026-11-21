@@ -1,3 +1,4 @@
+# Changes: run the non-fatal lung nodule stage after the graph step.
 # Changes: graph step receives the same-run pulmonary artery mask.
 # Changes: no-lungs and empty-graph reasons keep their own step names.
 # Changes: one plain failure sentence naming the step that stopped.
@@ -388,6 +389,13 @@ def _segment_commands(ref: CaseRef) -> list[list[str]]:
             "--arteries", str(ref.ts_out / "airways_source" / "lung_arteries.nii.gz"),
             "-o", str(out_dir),
         ],
+        [
+            sys.executable, "run_nodules.py",
+            str(ref.ct), "-o", str(ts_out),
+            "--case-json", str(ref.case_json),
+            "--graph", str(out_dir / f"{ref.case_id}_graph.json"),
+            "--device", "mps",
+        ],
     ]
 
 
@@ -693,7 +701,8 @@ def initialize_sidecar() -> RotatingFileHandler | None:
                     words = shlex.split(command[len(sys.executable):])
                 else:
                     words = shlex.split(command)[1:]
-                scripts = {"run_totalsegmentator.py", "build_graph.py"}
+                scripts = {"run_totalsegmentator.py", "build_graph.py",
+                           "run_nodules.py"}
                 if not words or Path(words[0]).name not in scripts:
                     continue
                 try:
