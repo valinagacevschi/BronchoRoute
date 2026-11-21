@@ -379,7 +379,10 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
     _api_call(server, "PUT", "/api/cases/local-001/candidates", {
         "source": "lung_nodule_ct_detection",
         "candidates": [
-            {"ras_mm": near, "diameter_mm": 6.0, "score": 0.91},
+            {
+                "ras_mm": near, "diameter_mm": 6.0, "score": 0.91,
+                "id": 7, "volume_mm3": 113.1,
+            },
             {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
         ],
     })
@@ -398,12 +401,18 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         )
         box = page.locator("#ct-candidates")
         assert box.is_visible()
+        assert "Model output" in box.inner_text()
         labels = box.locator("button").all_inner_texts()
         assert len(labels) == 3, labels
         assert labels[0].startswith("Candidate 1")
         assert "0.91" in labels[0] and "6.0 mm" in labels[0]
+        assert "113.1 mm³" in labels[0]
+        assert "nodule 7" in labels[0]
+        assert box.locator("button").nth(0).get_attribute("data-nodule-id") == "7"
         assert labels[1].startswith("Candidate 2")
         assert "0.42" in labels[1] and "9.0 mm" in labels[1]
+        assert "mm³" not in labels[1]
+        assert box.locator("button").nth(1).get_attribute("data-nodule-id") is None
         assert labels[2] == "Clear candidates"
 
         page.evaluate("() => window.__p3_debug.ct().setWorld([32, 20, 32])")
