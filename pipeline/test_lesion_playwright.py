@@ -503,7 +503,7 @@ def _world_of(affine, i, j, k):
 
 
 def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
-    """A traced polygon follows its axial slice; a box-only candidate keeps the circle."""
+    """A contour follows the candidate's stable id, not its list position."""
     sync_playwright = _playwright_or_skip()
     assert _CASE_ROOT is not None
     _api_call(server, "DELETE", "/api/cases/local-001/lesion")
@@ -526,7 +526,7 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
     artifact = {
         "shape": [shape[axis] + offset[axis] for axis in range(3)],
         "nodules": [{
-            "id": 1,
+            "id": 2,
             "slices": [{
                 "slice_index": ck + offset[2],
                 "polygons": [polygon],
@@ -538,8 +538,14 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
     _api_call(server, "PUT", "/api/cases/local-001/candidates", {
         "source": "lung_nodule_ct_detection",
         "candidates": [
-            {"ras_mm": contour_world, "diameter_mm": 6.0, "score": 0.91},
-            {"ras_mm": box_world, "diameter_mm": 6.0, "score": 0.42},
+            {
+                "ras_mm": contour_world, "diameter_mm": 6.0, "score": 0.91,
+                "id": 2,
+            },
+            {
+                "ras_mm": box_world, "diameter_mm": 6.0, "score": 0.42,
+                "id": 1,
+            },
         ],
     })
     with sync_playwright() as playwright:
