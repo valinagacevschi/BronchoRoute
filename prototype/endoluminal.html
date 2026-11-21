@@ -323,7 +323,7 @@
       userOrbit = false;
       const box = new THREE.Box3();
       for (const m of Object.values(meshes)) if (m.visible) box.expandByObject(m);
-      if (box.isEmpty()) return;
+      if (box.isEmpty() || !(innerWidth > 0) || !(innerHeight > 0)) return;
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
       const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
@@ -407,6 +407,7 @@
       return out;
     }
     addEventListener('resize', () => {
+      if (!(innerWidth > 0) || !(innerHeight > 0)) return; // iframe still hidden
       camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
       if (!inside && !userOrbit) fitOutsideCamera();
