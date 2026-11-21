@@ -1,3 +1,4 @@
+# Changes: read-only axial nodule contour artifact route for the CT panes (#73).
 # Changes: route target accepts generate_realism so the viewer checkbox controls generation (#68).
 # Changes: route depth PNG endpoint before the RGB route so kf-N.depth.png resolves (#66).
 # Changes: load optional realism dependencies only when realism is requested.
@@ -43,6 +44,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
+import nibabel as nib
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -929,6 +931,29 @@ def api_masks(case_id: str):
         media_type="application/octet-stream",
         headers={"X-Content-SHA256": meta["sha256"]},
     )
+
+
+@app.get("/api/cases/{case_id}/nodule-contours")
+def api_nodule_contours(case_id: str):
+    """Axial contour artifact written by the nodule stage (#71). Read-only."""
+    try:
+        ref = CaseRef.parse(case_id)
+    except (UnknownCase, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    path = ref.ts_out / "nodule_contours.json"
+    if not path.is_file():
+        # Optional overlay: an empty artifact keeps the panes unchanged and
+        # avoids a 404 console error in every Case without a nodule stage.
+        return JSONResponse({"shape": [], "nodules": []})
+    artifact = json.loads(path.read_text())
+    # The stage traces in the CT array frame; the browser shows a canonical
+    # crop. Send the CT affine so the viewer can bridge the two grids.
+    try:
+        artifact["affine"] = nib.load(ref.ct).affine.tolist()
+    except Exception:  # noqa: BLE001 - optional bridge; the viewer falls back
+        pass
+    # A rebuild rewrites the artifact under the same path.
+    return JSONResponse(artifact, headers={"Cache-Control": "no-cache"})
 
 
 @app.put("/api/cases/{case_id}/lesion")
