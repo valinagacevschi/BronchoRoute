@@ -20,7 +20,6 @@ script. Do not edit by hand.
 - batchgeneratorsv2 0.3.5 — Apache-2.0 — unknown
 - blosc 1.11.4 — BSD-3-Clause — https://github.com/blosc/python-blosc
 - blosc2 4.11.0 — BSD-3-Clause — https://github.com/Blosc/python-blosc2
-- cachebox 5.2.3 — MIT — https://github.com/awolverp/cachebox
 - certifi 2026.7.22 — MPL-2.0 — https://github.com/certifi/python-certifi
 - charset-normalizer 3.5.1 — MIT — https://github.com/jawah/charset_normalizer/blob/master/CHANGELOG.md
 - click 8.4.2 — BSD-3-Clause — https://github.com/pallets/click/
@@ -29,12 +28,10 @@ script. Do not edit by hand.
 - crackle-codec 0.43.0 — BSD-3-Clause — https://github.com/seung-lab/crackle
 - cycler 0.12.1 — BSD-3-Clause — https://matplotlib.org/cycler/
 - dataclasses-json 0.6.7 — MIT — https://github.com/lidatong/dataclasses-json
-- deepdiff 9.1.0 — MIT — https://zepworks.com/deepdiff/
 - deprecated 1.3.1 — MIT — https://github.com/laurent-laporte-pro/deprecated
 - dicom2nifti 2.6.2 — MIT — https://github.com/icometrix/dicom2nifti
 - dijkstra3d 1.15.2 — GPL-3.0-or-later — https://github.com/seung-lab/dijkstra3d/
 - dill 0.4.1 — BSD-3-Clause — https://github.com/uqfoundation/dill
-- dipy 1.12.1 — BSD-3-Clause — https://dipy.org
 - dynamic-network-architectures 0.4.4 — Apache-2.0 — unknown
 - edt 3.1.2 — LGPL-3.0-or-later — https://github.com/seung-lab/euclidean-distance-transform-3d/
 - einops 0.8.2 — MIT — https://github.com/arogozhnikov/einops
@@ -52,7 +49,6 @@ script. Do not edit by hand.
 - graphviz 0.21 — MIT — https://github.com/xflr6/graphviz
 - h11 0.16.0 — MIT — https://github.com/python-hyper/h11
 - h2 4.4.1 — MIT — https://github.com/python-hyper/h2/
-- h5py 3.16.0 — BSD-3-Clause — https://www.h5py.org/
 - hf-xet 1.6.0 — Apache-2.0 — https://github.com/huggingface/xet-core
 - hpack 4.2.0 — MIT — https://github.com/python-hyper/hpack/
 - httpcore 1.0.9 — BSD-3-Clause — https://www.encode.io/httpcore/
@@ -90,7 +86,6 @@ script. Do not edit by hand.
 - onnxruntime 1.31.1 — MIT — https://onnxruntime.ai
 - opencv-python-headless 5.0.0.93 — Apache-2.0 — https://github.com/opencv/opencv-python
 - opentelemetry-api 1.45.1 — Apache-2.0 — https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api
-- orderly-set 5.5.0 — MIT — https://github.com/seperman/orderly-set
 - osteoid 0.6.0 — BSD-3-Clause — unknown
 - packaging 26.3 — Apache-2.0 OR BSD-2-Clause — https://github.com/pypa/packaging
 - pandas 3.0.5 — BSD-3-Clause — https://pandas.pydata.org
@@ -115,6 +110,7 @@ script. Do not edit by hand.
 - python-dateutil 2.9.0.post0 — Apache-2.0 — https://github.com/dateutil/dateutil
 - python-gdcm 3.2.6 — Apache-2.0 — https://github.com/tfmoraes/python-gdcm/
 - pyyaml 6.0.3 — MIT — https://github.com/yaml/pyyaml
+- rarfile 4.5 — ISC — https://github.com/markokr/rarfile
 - requests 2.34.2 — Apache-2.0 — https://github.com/psf/requests
 - rich 15.0.0 — MIT — https://github.com/Textualize/rich
 - safetensors 0.8.0 — Apache-2.0 — https://github.com/huggingface/safetensors
@@ -123,7 +119,6 @@ script. Do not edit by hand.
 - scipy 1.18.1 — BSD-3-Clause AND BSD-3-Clause-Open-MPI AND GPL-3.0-or-later WITH GCC-exception-3.1 AND LGPL-2.1-or-later — https://scipy.org/
 - seaborn 0.13.2 — BSD-3-Clause — https://github.com/mwaskom/seaborn
 - setuptools 84.0.0 — MIT — https://github.com/pypa/setuptools
-- shellingham 1.5.4 — ISC — https://github.com/sarugaku/shellingham
 - simpleitk 2.5.6 — Apache-2.0 — https://github.com/SimpleITK/SimpleITK
 - six 1.17.0 — MIT — https://github.com/benjaminp/six
 - starlette 1.10.0 — BSD-3-Clause — https://github.com/Kludex/starlette
@@ -134,14 +129,13 @@ script. Do not edit by hand.
 - timm 1.0.22 — Apache-2.0 — https://github.com/huggingface/pytorch-image-models
 - torch 2.13.0 — Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT — https://pytorch.org
 - torchvision 0.28.0 — BSD-3-Clause — https://github.com/pytorch/vision
-- totalsegmentator 2.18.0 — Apache-2.0 — https://github.com/wasserth/TotalSegmentator
+- totalsegmentator 3.0.0 — Apache-2.0 — https://github.com/wasserth/TotalSegmentator
 - tqdm 4.70.0 — MPL-2.0 AND MIT — https://tqdm.github.io
 - traceback2 1.4.0 — PSF-2.0 — https://github.com/testing-cabal/traceback2
-- trx-python 0.4.0 — BSD-2-Clause — https://github.com/tee-ar-ex/trx-python
-- typer 0.27.1 — MIT — https://github.com/fastapi/typer
 - typing-extensions 4.16.0 — PSF-2.0 — https://github.com/python/typing_extensions
 - typing-inspect 0.9.0 — MIT — https://github.com/ilevkivskyi/typing_inspect
 - typing-inspection 0.4.4 — MIT — https://github.com/pydantic/typing-inspection
+- uharfbuzz 0.56.0 — Apache-2.0 — https://github.com/trufont/uharfbuzz
 - unittest2 1.1.0 — BSD — http://pypi.python.org/pypi/unittest2
 - urllib3 2.7.0 — MIT — https://github.com/urllib3/urllib3/blob/main/CHANGES.rst
 - uvicorn 0.54.0 — BSD-3-Clause — https://uvicorn.dev/

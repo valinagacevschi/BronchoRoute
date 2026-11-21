@@ -3,6 +3,7 @@
 # Changes: bounded Archive extraction, opaque sessions and identifier-free import results.
 # Changes: expose Series eligibility, kernel class and coverage in scan responses.
 # Changes: log import lifecycle without Archive paths or Series selections.
+# Changes: accept RAR Archives alongside ZIP, matched by file signature.
 """Safe Archive sessions and confirmed Series import for the desktop app."""
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import logging
 import shutil
 import secrets
 import stat
+import subprocess
 import tempfile
 import threading
 import zipfile
@@ -18,6 +20,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from pathlib import Path
 
 import numpy as np
+import rarfile
 
 import paths
 from atomic_json import atomic_write_json
@@ -58,7 +61,44 @@ def validate_src_dir(src_dir: str | Path) -> Path:
     return path
 
 
+def _archive_kind(archive: Path) -> str | None:
+    """Identify an Archive by its first bytes, or fall back to the suffix."""
+    try:
+        with archive.open("rb") as source:
+            head = source.read(8)
+    except OSError:
+        return None
+    if head.startswith(b"Rar!\x1a\x07"):
+        return "rar"
+    if head.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        return "zip"
+    return {".rar": "rar", ".zip": "zip"}.get(archive.suffix.lower())
+
+
+def _safe_member(name: str, *, link: bool) -> bool:
+    name = name.replace("\\", "/")
+    return (PurePosixPath(name).is_absolute() or PureWindowsPath(name).drive
+            or ".." in PurePosixPath(name).parts or link)
+
+
+def _inside(root: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def extract_archive(archive: Path) -> Path:
+    kind = _archive_kind(archive)
+    if kind == "rar":
+        return _extract_rar(archive)
+    if kind == "zip":
+        return _extract_zip(archive)
+    raise ValueError("Archive could not be read")
+
+
+def _extract_zip(archive: Path) -> Path:
     """Validate every member before writing; never retain Archive member names."""
     import pydicom
 
@@ -72,10 +112,8 @@ def extract_archive(archive: Path) -> Path:
             if sum(member.file_size for member in members) > MAX_ARCHIVE_BYTES:
                 raise ValueError("Archive size limit exceeded")
             for member in members:
-                name = member.filename.replace("\\", "/")
-                if (PurePosixPath(name).is_absolute() or PureWindowsPath(name).drive
-                        or ".." in PurePosixPath(name).parts
-                        or stat.S_ISLNK(member.external_attr >> 16)):
+                if _safe_member(member.filename,
+                                link=stat.S_ISLNK(member.external_attr >> 16)):
                     raise ValueError("unsafe Archive entry")
             total = 0
             for index, member in enumerate(members):
@@ -97,6 +135,63 @@ def extract_archive(archive: Path) -> Path:
                         target.unlink()
                 except Exception:
                     target.unlink(missing_ok=True)
+        return root
+    except Exception as exc:
+        shutil.rmtree(root, ignore_errors=True)
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("Archive could not be read") from None
+
+
+def _extract_rar(archive: Path) -> Path:
+    """Validate RAR members, then extract once with bsdtar and keep DICOM files."""
+    import pydicom
+
+    tool = shutil.which("bsdtar")
+    if tool is None:
+        raise ValueError("RAR support is unavailable")
+    paths.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="import-", dir=paths.TMP_DIR))
+    raw = root / "raw"
+    try:
+        with rarfile.RarFile(archive) as source:
+            members = source.infolist()
+            if len(members) > MAX_ARCHIVE_FILES:
+                raise ValueError("Archive file-count limit exceeded")
+            if sum(int(member.file_size or 0) for member in members) > MAX_ARCHIVE_BYTES:
+                raise ValueError("Archive size limit exceeded")
+            for member in members:
+                if _safe_member(member.filename, link=member.is_symlink()):
+                    raise ValueError("unsafe Archive entry")
+        raw.mkdir()
+        result = subprocess.run(
+            [tool, "-x", "--no-same-owner", "-f", str(archive), "-C", str(raw)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise ValueError("Archive could not be read")
+        files = sorted(path for path in raw.rglob("*") if path.is_file())
+        total = 0
+        for index, path in enumerate(files):
+            if path.is_symlink() or not _inside(raw, path):
+                raise ValueError("unsafe Archive entry")
+            name = PurePosixPath(path.relative_to(raw).as_posix())
+            if ("__MACOSX" in name.parts
+                    or name.name.lower() in {"autorun.inf", ".ds_store"}
+                    or name.suffix.lower() in {".exe", ".dll", ".bat", ".cmd"}):
+                continue
+            total += path.stat().st_size
+            if total > MAX_ARCHIVE_BYTES:
+                raise ValueError("Archive size limit exceeded")
+            target = root / f"{index:05d}.dcm"
+            path.rename(target)
+            try:
+                ds = pydicom.dcmread(target, stop_before_pixels=True)
+                if not getattr(ds, "SeriesInstanceUID", None):
+                    target.unlink()
+            except Exception:
+                target.unlink(missing_ok=True)
+        shutil.rmtree(raw, ignore_errors=True)
         return root
     except Exception as exc:
         shutil.rmtree(root, ignore_errors=True)
@@ -177,7 +272,7 @@ def _public_row(row: dict, *, skip: str | None, proposed: bool) -> dict:
 def scan_series(path: str | Path) -> dict:
     """Return approved Series facts, grouped by opaque Study keys."""
     source = Path(path).expanduser().resolve()
-    extracted = source.is_file() and source.suffix.lower() == ".zip"
+    extracted = source.is_file() and _archive_kind(source) is not None
     root = extract_archive(source) if extracted else validate_src_dir(
         source.parent if source.is_file() and source.name.upper() == "DICOMDIR" else source
     )

@@ -44,6 +44,53 @@ def test_zip_caps(extraction, monkeypatch, limit, value):
     assert not list((extraction / "tmp").iterdir())
 
 
+def test_archive_kind_reads_signature(tmp_path):
+    rar = tmp_path / "named.zip"
+    rar.write_bytes(b"Rar!\x1a\x07\x01\x00")
+    assert imports._archive_kind(rar) == "rar"
+    zipped = tmp_path / "named.rar"
+    zipped.write_bytes(b"PK\x03\x04")
+    assert imports._archive_kind(zipped) == "zip"
+
+
+def test_rar_without_bsdtar_refused(extraction, monkeypatch):
+    archive = extraction / "input.rar"
+    archive.write_bytes(b"Rar!\x1a\x07\x01\x00")
+    monkeypatch.setattr(imports.shutil, "which", lambda _name: None)
+    with pytest.raises(ValueError, match="unavailable"):
+        imports.extract_archive(archive)
+    assert not (extraction / "tmp").exists()
+
+
+def test_unsafe_rar_rejected(extraction, monkeypatch):
+    archive = extraction / "input.rar"
+    archive.write_bytes(b"Rar!\x1a\x07\x01\x00")
+
+    class Member:
+        filename = "../x"
+        file_size = 1
+
+        @staticmethod
+        def is_symlink():
+            return False
+
+    class Source:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def infolist(self):
+            return [Member()]
+
+    monkeypatch.setattr(imports.rarfile, "RarFile", lambda _path: Source())
+    monkeypatch.setattr(imports.shutil, "which", lambda _name: "/usr/bin/bsdtar")
+    with pytest.raises(ValueError, match="unsafe"):
+        imports.extract_archive(archive)
+    assert not list((extraction / "tmp").iterdir())
+
+
 @pytest.fixture
 def lifecycle(extraction, monkeypatch):
     from fastapi.testclient import TestClient

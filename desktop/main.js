@@ -453,7 +453,7 @@ async function openArchive(event, selectedPath) {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "Open Archive",
       properties: ["openFile", "openDirectory"],
-      filters: [{ name: "Archives", extensions: ["zip", "dcm", ""] }],
+      filters: [{ name: "Archives", extensions: ["zip", "rar", "dcm", ""] }],
     });
     if (result.canceled) {
       return;
