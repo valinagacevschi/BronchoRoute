@@ -442,6 +442,21 @@ def test_job_commands_use_current_python(harness):
     assert nodule[nodule.index("--graph") + 1].endswith("local-001_graph.json")
 
 
+def test_job_commands_name_their_progress_step():
+    from app.jobs import _step_for_command
+
+    assert _step_for_command([sys.executable, "run_totalsegmentator.py"]) == "segmentation"
+    assert _step_for_command([sys.executable, "build_graph.py"]) == "graph"
+    assert _step_for_command([sys.executable, "run_nodules.py"]) == "nodules"
+
+
+def test_latest_step_prefers_nodules_over_graph():
+    from app.jobs import _step_in_log
+
+    lines = ["step: reading", "step: segmentation", "step: graph", "step: nodules"]
+    assert _step_in_log(lines) == "nodules"
+
+
 def test_job_conflict_across_cases(client, harness, monkeypatch):
     import threading
     import paths

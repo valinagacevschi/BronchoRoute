@@ -116,18 +116,29 @@ def _redact_data_root(line: str) -> str:
     return re.sub(pattern, "[path]", line)
 
 
-_STEP_NAMES = ("graph", "airway model", "segmentation", "reading")
+_STEP_NAMES = ("nodules", "graph", "airway model", "segmentation", "reading")
 
 
 def _step_in_log(lines: list[str]) -> str:
     return next((step for step in _STEP_NAMES if f"step: {step}" in lines), "reading")
 
 
+def _step_for_command(cmd: list[str]) -> str:
+    """Progress step named by the script in one job command."""
+    for script, step in (
+        ("build_graph.py", "graph"),
+        ("run_nodules.py", "nodules"),
+    ):
+        if script in cmd:
+            return step
+    return "segmentation"
+
+
 def _last_logged_step(lines: list[str]) -> str:
     """Latest step line. Timeout and unexpected exits follow this, not a known reason."""
     step = "reading"
     for line in lines:
-        for name in ("reading", "segmentation", "airway model", "graph"):
+        for name in ("reading", "segmentation", "airway model", "graph", "nodules"):
             if line == f"step: {name}":
                 step = name
                 break
@@ -217,7 +228,7 @@ class JobState:
                 "kind": self.kind,
                 "status": "running" if self.import_id and not self._done.is_set() else self.status,
                 "elapsed_s": round(elapsed, 2),
-                "estimate_s": 390,
+                "estimate_s": 450,
                 "step": _step_in_log(self.log_lines),
                 "error": self.error,
                 "pid": self.pid,
@@ -450,7 +461,7 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
     try:
         job.append_log("step: reading")
         for cmd in cmds:
-            job.append_log("step: graph" if "build_graph.py" in cmd else "step: segmentation")
+            job.append_log(f"step: {_step_for_command(cmd)}")
             with job._lock:
                 if job._cancelled.is_set():
                     raise RuntimeError("cancelled")

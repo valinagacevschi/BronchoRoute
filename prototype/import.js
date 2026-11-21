@@ -109,7 +109,7 @@
           <ul class="drop-facts">
             <li><b>Stays on this Mac</b><span>The Archive is read locally. Nothing is uploaded.</span></li>
             <li><b>You choose the Series</b><span>Each reconstruction is checked for thickness, kernel and coverage.</span></li>
-            <li><b>About 6–7 minutes</b><span>Segmentation, airway model and graph run in the background.</span></li>
+            <li><b>About 7–8 minutes</b><span>Segmentation, airway model, graph and nodule detection run in the background.</span></li>
           </ul>
         </div>
       </div>
@@ -134,8 +134,9 @@
           <li data-state="pending"><div class="track"><i></i></div><div class="n">02</div><div class="t">Segmentation</div><div class="s"></div></li>
           <li data-state="pending"><div class="track"><i></i></div><div class="n">03</div><div class="t">Airway model</div><div class="s"></div></li>
           <li data-state="pending"><div class="track"><i></i></div><div class="n">04</div><div class="t">Graph</div><div class="s"></div></li>
+          <li data-state="pending"><div class="track"><i></i></div><div class="n">05</div><div class="t">Nodules</div><div class="s"></div></li>
         </ol>
-        <div class="processing-clock"><span><span id="processing-elapsed">0 s</span> elapsed</span><span>Estimated 6–7 min</span></div>
+        <div class="processing-clock"><span><span id="processing-elapsed">0 s</span> elapsed</span><span>Estimated 7–8 min</span></div>
         <div class="processing-actions">
           <button type="button" id="processing-cancel" class="btn-ghost">Cancel</button>
           <button type="button" id="try-another" hidden>Try another Series</button>
@@ -1102,7 +1103,7 @@
         const job = await api(`/api/cases/${caseId}/jobs/latest`);
         if (activeCase !== caseId) return;
         get("processing-elapsed").textContent = `${Math.floor(job.elapsed_s)} s`;
-        const steps = ["reading", "segmentation", "airway model", "graph"];
+        const steps = ["reading", "segmentation", "airway model", "graph", "nodules"];
         const index = steps.indexOf(job.step);
         Array.from(get("processing-steps").children).forEach((li, i) => {
           const status = li.querySelector(".s");
