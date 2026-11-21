@@ -1,3 +1,4 @@
+// Changes: load the axial nodule contour artifact and hand it to the candidate glyphs.
 // Changes: CT estimated airway is a #D2B4F0 stroke over a 1 px halo, faded no lower than 0.5.
 // Changes: estimated airway overlay uses the shared session toggle and the centreline slab.
 // Changes: bridge decisions beside CT controls and slice-slab midpoint rings.
@@ -1543,6 +1544,37 @@ window.CtPanes = (function () {
       return true;
     }
 
+    // The contour artifact is in the original CT voxel grid; the browser CT is
+    // a crop, so shift by crop_offset_voxels when the shapes differ.
+    function contourOffsetFor(artifact) {
+      const shape = artifact && artifact.shape;
+      if (!Array.isArray(shape) || shape.length !== 3) return null;
+      const crop = ctMeta.shape;
+      if (shape[0] === crop[0] && shape[1] === crop[1] && shape[2] === crop[2]) {
+        return [0, 0, 0];
+      }
+      const offset = ctMeta.crop_offset_voxels;
+      return Array.isArray(offset) && offset.length === 3 ? offset : null;
+    }
+
+    async function loadNoduleContours() {
+      try {
+        const res = await fetch(
+          `/api/cases/${encodeURIComponent(caseId)}/nodule-contours`,
+        );
+        if (!res.ok) {
+          candidates.setContours(null);
+          return;
+        }
+        const artifact = await res.json();
+        const offset = contourOffsetFor(artifact);
+        // Without a known offset the artifact frame is ambiguous: draw nothing.
+        candidates.setContours(offset ? artifact : null, offset || [0, 0, 0]);
+      } catch (err) {
+        candidates.setContours(null);
+      }
+    }
+
     async function load() {
       buildToolbar();
       try {
@@ -1580,6 +1612,8 @@ window.CtPanes = (function () {
             }
           }
         }
+
+        await loadNoduleContours();
 
         const presets = ctMeta.window_presets || {};
         if (presets.lung) {
