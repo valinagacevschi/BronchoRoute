@@ -114,6 +114,7 @@
         "filter": [
           "renderer.template.html",
           "ct_panes.js",
+          "fisheye-reproject.js",
           "import.js",
           "import.css",
           "fonts/*.woff2",
