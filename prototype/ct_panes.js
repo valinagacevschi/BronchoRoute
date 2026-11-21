@@ -337,6 +337,27 @@ window.CtPanes = (function () {
     toolbar.className = "ct-toolbar";
     rootEl.appendChild(toolbar);
 
+    const candidates = window.CtCandidates.create({
+      caseId,
+      readOnly,
+      ensureClinician,
+      statusMessage,
+      diameterOf: lesionDiameterOf,
+      geometry: { sliceFrame, lesionSliceGeometry, worldToVoxelCont },
+      onConfirmed: (next) => {
+        lesion = next;
+        provisional = null;
+        marking = false;
+        lesionDrag = null;
+        provisionalDiameter = lesionDiameterOf(next);
+        airway.lesion = next;
+        airway.candidates = [];
+        if (onLesionChange) onLesionChange(next);
+        updateLesionStatus();
+        drawAll();
+      },
+    });
+
     const bridgeList = document.createElement("div");
     bridgeList.id = "bridge-list";
     bridgeList.hidden = true;
@@ -576,23 +597,18 @@ window.CtPanes = (function () {
       lesionBox.appendChild(clearBtn);
       lesionBox.appendChild(statusEl);
 
-      const candidatesBox = document.createElement("div");
-      candidatesBox.className = "ct-lesion-box";
-      candidatesBox.id = "ct-candidates";
-      candidatesBox.hidden = true;
-
       toolbar.appendChild(presets);
       toolbar.appendChild(view);
       toolbar.appendChild(ov);
       if (!readOnly) {
         toolbar.appendChild(lesionBox);
-        toolbar.appendChild(candidatesBox);
-        refreshCandidateButtons();
+        candidates.mount(toolbar);
       }
       syncOverlayEnablement();
       syncConfirmEnabled();
       updateLesionStatus();
       updateWlReadout();
+      candidates.setItems(airway.candidates);
     }
 
     function updateWlReadout() {
@@ -625,107 +641,6 @@ window.CtPanes = (function () {
       provisionalDiameter = LESION_DIAMETER_DEFAULT;
       lesionDrag = null;
       updateLesionStatus();
-      drawAll();
-    }
-
-    async function confirmCandidate(index) {
-      if (readOnly) return;
-      let ok;
-      try {
-        ok = await ensureClinician();
-      } catch (err) {
-        statusMessage(String(err.message || err));
-        return;
-      }
-      if (!ok) return;
-      let res;
-      try {
-        res = await fetch(
-          `/api/cases/${encodeURIComponent(caseId)}/candidates/${index}/confirm`,
-          { method: "POST" },
-        );
-      } catch (err) {
-        statusMessage(String(err.message || err));
-        return;
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        statusMessage(body.detail || `Confirm candidate failed (${res.status})`);
-        return;
-      }
-      const body = await res.json();
-      lesion = body.lesion;
-      provisional = null;
-      marking = false;
-      lesionDrag = null;
-      provisionalDiameter = lesionDiameterOf(lesion);
-      airway.lesion = lesion;
-      airway.candidates = [];
-      if (onLesionChange) onLesionChange(lesion);
-      updateLesionStatus();
-      drawAll();
-    }
-
-    let candidateSignature = "";
-
-    function refreshCandidateButtons() {
-      const box = toolbar.querySelector("#ct-candidates");
-      if (!box) return;
-      const items = candidateItems();
-      const signature = items
-        .map(item => item && `${item.ras_mm}|${item.diameter_mm}|${item.score}`)
-        .join(",");
-      if (signature === candidateSignature) return;
-      candidateSignature = signature;
-      box.innerHTML = "";
-      if (!items.length) {
-        box.hidden = true;
-        return;
-      }
-      box.hidden = false;
-      items.forEach((item, index) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "secondary";
-        const score = item && item.score != null
-          ? ` · ${Number(item.score).toFixed(2)}`
-          : "";
-        const dia = `Ø ${lesionDiameterOf(item || {}).toFixed(1)} mm`;
-        btn.textContent = `Candidate ${index + 1}${score} · ${dia}`;
-        btn.onclick = () => {
-          confirmCandidate(index).catch(err => statusMessage(String(err.message || err)));
-        };
-        box.appendChild(btn);
-      });
-      const clearBtn = document.createElement("button");
-      clearBtn.type = "button";
-      clearBtn.className = "secondary";
-      clearBtn.textContent = "Clear candidates";
-      clearBtn.onclick = () => {
-        clearCandidates().catch(err => statusMessage(String(err.message || err)));
-      };
-      box.appendChild(clearBtn);
-    }
-
-    async function clearCandidates() {
-      if (readOnly) return;
-      try {
-        const res = await fetch(
-          `/api/cases/${encodeURIComponent(caseId)}/candidates`,
-          { method: "DELETE" },
-        );
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          statusMessage(body.detail || `Clear candidates failed (${res.status})`);
-          return;
-        }
-      } catch (err) {
-        statusMessage(String(err.message || err));
-        return;
-      }
-      airway.candidates = [];
-      candidateSignature = null;
-      refreshCandidateButtons();
       drawAll();
     }
 
@@ -975,13 +890,13 @@ window.CtPanes = (function () {
       return fitPlane(w, h, planeSizeUV, currentSharedMmPerPx());
     }
 
-    function drawOutlinedText(ctx, text, x, y, align, fill) {
+    function drawOutlinedText(ctx, text, x, y, align) {
       ctx.save();
       ctx.textAlign = align || "center";
       ctx.textBaseline = "middle";
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(0,0,0,0.85)";
-      ctx.fillStyle = fill || "#fff";
+      ctx.fillStyle = "#fff";
       ctx.strokeText(text, x, y);
       ctx.fillText(text, x, y);
       ctx.restore();
@@ -1004,51 +919,6 @@ window.CtPanes = (function () {
       const n = Math.round(signedMm);
       const sign = n > 0 ? "+" : "";
       return `Lesion ${sign}${n} mm`;
-    }
-
-    function candidateItems() {
-      const block = airway && airway.candidates;
-      return Array.isArray(block) ? block : [];
-    }
-
-    function drawCandidateGlyphs(ctx, key, map, fit, fixed) {
-      const items = candidateItems();
-      if (!overlays.candidates || !items.length) return;
-      const frame = sliceFrame(map, fixed);
-      items.forEach((item, index) => {
-        if (!item || !item.ras_mm) return;
-        const diameter = lesionDiameterOf(item);
-        const geom = lesionSliceGeometry(
-          item.ras_mm, diameter, frame.planePoint, frame.increment,
-        );
-        if (!geom.through) return;
-        const ijk = worldToVoxelCont(item.ras_mm);
-        const uv = map.uvFromIjk(ijk[0], ijk[1], ijk[2]);
-        const sx = fit.ox + uv.u * fit.drawW;
-        const sy = fit.oy + uv.v * fit.drawH;
-        const radiusPx = Math.max(geom.inPlaneRadiusMm / (fit.mmPerPx || 1), 4);
-        ctx.save();
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath();
-        ctx.arc(sx, sy, radiusPx, 0, Math.PI * 2);
-        ctx.lineWidth = 3.5;
-        ctx.strokeStyle = "rgba(0,0,0,0.65)";
-        ctx.stroke();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "#b8860b";
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.arc(sx, sy, 1.6, 0, Math.PI * 2);
-        ctx.fillStyle = "#b8860b";
-        ctx.fill();
-        ctx.font = "600 10px monospace";
-        const score = item.score == null ? "" : ` ${Number(item.score).toFixed(2)}`;
-        drawOutlinedText(
-          ctx, `#${index + 1}${score}`, sx + radiusPx + 6, sy - 4, "left", "#e0b53a",
-        );
-        ctx.restore();
-      });
     }
 
     function drawLesionGlyph(ctx, key, map, fit, fixed) {
@@ -1348,7 +1218,11 @@ window.CtPanes = (function () {
       }
 
       drawLesionGlyph(ctx, key, map, fit, fixed);
-      drawCandidateGlyphs(ctx, key, map, fit, fixed);
+      candidates.draw(ctx, {
+        key, map, fit, fixed,
+        visible: overlays.candidates,
+        diameterOf: lesionDiameterOf,
+      });
       bridgeDraw[key] = [];
       for (const bridge of bridges) {
         const ijk = worldToVoxelCont(bridge.midpoint_ras_mm);
@@ -1468,7 +1342,6 @@ window.CtPanes = (function () {
     }
 
     function drawAll() {
-      if (!readOnly) refreshCandidateButtons();
       updateWlReadout();
       routeHighlightStrokes = 0;
       estimatedDrawn.axial = 0;

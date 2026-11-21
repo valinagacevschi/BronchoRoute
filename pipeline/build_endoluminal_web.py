@@ -7,14 +7,9 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-
-import paths
-
-# Ported from examples/airway_nav/prepare.py so the product viewer can show the
-# same surface render without depending on the examples folder at runtime.
 import networkx as nx
 import nibabel as nib
 import numpy as np
@@ -23,41 +18,52 @@ from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 from skimage.morphology import skeletonize
 
+import paths
+
+# Ported from examples/airway_nav/prepare.py so the product viewer can show the
+# same surface render without depending on the examples folder at runtime.
+
 # RAS (nibabel world) -> three.js (x right on screen in an anterior view, y up, z toward viewer)
 RAS_TO_THREE = np.array([[-1, 0, 0], [0, 0, 1], [0, 1, 0]], float)
 
 LOBES = ["lung_upper_lobe_left", "lung_lower_lobe_left", "lung_upper_lobe_right",
          "lung_middle_lobe_right", "lung_lower_lobe_right"]
-# name: (source masks, colour, opacity, grid mm, smoothing sigma in voxels)
-LAYERS = {
-    "lungs": (LOBES, "#9ec5fe", 0.10, 2.5, 1.5),
-    "heart": (["heart"], "#d6336c", 0.85, 1.5, 1.0),
-    "aorta": (["aorta"], "#e03131", 0.85, 1.5, 1.0),
-    "pulmonary_vein": (["pulmonary_vein"], "#e03131", 0.85, 1.5, 1.0),
-    "arteries": (["lung_arteries"], "#3b5bdb", 0.9, 0.9, 0.6),
-    "veins": (["lung_veins"], "#e03131", 0.9, 0.9, 0.6),
-    "airways": (["lung_airways", "trachea"], "#ece6e8", 1.0, 0.7, 0.7),
-    "nodule": (["nodule"], "#f2b632", 1.0, 0.7, 1.0),
-}
-# Mask directory under TS_OUT/<case> for each context layer. The merged airway
-# mask sits at the root; vessels come from the lung_vessels run and the other
-# structures from the total_v2 run.
-LAYER_DIRS = {
-    "lungs": "lobes",
-    "heart": "lobes",
-    "aorta": "lobes",
-    "pulmonary_vein": "lobes",
-    "arteries": "airways_source",
-    "veins": "airways_source",
-    "nodule": ".",
-}
-MASK_NAMES = {"airways": ["airways"]}
+
+
+@dataclass(frozen=True)
+class LayerSpec:
+    """One mesh layer: where its masks live, how it renders, and how it is built."""
+    name: str
+    masks: tuple[str, ...]
+    color: str
+    opacity: float
+    iso_mm: float
+    sigma: float
+    mask_dir: str = "."
+    required: bool = False
+
+
+# Mask directories are under TS_OUT/<case>. The merged airway mask sits at the
+# root; vessels come from the lung_vessels run and the rest from total_v2.
+LAYERS = [
+    LayerSpec("lungs", tuple(LOBES), "#9ec5fe", 0.10, 2.5, 1.5, "lobes"),
+    LayerSpec("heart", ("heart",), "#d6336c", 0.85, 1.5, 1.0, "lobes"),
+    LayerSpec("aorta", ("aorta",), "#e03131", 0.85, 1.5, 1.0, "lobes"),
+    LayerSpec("pulmonary_vein", ("pulmonary_vein",), "#e03131", 0.85, 1.5, 1.0, "lobes"),
+    LayerSpec("arteries", ("lung_arteries",), "#3b5bdb", 0.9, 0.9, 0.6, "airways_source"),
+    LayerSpec("veins", ("lung_veins",), "#e03131", 0.9, 0.9, 0.6, "airways_source"),
+    LayerSpec("airways", ("airways",), "#ece6e8", 1.0, 0.7, 0.7, required=True),
+    LayerSpec("nodule", ("nodule",), "#f2b632", 1.0, 0.7, 1.0),
+]
+AIRWAYS = next(layer for layer in LAYERS if layer.required)
 
 
 class IsoGrid:
     """A crop of a mask resampled to (near) isotropic voxels, with a map back to world mm."""
     def __init__(self, mask, affine, iso, pad=4):
         idx = np.argwhere(mask)
+        if idx.size == 0:
+            raise ValueError("empty mask")
         lo = np.maximum(idx.min(0) - pad, 0)
         hi = np.minimum(idx.max(0) + pad + 1, mask.shape)
         sub = mask[tuple(slice(a, b) for a, b in zip(lo, hi))].astype(np.float32)
@@ -189,9 +195,6 @@ def build_graph(grid, center, min_spur_mm, sigma=0.0):
         "start": int(np.argmax(pos[:, 1])),  # most superior node = top of the trachea
     }
 
-
-
-
 def build_case(case_id: str) -> Path:
     case_dir = paths.LOCAL_CASES / case_id
     if not (case_dir / "case.json").is_file():
@@ -201,33 +204,35 @@ def build_case(case_id: str) -> Path:
         raise SystemExit(f"no airway mask at {masks}")
     out = case_dir / "web"
     out.mkdir(parents=True, exist_ok=True)
-    airway = load_mask(masks.parent, ["airways"], {})
-    if airway is None:
-        raise SystemExit(f"no airway mask at {masks}")
-    air_grid = IsoGrid(airway[0], airway[1], LAYERS["airways"][3])
+    airway = load_mask(masks.parent, AIRWAYS.masks, {})
+    if airway is None or not airway[0].any():
+        raise SystemExit("airway mesh empty")
+    air_grid = IsoGrid(airway[0], airway[1], AIRWAYS.iso_mm)
     lo, hi = (air_grid.to_world(c) @ RAS_TO_THREE.T
               for c in (np.zeros(3), np.array(air_grid.vol.shape) - 1))
     center = (lo + hi) / 2
     layers = []
-    for name, (names, color, opacity, iso, sigma) in LAYERS.items():
-        mask = load_mask(masks.parent / LAYER_DIRS.get(name, "."),
-                         MASK_NAMES.get(name, names), {})
-        if mask is None:
-            if name == "airways":
+    for layer in LAYERS:
+        mask = load_mask(masks.parent / layer.mask_dir, layer.masks, {})
+        if mask is None or not mask[0].any():
+            if layer.required:
                 raise SystemExit("airway mesh empty")
-            print(f"{case_id}: no {name} mask, layer skipped")
+            print(f"{case_id}: no {layer.name} mask, layer skipped")
             continue
-        grid = air_grid if name == "airways" else IsoGrid(mask[0], mask[1], iso)
-        m = mesh(grid, sigma, center, flip=np.linalg.det(mask[1][:3, :3]) < 0)
+        grid = air_grid if layer.required else IsoGrid(mask[0], mask[1], layer.iso_mm)
+        m = mesh(grid, layer.sigma, center,
+                 flip=np.linalg.det(mask[1][:3, :3]) < 0)
         if m is None:
-            print(f"{case_id}: empty {name} mesh, layer skipped")
+            if layer.required:
+                raise SystemExit("airway mesh empty")
+            print(f"{case_id}: empty {layer.name} mesh, layer skipped")
             continue
         verts, faces = m
-        (out / f"{name}.bin").write_bytes(verts.tobytes() + faces.tobytes())
-        layers.append({"name": name, "file": f"{name}.bin", "color": color,
-                       "opacity": opacity, "vertices": len(verts),
-                       "triangles": len(faces)})
-    graph = build_graph(air_grid, center, 4.0, sigma=LAYERS["airways"][4])
+        (out / f"{layer.name}.bin").write_bytes(verts.tobytes() + faces.tobytes())
+        layers.append({"name": layer.name, "file": f"{layer.name}.bin",
+                       "color": layer.color, "opacity": layer.opacity,
+                       "vertices": len(verts), "triangles": len(faces)})
+    graph = build_graph(air_grid, center, 4.0, sigma=AIRWAYS.sigma)
     (out / "graph.json").write_text(json.dumps(graph, separators=(",", ":")))
     (out / "scene.json").write_text(json.dumps(
         {"layers": layers, "center_mm": center.tolist()}, indent=1))

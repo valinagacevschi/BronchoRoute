@@ -827,20 +827,20 @@ body.walkthrough-active .walk-sim-label { display: block; }
       <li>Open a Case and select "1 CT panes".
       <!-- prototype/renderer.template.html:1219-1224 --></li>
       <li>Click Mark Lesion. The status reads "Click a CT pane to place the Lesion".
-      <!-- prototype/ct_panes.js:537-547, 613-614 --></li>
+      <!-- prototype/ct_panes.js#buildToolbar, #updateLesionStatus --></li>
       <li>Click a CT pane to place the marker.
-      <!-- prototype/ct_panes.js:1508-1514, 860-864 --></li>
+      <!-- prototype/ct_panes.js#onPointerDown --></li>
       <li>Drag away from the marker to set the diameter. The status shows the diameter in mm.
-      <!-- prototype/ct_panes.js:1516, 1577-1583, 606-607 --></li>
+      <!-- prototype/ct_panes.js#onPointerDown, #onPointerMove, #updateLesionStatus --></li>
       <li>Click Confirm Lesion to save the lesion.
-      <!-- prototype/ct_panes.js:550-555, 732-775 --></li>
+      <!-- prototype/ct_panes.js#buildToolbar, #confirmLesion --></li>
       <li>Click Cancel to stop marking without saving.
-      <!-- prototype/ct_panes.js:556-562, 622-629 --></li>
+      <!-- prototype/ct_panes.js#buildToolbar, #cancelMark --></li>
     </ol>
     <p>To remove a confirmed lesion, click Clear. To redo it, click Clear, then mark and confirm again.
-    <!-- prototype/ct_panes.js:563-569, 777-810 --></p>
+    <!-- prototype/ct_panes.js#buildToolbar, #clearLesion --></p>
     <p>The read-only viewer hides the lesion box.
-    <!-- prototype/ct_panes.js:587-591 --></p>
+    <!-- prototype/ct_panes.js#buildToolbar --></p>
   </section>
 
   <section class="help-section" aria-labelledby="help-routetarget">
@@ -852,7 +852,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
       route length and place.
       <!-- prototype/renderer.template.html:5171-5195, 5298-5311 --></li>
       <li>Or click Pick a point, then click a CT-seen centreline point. The status reads "Click CT-seen centreline".
-      <!-- prototype/renderer.template.html:5327-5334; prototype/ct_panes.js:1520-1526 --></li>
+      <!-- prototype/renderer.template.html:5327-5334; prototype/ct_panes.js#onPointerDown --></li>
     </ol>
     <p>If a target already exists, the app asks you to replace it. A stored target that is no longer reachable
     is shown as stale. Choose a new target.
@@ -862,7 +862,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
   <section class="help-section" aria-labelledby="help-layers">
     <h2 id="help-layers">Layers and panels</h2>
     <p>The CT panes toolbar has these checkboxes: Airway mask, Route, Lesion, Candidates, RouteTarget and Estimated airway.
-    <!-- prototype/ct_panes.js:500-531 --></p>
+    <!-- prototype/ct_panes.js#buildToolbar --></p>
     <p>The bottom switcher has four panels:</p>
     <ol>
       <li>CT panes</li>
@@ -874,7 +874,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <!-- prototype/renderer.template.html:1219-1224, 4805-4809 --></p>
     <p>All four panels show one shared position in patient coordinates. A move in one panel moves the
     other panels with it. The blue marker shows that position on Anatomical 3D and on Topology map.
-    <!-- prototype/ct_panes.js:53-70; prototype/renderer.template.html:3811, 5342, 5819-5820 --></p>
+    <!-- prototype/ct_panes.js#mount; prototype/renderer.template.html:3811, 5342, 5819-5820 --></p>
     <p>In Anatomical 3D or Topology map, press Up or Down to move the shared position 3 mm along the
     route. In Topology map, press [ or ] to rotate the map 15 degrees.
     <!-- prototype/renderer.template.html:5570-5579 --></p>
@@ -929,7 +929,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
     In that mode the app refuses writes and hides the edit controls.
     <!-- pipeline/paths.py:56-59; app/server.py:165-174; prototype/renderer.template.html:910-912, 4983 --></p>
     <p>The read-only viewer hides the lesion box, disables target picking and does not start image generation.
-    <!-- prototype/ct_panes.js:587-591; prototype/renderer.template.html:5327, 2477 --></p>
+    <!-- prototype/ct_panes.js#buildToolbar; prototype/renderer.template.html:5327, 2477 --></p>
     <p>The desktop app opens the edit page /renderer.template.html. It shows Mark Lesion and the other edit controls.
     <!-- desktop/lib.js:150-155; desktop/main.js:742-743 --></p>
   </section>
@@ -1129,13 +1129,14 @@ async function ensureAirway() {
 function loadCtPanesScript() {
   if (window.CtPanes) return Promise.resolve();
   if (!new URLSearchParams(location.search).get("case")) return Promise.resolve();
-  return new Promise((resolve, reject) => {
+  const load = (src) => new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = "/ct_panes.js";
+    s.src = src;
     s.onload = () => resolve();
-    s.onerror = () => reject(new Error("failed to load ct_panes.js"));
+    s.onerror = () => reject(new Error(`failed to load ${src}`));
     document.head.appendChild(s);
   });
+  return load("/ct_candidates.js").then(() => load("/ct_panes.js"));
 }
 
 // Review.lobe is a LOBE_NAMES string, a mask label 1..5, or a TotalSegmentator key.

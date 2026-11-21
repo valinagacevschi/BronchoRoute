@@ -52,6 +52,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.caseref import CASE_ID_RE, CaseRef
 from app.cases import (
+    CANDIDATE_SCORE_MAX,
+    CANDIDATE_SCORE_MIN,
+    MAX_CANDIDATES,
     RECORD_KINDS,
     ReviewBlocked,
     UnknownCase,
@@ -280,28 +283,21 @@ class LesionBody(BaseModel):
         return cleaned
 
 
-class CandidateItem(BaseModel):
-    ras_mm: list[float] = Field(min_length=3, max_length=3)
-    diameter_mm: float | None = None
-    score: float | None = None
+class CandidateItem(LesionBody):
+    """A detector suggestion: a lesion shape plus a confidence score."""
 
-    @field_validator("ras_mm")
-    @classmethod
-    def finite_coords(cls, value: list[float]) -> list[float]:
-        cleaned: list[float] = []
-        for v in value:
-            try:
-                f = float(v)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("ras_mm values must be numbers") from exc
-            if not math.isfinite(f):
-                raise ValueError("ras_mm values must be finite numbers")
-            cleaned.append(f)
-        return cleaned
+    score: float | None = Field(
+        default=None,
+        ge=CANDIDATE_SCORE_MIN,
+        le=CANDIDATE_SCORE_MAX,
+        allow_inf_nan=False,
+    )
 
 
 class CandidatesBody(BaseModel):
-    candidates: list[CandidateItem] = Field(min_length=1)
+    candidates: list[CandidateItem] = Field(
+        min_length=1, max_length=MAX_CANDIDATES
+    )
     source: str = "detector"
 
 
@@ -376,6 +372,13 @@ def _validation_detail(exc: ValidationError) -> str | list[str]:
             msg = msg[len("Value error, "):]
         msgs.append(msg)
     return msgs[0] if len(msgs) == 1 else msgs
+
+
+async def _json_body(request: Request) -> object:
+    try:
+        return await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
 
 
 class SeriesConfirmBody(BaseModel):
@@ -671,12 +674,9 @@ def api_route_candidates(case_id: str):
 async def api_route_target(case_id: str, request: Request):
     """Parse body manually so NaN/inf yield a plain 422; gate runs under lock."""
     clinician = _require_clinician()
+    body = await _json_body(request)
     try:
-        body_raw = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
-    try:
-        body = RouteTargetBody.model_validate(body_raw)
+        body = RouteTargetBody.model_validate(body)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
     try:
@@ -941,20 +941,11 @@ async def api_put_lesion(case_id: str, request: Request):
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
-    try:
-        body = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+    body = await _json_body(request)
     try:
         parsed = LesionBody.model_validate(body)
     except ValidationError as exc:
-        msgs = []
-        for err in exc.errors():
-            msg = err.get("msg", "validation error")
-            if msg.startswith("Value error, "):
-                msg = msg[len("Value error, "):]
-            msgs.append(msg)
-        raise HTTPException(status_code=422, detail=msgs[0] if len(msgs) == 1 else msgs) from exc
+        raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
     try:
         return set_lesion(
             case_id, parsed.ras_mm, clinician["clinician"], parsed.diameter_mm
@@ -976,22 +967,11 @@ def api_delete_lesion(case_id: str):
 async def api_put_candidates(case_id: str, request: Request):
     """Store detector candidates. Suggestions only until one is confirmed."""
     clinician = _require_clinician()
-    try:
-        body = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+    body = await _json_body(request)
     try:
         parsed = CandidatesBody.model_validate(body)
     except ValidationError as exc:
-        msgs = []
-        for err in exc.errors():
-            msg = err.get("msg", "validation error")
-            if msg.startswith("Value error, "):
-                msg = msg[len("Value error, "):]
-            msgs.append(msg)
-        raise HTTPException(
-            status_code=422, detail=msgs[0] if len(msgs) == 1 else msgs
-        ) from exc
+        raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
     try:
         return set_candidates(
             case_id,

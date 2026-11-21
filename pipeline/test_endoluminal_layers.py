@@ -72,6 +72,17 @@ def test_missing_structure_is_skipped(tmp_path, monkeypatch):
     assert "airways" in names
 
 
+def test_all_zero_structure_is_skipped(tmp_path, monkeypatch):
+    cases, ts = _case_tree(tmp_path)
+    _save(ts / CASE / "lobes" / "heart.nii.gz", np.zeros(SHAPE, np.uint8))
+    monkeypatch.setattr(paths, "LOCAL_CASES", cases)
+    monkeypatch.setattr(paths, "TS_OUT", ts)
+    out = bw.build_case(CASE)
+    names = [layer["name"] for layer in json.loads((out / "scene.json").read_text())["layers"]]
+    assert "heart" not in names
+    assert "airways" in names
+
+
 def test_missing_airway_stops_the_build(tmp_path, monkeypatch):
     cases, ts = _case_tree(tmp_path)
     (ts / CASE / "airways.nii.gz").unlink()
