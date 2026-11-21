@@ -446,6 +446,18 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
         for distance, route_pos in zip(fs, fe)
     ]
 
+    candidates_out = []
+    block = case_record.get("candidates")
+    if isinstance(block, dict) and isinstance(block.get("items"), list):
+        for item in block["items"]:
+            if not isinstance(item, dict) or item.get("ras_mm") is None:
+                continue
+            candidates_out.append({
+                "ras_mm": [round(float(v), 3) for v in item["ras_mm"]],
+                "diameter_mm": lesion_diameter_mm(item),
+                "score": item.get("score"),
+            })
+
     lesion_out = None
     if lesion_ras is not None:
         lesion_out = {
@@ -481,6 +493,7 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
         "root": graph["root_node_id"],
         "origin_mm": [round(float(root[i]), 3) for i in range(3)],
         "lesion": lesion_out,
+        "candidates": candidates_out,
         "nodes": {str(k): {"p": rel(v["position_mm"]), "r": v["radius_mm"]}
                   for k, v in nodes.items()},
         "edges": out_edges,

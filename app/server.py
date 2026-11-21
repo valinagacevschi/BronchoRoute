@@ -57,11 +57,14 @@ from app.cases import (
     UnknownCase,
     append_record,
     case_payload,
+    clear_candidates,
     clear_lesion,
+    confirm_candidate,
     confirm_existing_series,
     list_cases,
     load_versions,
     qualifying_route_start_terminals,
+    set_candidates,
     set_lesion,
     set_route_start,
     validate_lesion_diameter,
@@ -275,6 +278,31 @@ class LesionBody(BaseModel):
                 raise ValueError("ras_mm values must be finite numbers")
             cleaned.append(f)
         return cleaned
+
+
+class CandidateItem(BaseModel):
+    ras_mm: list[float] = Field(min_length=3, max_length=3)
+    diameter_mm: float | None = None
+    score: float | None = None
+
+    @field_validator("ras_mm")
+    @classmethod
+    def finite_coords(cls, value: list[float]) -> list[float]:
+        cleaned: list[float] = []
+        for v in value:
+            try:
+                f = float(v)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("ras_mm values must be numbers") from exc
+            if not math.isfinite(f):
+                raise ValueError("ras_mm values must be finite numbers")
+            cleaned.append(f)
+        return cleaned
+
+
+class CandidatesBody(BaseModel):
+    candidates: list[CandidateItem] = Field(min_length=1)
+    source: str = "detector"
 
 
 class ImportScanBody(BaseModel):
@@ -944,6 +972,55 @@ def api_delete_lesion(case_id: str):
         raise _http_for_case(exc) from exc
 
 
+@app.put("/api/cases/{case_id}/candidates")
+async def api_put_candidates(case_id: str, request: Request):
+    """Store detector candidates. Suggestions only until one is confirmed."""
+    clinician = _require_clinician()
+    try:
+        body = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+    try:
+        parsed = CandidatesBody.model_validate(body)
+    except ValidationError as exc:
+        msgs = []
+        for err in exc.errors():
+            msg = err.get("msg", "validation error")
+            if msg.startswith("Value error, "):
+                msg = msg[len("Value error, "):]
+            msgs.append(msg)
+        raise HTTPException(
+            status_code=422, detail=msgs[0] if len(msgs) == 1 else msgs
+        ) from exc
+    try:
+        return set_candidates(
+            case_id,
+            [item.model_dump() for item in parsed.candidates],
+            parsed.source,
+            clinician["clinician"],
+        )
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.delete("/api/cases/{case_id}/candidates")
+def api_delete_candidates(case_id: str):
+    clinician = _require_clinician()
+    try:
+        return clear_candidates(case_id, clinician["clinician"])
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/candidates/{index}/confirm")
+def api_confirm_candidate(case_id: str, index: int):
+    clinician = _require_clinician()
+    try:
+        return confirm_candidate(case_id, index, clinician["clinician"])
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
 @app.get("/api/settings")
 def api_get_settings():
     return get_settings()
@@ -1132,7 +1209,10 @@ def case_web(case_id: str, name: str):
     media = "application/octet-stream"
     if name.endswith(".json"):
         media = "application/json"
-    return FileResponse(target, media_type=media)
+    # A rebuild rewrites these files under the same paths; without this the
+    # browser's heuristic cache keeps serving the previous scene.
+    return FileResponse(target, media_type=media,
+                        headers={"Cache-Control": "no-cache"})
 
 
 app.mount(

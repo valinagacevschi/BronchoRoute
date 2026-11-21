@@ -467,6 +467,93 @@ def _load_or_init_record(ref: CaseRef, path: Path) -> dict:
     raise FileNotFoundError(f"case.json not found for {ref.case_id}")
 
 
+MAX_CANDIDATES = 20
+
+
+def _clean_candidate(case_id: str, item: object) -> dict:
+    """Validate one detection candidate against the CT crop."""
+    if not isinstance(item, dict):
+        raise ValueError("candidate must be an object")
+    ras = validate_lesion_ras(case_id, item.get("ras_mm"))
+    diameter = validate_lesion_diameter(item.get("diameter_mm"))
+    score = item.get("score")
+    if score is not None:
+        try:
+            score = float(score)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("candidate score must be a number") from exc
+        if not math.isfinite(score) or score < 0 or score > 1:
+            raise ValueError("candidate score must be between 0 and 1")
+    return {"ras_mm": ras, "diameter_mm": diameter, "score": score}
+
+
+def set_candidates(
+    case_id: str,
+    items: object,
+    source: str,
+    clinician: str,
+) -> dict:
+    """Store detector candidates as suggestions; they never become the lesion."""
+    if not isinstance(items, list) or not items:
+        raise ValueError("candidates must be a non-empty list")
+    if len(items) > MAX_CANDIDATES:
+        raise ValueError(f"at most {MAX_CANDIDATES} candidates")
+    cleaned = [_clean_candidate(case_id, item) for item in items]
+    ref = CaseRef.parse(case_id)
+    path = ref.case_json
+    at = _utc_now()
+    with json_file_lock(path):
+        record = _load_or_init_record(ref, path)
+        from app.versions import note_change
+
+        note_change(record, "candidates")
+        record["candidates"] = {
+            "source": str(source or "detector"),
+            "at": at,
+            "by": clinician,
+            "items": cleaned,
+        }
+        atomic_write_json(path, record)
+        return {"candidates": record["candidates"]}
+
+
+def clear_candidates(case_id: str, clinician: str) -> dict:
+    ref = CaseRef.parse(case_id)
+    path = ref.case_json
+    with json_file_lock(path):
+        record = _load_or_init_record(ref, path)
+        if "candidates" not in record:
+            return {"candidates": None}
+        from app.versions import note_change
+
+        note_change(record, "candidates_cleared")
+        record.pop("candidates", None)
+        atomic_write_json(path, record)
+        return {"candidates": None}
+
+
+def confirm_candidate(case_id: str, index: object, clinician: str) -> dict:
+    """Promote one candidate to the confirmed lesion and drop the rest."""
+    ref = CaseRef.parse(case_id)
+    record = load_case_record(ref)
+    block = record.get("candidates")
+    items = block.get("items") if isinstance(block, dict) else None
+    if not isinstance(items, list) or not items:
+        raise ValueError("no candidates stored for this case")
+    try:
+        position = int(index)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("candidate index must be an integer") from exc
+    if position < 0 or position >= len(items):
+        raise ValueError("candidate index out of range")
+    item = items[position]
+    result = set_lesion(
+        case_id, item["ras_mm"], clinician, item.get("diameter_mm")
+    )
+    clear_candidates(case_id, clinician)
+    return result
+
+
 def set_lesion(
     case_id: str,
     ras_mm: list[float],
@@ -627,7 +714,10 @@ __all__ = [
     "append_record",
     "atomic_write_json",
     "case_payload",
+    "MAX_CANDIDATES",
+    "clear_candidates",
     "clear_lesion",
+    "confirm_candidate",
     "confirm_existing_series",
     "default_aeropath_record",
     "list_cases",
@@ -636,6 +726,7 @@ __all__ = [
     "qualifying_route_start_terminals",
     "read_case_json",
     "route_start_info",
+    "set_candidates",
     "set_lesion",
     "validate_lesion_diameter",
     "set_route_start",

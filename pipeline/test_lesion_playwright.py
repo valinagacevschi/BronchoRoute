@@ -352,3 +352,129 @@ def test_lesion_place_diameter_and_views(server):
         _shot(page, shots, "topology.png")
         assert not errors, errors
         browser.close()
+
+
+def _api_call(server: str, method: str, path: str, body=None) -> dict | None:
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{server}{path}",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method=method,
+    )
+    with urllib.request.urlopen(req, timeout=10) as res:
+        raw = res.read()
+    return json.loads(raw) if raw else None
+
+
+def test_candidates_toolbar_glyphs_and_confirm(server):
+    """Detector candidates show as dashed glyphs and promote only on confirm."""
+    sync_playwright = _playwright_or_skip()
+    shots = Path(os.environ.get("TMPDIR", "/tmp")) / "bronchoroute-33"
+    shots.mkdir(parents=True, exist_ok=True)
+    _api_call(server, "DELETE", "/api/cases/local-001/lesion")
+    _api_call(server, "DELETE", "/api/cases/local-001/candidates")
+    near = [32.0, 20.0, 32.0]
+    far = [28.0, 20.0, 28.0]
+    _api_call(server, "PUT", "/api/cases/local-001/candidates", {
+        "source": "lung_nodule_ct_detection",
+        "candidates": [
+            {"ras_mm": near, "diameter_mm": 6.0, "score": 0.91},
+            {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
+        ],
+    })
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        _open(page, server)
+        page.wait_for_function(
+            """() => {
+              const ct = window.__p3_debug && window.__p3_debug.ct && window.__p3_debug.ct();
+              return !!(ct && ct.isLoaded && ct.isLoaded());
+            }""",
+            timeout=180_000,
+        )
+        box = page.locator("#ct-candidates")
+        assert box.is_visible()
+        labels = box.locator("button").all_inner_texts()
+        assert len(labels) == 3, labels
+        assert labels[0].startswith("Candidate 1")
+        assert "0.91" in labels[0] and "6.0 mm" in labels[0]
+        assert labels[1].startswith("Candidate 2")
+        assert "0.42" in labels[1] and "9.0 mm" in labels[1]
+        assert labels[2] == "Clear candidates"
+
+        page.evaluate("() => window.__p3_debug.ct().setWorld([32, 20, 32])")
+        page.wait_for_timeout(300)
+        orange = page.evaluate(
+            """() => {
+              const ct = window.__p3_debug.ct();
+              const canvas = document.querySelector('.ct-pane-axial canvas');
+              const ctx = canvas.getContext('2d');
+              const dpr = canvas.width / canvas.clientWidth;
+              const c = ct.screenOfWorld('axial', [32, 20, 32]);
+              const edge = ct.screenOfWorld('axial', [35, 20, 32]);
+              const r = Math.hypot(edge.x - c.x, edge.y - c.y);
+              let hits = 0;
+              for (let a = 0; a < 72; a++) {
+                const ang = a * Math.PI / 36;
+                const cx = Math.round((c.x + Math.cos(ang) * r) * dpr);
+                const cy = Math.round((c.y + Math.sin(ang) * r) * dpr);
+                let found = false;
+                for (let dx = -1; dx <= 1 && !found; dx++) {
+                  for (let dy = -1; dy <= 1 && !found; dy++) {
+                    const p = ctx.getImageData(cx + dx, cy + dy, 1, 1).data;
+                    if (p[0] > 180 && p[1] > 100 && p[1] < 190 && p[2] < 100) {
+                      found = true;
+                    }
+                  }
+                }
+                if (found) hits += 1;
+              }
+              return hits;
+            }"""
+        )
+        assert orange >= 6, orange
+        _shot(page, shots, "ct-candidates.png")
+
+        box.locator("button", has_text="Candidate 2").click()
+        page.wait_for_function(
+            """() => {
+              const lesion = window.__p3_debug.ct().getLesion();
+              return !!(lesion && Math.abs(lesion.ras_mm[0] - 28) < 1);
+            }""",
+            timeout=15_000,
+        )
+        page.wait_for_selector("#ct-candidates", state="hidden")
+        with urllib.request.urlopen(
+            f"{server}/api/cases/local-001/payload?allow_review=1", timeout=10,
+        ) as res:
+            payload = json.load(res)
+        assert payload["lesion"]["ras_mm"] == pytest.approx(far, abs=1e-3)
+        assert payload["lesion"]["diameter_mm"] == pytest.approx(9.0)
+        assert payload["candidates"] == []
+
+        _api_call(server, "PUT", "/api/cases/local-001/candidates", {
+            "candidates": [{"ras_mm": near, "diameter_mm": 6.0, "score": 0.5}],
+        })
+        page.reload(wait_until="domcontentloaded", timeout=120_000)
+        page.wait_for_function(
+            """() => {
+              const ct = window.__p3_debug && window.__p3_debug.ct && window.__p3_debug.ct();
+              return !!(ct && ct.isLoaded && ct.isLoaded());
+            }""",
+            timeout=180_000,
+        )
+        box = page.locator("#ct-candidates")
+        assert box.is_visible()
+        box.locator("button", has_text="Clear candidates").click()
+        page.wait_for_selector("#ct-candidates", state="hidden")
+        with urllib.request.urlopen(
+            f"{server}/api/cases/local-001/payload?allow_review=1", timeout=10,
+        ) as res:
+            payload = json.load(res)
+        assert payload["candidates"] == []
+        assert not errors, errors
+        browser.close()
