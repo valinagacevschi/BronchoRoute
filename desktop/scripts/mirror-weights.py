@@ -29,11 +29,15 @@ VERSION = "2.18.0"
 # a packaged app that requests those ROIs falls back to a runtime download.
 # Add Dataset293_TotalSegmentator_part3_cardiac_1559subj here and to the
 # weights-v1 release before shipping those layers offline.
+# The nodule stage runs the open lung_nodules task, which loads task 913
+# weights. Pack it into the release and regenerate the manifest before
+# shipping nodule output offline.
 DATASETS = (
     "Dataset117_lung_airways_arteries_veins_282subj",
     "Dataset291_TotalSegmentator_part1_organs_1559subj",
     "Dataset297_TotalSegmentator_total_3mm_1559subj",
     "Dataset298_TotalSegmentator_total_6mm_1559subj",
+    "Dataset913_lung_nodules",
 )
 
 SKIP_NAMES = {"__MACOSX", ".DS_Store", ".verified"}
