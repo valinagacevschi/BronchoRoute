@@ -416,7 +416,7 @@ kbd {
 
 #processing-steps {
   list-style: none; margin: 40px 0 0; padding: 0;
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; max-width: 880px;
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; max-width: 1040px;
 }
 #processing-steps li {
   position: relative; padding: 0 16px 0 0; color: inherit; background: transparent; border-radius: 0;
