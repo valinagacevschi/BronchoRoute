@@ -134,12 +134,19 @@ def test_two_nodules_get_one_layer_and_mesh_each(tmp_path, monkeypatch):
 
     names = [layer["name"] for layer in scene["layers"]]
     assert names == ["lungs", "heart", "arteries", "veins", "airways",
-                     "nodule", "nodule"]
+                     "nodule", "nodule", "nodule"]
     nodules = [layer for layer in scene["layers"] if layer["name"] == "nodule"]
+    merged = [layer for layer in nodules if layer.get("id") is None]
+    # The historical merged entry stays for older viewer code.
+    assert len(merged) == 1
+    assert merged[0]["file"] == "nodule.bin"
+    assert len((out / "nodule.bin").read_bytes()) == (
+        merged[0]["vertices"] * 12 + merged[0]["triangles"] * 12)
+    per_nodule = [layer for layer in nodules if layer.get("id") is not None]
     records = _instance_records()
-    assert [layer["id"] for layer in nodules] == [1, 2]
+    assert [layer["id"] for layer in per_nodule] == [1, 2]
 
-    for layer, record in zip(nodules, records):
+    for layer, record in zip(per_nodule, records):
         assert layer["file"] == f"nodule-{layer['id']}.bin"
         assert layer["color"] == "#f2b632"
         assert layer["opacity"] == 1.0
@@ -164,7 +171,7 @@ def test_nodule_measurements_fall_back_to_the_mask(tmp_path, monkeypatch):
 
     out = bw.build_case(CASE)
     nodules = [layer for layer in json.loads((out / "scene.json").read_text())["layers"]
-               if layer["name"] == "nodule"]
+               if layer["name"] == "nodule" and layer.get("id") is not None]
 
     assert len(nodules) == 1
     assert nodules[0]["id"] == 1

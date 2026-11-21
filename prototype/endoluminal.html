@@ -108,9 +108,15 @@
       $('error').textContent = `Could not load ${BASE}. Run prepare.py, then serve this folder: python -m http.server (${e.message})`;
       throw e;
     }
+    // The merged nodule entry stays for older viewers. When per-nodule ids
+    // exist, render only those, so the merged mesh does not draw twice.
+    const noduleLayers = sceneInfo.layers.filter(L => L.name === 'nodule');
+    const hasNoduleIds = noduleLayers.some(L => L.id != null);
+    const renderLayers = sceneInfo.layers.filter(
+      L => !(L.name === 'nodule' && L.id == null && hasNoduleIds));
     const meshes = {};
     const noduleMeshes = [];
-    await Promise.all(sceneInfo.layers.map(async L => {
+    await Promise.all(renderLayers.map(async L => {
       const buf = await (await fetch(`${BASE}/${L.file}`, { cache: 'no-cache' })).arrayBuffer();
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(buf, 0, L.vertices * 3), 3));
@@ -140,7 +146,7 @@
     const insideAirMat = new THREE.MeshStandardMaterial({ color: 0xb06644, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
     const revealAirMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, side: THREE.DoubleSide,
       transparent: true, opacity: 0.3, depthWrite: false });
-    $('legend').innerHTML = sceneInfo.layers.filter(L => LABELS[L.name])
+    $('legend').innerHTML = renderLayers.filter(L => LABELS[L.name])
       .map(L => `<i style="background:${L.color}"></i>${
         L.name === 'nodule' && L.id != null ? `${LABELS[L.name]} ${L.id}` : LABELS[L.name]
       }`).join('') +
