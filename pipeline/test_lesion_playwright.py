@@ -503,6 +503,51 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         browser.close()
 
 
+def test_candidate_list_shows_measured_diameter(server):
+    """A mask measurement outside the Lesion range stays visible in the list."""
+    sync_playwright = _playwright_or_skip()
+    assert _CASE_ROOT is not None
+    _api_call(server, "DELETE", "/api/cases/local-001/lesion")
+    _api_call(server, "DELETE", "/api/cases/local-001/candidates")
+    case_path = _CASE_ROOT / "data/extracted/local/local-001/case.json"
+    case = json.loads(case_path.read_text())
+    # The nodule stage writes measured candidates straight to the Case record.
+    case["candidates"] = {
+        "source": "lung_nodules",
+        "at": "2026-01-01T00:00:00Z",
+        "by": "pipeline",
+        "items": [
+            {
+                "ras_mm": [32.0, 20.0, 32.0], "diameter_mm": 64.5,
+                "score": 0.91, "id": 7,
+            },
+            # No measured diameter: keep the 10 mm display default.
+            {"ras_mm": [28.0, 20.0, 28.0], "score": 0.42},
+        ],
+    }
+    case_path.write_text(json.dumps(case, indent=2) + "\n")
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        try:
+            _open(page, server)
+            page.wait_for_function(
+                """() => {
+                  const ct = window.__p3_debug && window.__p3_debug.ct && window.__p3_debug.ct();
+                  return !!(ct && ct.isLoaded && ct.isLoaded());
+                }""",
+                timeout=180_000,
+            )
+            labels = page.locator("#ct-candidates button").all_inner_texts()
+        finally:
+            browser.close()
+    assert len(labels) == 3, labels
+    assert "Ø 64.5 mm" in labels[0], labels[0]
+    assert "Ø 10.0 mm" in labels[1], labels[1]
+    assert labels[2] == "Clear candidates"
+
+
 def _world_of(affine, i, j, k):
     return [
         affine[a][0] * i + affine[a][1] * j + affine[a][2] * k + affine[a][3]

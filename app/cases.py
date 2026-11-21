@@ -434,6 +434,23 @@ def validate_lesion_diameter(diameter_mm: object) -> float:
     return value
 
 
+def _candidate_diameter_for_lesion(diameter_mm: object) -> float:
+    """Clamp a measured candidate to the Lesion contract.
+
+    A mask can measure a candidate above 60 mm. The stored candidate keeps its
+    measured value; only the confirmed Lesion takes the nearest allowed size.
+    """
+    if isinstance(diameter_mm, bool):
+        return validate_lesion_diameter(diameter_mm)
+    try:
+        measured = float(diameter_mm)
+    except (TypeError, ValueError):
+        return validate_lesion_diameter(diameter_mm)
+    if not math.isfinite(measured):
+        return validate_lesion_diameter(diameter_mm)
+    return validate_lesion_diameter(min(60.0, max(2.0, measured)))
+
+
 def validate_lesion_ras(case_id: str, ras_mm: object) -> list[float]:
     if not isinstance(ras_mm, (list, tuple)) or len(ras_mm) != 3:
         raise ValueError("ras_mm must be a length-3 list")
@@ -639,7 +656,9 @@ def confirm_candidate(case_id: str, index: object, clinician: str) -> dict:
             raise ValueError("candidate index out of range")
         item = items[position]
         coords = validate_lesion_ras(case_id, item["ras_mm"])
-        diameter = validate_lesion_diameter(item.get("diameter_mm"))
+        # Keep the candidate's measured value; the Lesion takes the nearest size
+        # inside its 2–60 mm contract.
+        diameter = _candidate_diameter_for_lesion(item.get("diameter_mm"))
         at = _utc_now()
         lesion = {
             "ras_mm": coords,

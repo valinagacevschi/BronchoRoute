@@ -740,6 +740,41 @@ def test_candidates_roundtrip_and_confirm(client, harness):
     client.delete("/api/cases/local-001/candidates")
 
 
+def test_confirm_overdiameter_candidate_clamps_lesion(client, harness):
+    """A mask candidate above 60 mm confirms as a valid Lesion, unrewritten."""
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    shape = meta["shape"]
+    ijk = np.array([shape[0] * 0.45, shape[1] * 0.45, shape[2] * 0.45, 1.0])
+    near = (affine @ ijk)[:3].tolist()
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    case = json.loads(harness["case"].read_text())
+    case["records"] = [r for r in case.get("records", []) if r["kind"] != "lesion_confirmed"]
+    case.pop("lesion", None)
+    # The nodule stage writes measured candidates straight to the Case record.
+    case["candidates"] = {
+        "source": "lung_nodules",
+        "at": "2026-01-01T00:00:00Z",
+        "by": "pipeline",
+        "items": [{"ras_mm": near, "diameter_mm": 64.5, "score": 0.91, "id": 7}],
+    }
+    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+    assert (
+        json.loads(harness["case"].read_text())["candidates"]["items"][0]["diameter_mm"]
+        == pytest.approx(64.5)
+    )
+
+    chosen = client.post("/api/cases/local-001/candidates/0/confirm")
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.json()["lesion"]["diameter_mm"] == pytest.approx(60.0)
+
+    on_disk = json.loads(harness["case"].read_text())
+    assert on_disk["lesion"]["diameter_mm"] == pytest.approx(60.0)
+    assert on_disk["records"][-1]["data"]["diameter_mm"] == pytest.approx(60.0)
+    assert "candidates" not in on_disk
+
+
 def test_candidates_carry_nodule_measurements(client, harness):
     """Mask measurements and the nodule id survive; box-only keeps detector diameter."""
     meta = client.get("/api/cases/local-001/ct/meta").json()
