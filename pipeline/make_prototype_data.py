@@ -458,6 +458,10 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
                 "score": item.get("score"),
                 "id": item.get("id"),
                 "volume_mm3": item.get("volume_mm3"),
+                "lobe": item.get("lobe"),
+                "to_airway_mm": item.get("to_airway_mm"),
+                "size_mm": item.get("size_mm"),
+                "review": bool(item.get("review", False)),
             })
 
     lesion_out = None

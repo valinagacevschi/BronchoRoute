@@ -523,6 +523,33 @@ def _clean_volume(value: object) -> float | None:
     return number
 
 
+def _clean_box_size(value: object) -> list[float] | None:
+    """Detector box size in mm, or None when the proposal did not carry one."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError("size_mm must be a length-3 list")
+    try:
+        size = [float(v) for v in value]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("size_mm values must be numbers") from exc
+    if not all(math.isfinite(v) and v > 0 for v in size):
+        raise ValueError("size_mm values must be positive finite numbers")
+    return size
+
+
+def _clean_to_airway(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("to_airway_mm must be a number") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("to_airway_mm must be a non-negative number")
+    return number
+
+
 def _clean_candidate(case_id: str, item: object) -> dict:
     """Validate one detection candidate against the CT crop."""
     if not isinstance(item, dict):
@@ -542,12 +569,19 @@ def _clean_candidate(case_id: str, item: object) -> dict:
                 f"candidate score must be between {CANDIDATE_SCORE_MIN:g} and "
                 f"{CANDIDATE_SCORE_MAX:g}"
             )
+    lobe = item.get("lobe")
+    if lobe is not None and not isinstance(lobe, str):
+        raise ValueError("candidate lobe must be a string")
     return {
         "ras_mm": ras,
         "diameter_mm": diameter,
         "score": score,
         "id": _clean_nodule_id(item.get("id")),
         "volume_mm3": _clean_volume(item.get("volume_mm3")),
+        "lobe": lobe,
+        "to_airway_mm": _clean_to_airway(item.get("to_airway_mm")),
+        "size_mm": _clean_box_size(item.get("size_mm")),
+        "review": bool(item.get("review", False)),
     }
 
 

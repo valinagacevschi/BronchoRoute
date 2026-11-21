@@ -197,6 +197,7 @@ def apply_to_case(result: dict, case_id: str, api: str, min_score: float) -> Non
         {
             "ras_mm": d["ras_mm"],
             "diameter_mm": min(60.0, max(2.0, d["diameter_mm"])),
+            "size_mm": d["size_mm"],
             "score": d["score"],
             **({"id": int(d["id"])} if d.get("id") is not None else {}),
             **(
