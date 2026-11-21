@@ -47,6 +47,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.caseref import CASE_ID_RE, CaseRef
@@ -491,7 +492,7 @@ async def api_import_upload(request: Request):
                 if total > MAX_ARCHIVE_BYTES:
                     raise HTTPException(status_code=413, detail="Archive size limit exceeded")
                 target.write(chunk)
-        return scan_series(filename)
+        return await run_in_threadpool(scan_series, filename)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
