@@ -84,6 +84,11 @@
     camera.add(headLight);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
+    // Match Anatomical 3D: drag moves the view, Shift-drag orbits, the wheel zooms.
+    // OrbitControls swaps pan and rotate while Shift is held, so LEFT stays PAN.
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN,
+    };
     const mini = new THREE.Scene();
     mini.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2));
     const miniCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -2000, 2000);

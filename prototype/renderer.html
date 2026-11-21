@@ -872,6 +872,38 @@ body.walkthrough-active .walk-sim-label { display: block; }
     </ol>
     <p>Press 1 to 4 to switch panels.
     <!-- prototype/renderer.template.html:1219-1224, 4805-4809 --></p>
+    <p>All four panels show one shared position in patient coordinates. A move in one panel moves the
+    other panels with it. The blue marker shows that position on Anatomical 3D and on Topology map.
+    <!-- prototype/ct_panes.js:53-70; prototype/renderer.template.html:3811, 5342, 5819-5820 --></p>
+    <p>In Anatomical 3D or Topology map, press Up or Down to move the shared position 3 mm along the
+    route. In Topology map, press [ or ] to rotate the map 15 degrees.
+    <!-- prototype/renderer.template.html:5570-5579 --></p>
+    <p>Point at a RouteTarget card to highlight that route in the CT panes and move the shared
+    position to the card's target.
+    <!-- prototype/renderer.template.html:5434-5450, 5974 --></p>
+  </section>
+
+  <section class="help-section" aria-labelledby="help-endoluminal">
+    <h2 id="help-endoluminal">Endoluminal 3D view</h2>
+    <p>Endoluminal shows the airway as a 3D surface. Click the view, then press V to switch between
+    inside and outside.
+    <!-- prototype/endoluminal.html:383 --></p>
+    <p>Inside, you fly through the lumen. Press Up or Down to move, hold Shift for faster movement,
+    press Left or Right to roll, and press Space to play or pause. Press T or R to go back to the
+    start.
+    <!-- prototype/endoluminal.html:380-386; prototype/renderer.template.html:5591-5606 --></p>
+    <p>Outside, the view shows the whole chest, upright and fitted to the window. The airway is white,
+    the arteries are blue, the veins are red, and the lungs are translucent. The heart, aorta and
+    pulmonary vein show when the case has those masks. The route is mint green. Drag to move the view, hold Shift and drag to rotate, and
+    scroll to zoom.
+    <!-- prototype/endoluminal.html:85-99, 330-347; pipeline/build_endoluminal_web.py:35-55 --></p>
+    <p>The bottom right shows the route distance in mm, the branch points passed and the airway
+    width. At the route end, a label shows the gap from the route end to the target.
+    <!-- prototype/endoluminal.html:414-430 --></p>
+    <p>In the outside view, click the nodule or a vessel to set the route target.
+    <!-- prototype/endoluminal.html:390-402 --></p>
+    <p>Press 1 to 4 while the 3D view has focus to switch panels.
+    <!-- prototype/renderer.template.html:5452-5457 --></p>
   </section>
 
   <section class="help-section" aria-labelledby="help-open-case">
