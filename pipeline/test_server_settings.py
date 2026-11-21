@@ -433,7 +433,13 @@ def test_job_commands_use_current_python(harness):
     assert [cmd[:2] for cmd in commands] == [
         [sys.executable, "run_totalsegmentator.py"],
         [sys.executable, "build_graph.py"],
+        [sys.executable, "run_nodules.py"],
     ]
+    nodule = commands[2]
+    assert nodule[nodule.index("--case-json") + 1] == str(
+        CaseRef.parse("local-001").case_json
+    )
+    assert nodule[nodule.index("--graph") + 1].endswith("local-001_graph.json")
 
 
 def test_job_conflict_across_cases(client, harness, monkeypatch):

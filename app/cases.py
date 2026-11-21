@@ -434,6 +434,23 @@ def validate_lesion_diameter(diameter_mm: object) -> float:
     return value
 
 
+def _candidate_diameter_for_lesion(diameter_mm: object) -> float:
+    """Clamp a measured candidate to the Lesion contract.
+
+    A mask can measure a candidate above 60 mm. The stored candidate keeps its
+    measured value; only the confirmed Lesion takes the nearest allowed size.
+    """
+    if isinstance(diameter_mm, bool):
+        return validate_lesion_diameter(diameter_mm)
+    try:
+        measured = float(diameter_mm)
+    except (TypeError, ValueError):
+        return validate_lesion_diameter(diameter_mm)
+    if not math.isfinite(measured):
+        return validate_lesion_diameter(diameter_mm)
+    return validate_lesion_diameter(min(60.0, max(2.0, measured)))
+
+
 def validate_lesion_ras(case_id: str, ras_mm: object) -> list[float]:
     if not isinstance(ras_mm, (list, tuple)) or len(ras_mm) != 3:
         raise ValueError("ras_mm must be a length-3 list")
@@ -491,6 +508,65 @@ CANDIDATE_SCORE_MIN = 0.0
 CANDIDATE_SCORE_MAX = 1.0
 
 
+def _clean_nodule_id(value: object) -> int | None:
+    """Stable nodule id from the instance record, or None for a box-only candidate."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("candidate id must be an integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("candidate id must be an integer") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("candidate id must be an integer")
+    if number < 1:
+        raise ValueError("candidate id must be a positive integer")
+    return number
+
+
+def _clean_volume(value: object) -> float | None:
+    """Mask-derived volume in mm3, or None when the candidate has no mask."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("volume_mm3 must be a number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("volume_mm3 must be a number") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("volume_mm3 must be a non-negative number")
+    return number
+
+
+def _clean_box_size(value: object) -> list[float] | None:
+    """Detector box size in mm, or None when the proposal did not carry one."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError("size_mm must be a length-3 list")
+    try:
+        size = [float(v) for v in value]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("size_mm values must be numbers") from exc
+    if not all(math.isfinite(v) and v > 0 for v in size):
+        raise ValueError("size_mm values must be positive finite numbers")
+    return size
+
+
+def _clean_to_airway(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("to_airway_mm must be a number") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("to_airway_mm must be a non-negative number")
+    return number
+
+
 def _clean_candidate(case_id: str, item: object) -> dict:
     """Validate one detection candidate against the CT crop."""
     if not isinstance(item, dict):
@@ -510,7 +586,20 @@ def _clean_candidate(case_id: str, item: object) -> dict:
                 f"candidate score must be between {CANDIDATE_SCORE_MIN:g} and "
                 f"{CANDIDATE_SCORE_MAX:g}"
             )
-    return {"ras_mm": ras, "diameter_mm": diameter, "score": score}
+    lobe = item.get("lobe")
+    if lobe is not None and not isinstance(lobe, str):
+        raise ValueError("candidate lobe must be a string")
+    return {
+        "ras_mm": ras,
+        "diameter_mm": diameter,
+        "score": score,
+        "id": _clean_nodule_id(item.get("id")),
+        "volume_mm3": _clean_volume(item.get("volume_mm3")),
+        "lobe": lobe,
+        "to_airway_mm": _clean_to_airway(item.get("to_airway_mm")),
+        "size_mm": _clean_box_size(item.get("size_mm")),
+        "review": bool(item.get("review", False)),
+    }
 
 
 def set_candidates(
@@ -567,7 +656,9 @@ def confirm_candidate(case_id: str, index: object, clinician: str) -> dict:
             raise ValueError("candidate index out of range")
         item = items[position]
         coords = validate_lesion_ras(case_id, item["ras_mm"])
-        diameter = validate_lesion_diameter(item.get("diameter_mm"))
+        # Keep the candidate's measured value; the Lesion takes the nearest size
+        # inside its 2–60 mm contract.
+        diameter = _candidate_diameter_for_lesion(item.get("diameter_mm"))
         at = _utc_now()
         lesion = {
             "ras_mm": coords,

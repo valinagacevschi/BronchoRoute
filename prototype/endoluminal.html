@@ -105,8 +105,15 @@
       $('error').textContent = `Could not load ${BASE}. Run prepare.py, then serve this folder: python -m http.server (${e.message})`;
       throw e;
     }
+    // The merged nodule entry stays for older viewers. When per-nodule ids
+    // exist, render only those, so the merged mesh does not draw twice.
+    const noduleLayers = sceneInfo.layers.filter(L => L.name === 'nodule');
+    const hasNoduleIds = noduleLayers.some(L => L.id != null);
+    const renderLayers = sceneInfo.layers.filter(
+      L => !(L.name === 'nodule' && L.id == null && hasNoduleIds));
     const meshes = {};
-    await Promise.all(sceneInfo.layers.map(async L => {
+    const noduleMeshes = [];
+    await Promise.all(renderLayers.map(async L => {
       const buf = await (await fetch(`${BASE}/${L.file}`, { cache: 'no-cache' })).arrayBuffer();
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(buf, 0, L.vertices * 3), 3));
@@ -120,23 +127,32 @@
       const m = new THREE.Mesh(geo, mat);
       m.name = L.name;
       m.userData.baseOpacity = L.opacity;
+      m.userData.isNodule = L.name === 'nodule';
+      m.userData.noduleId = L.id == null ? null : L.id;
       m.renderOrder = glass ? 10 : 0;
       world.add(m);
-      meshes[L.name] = m;
+      // Nodule entries share the layer name, so the id keeps them apart.
+      meshes[L.id == null ? L.name : `${L.name}-${L.id}`] = m;
+      if (m.userData.isNodule) noduleMeshes.push(m);
     }));
+    noduleMeshes.sort((a, b) =>
+      (a.userData.noduleId ?? 0) - (b.userData.noduleId ?? 0));
+    window.__endoDebug = { meshes, noduleMeshes };
     const airways = meshes.airways;
     const outsideAirMat = airways.material;
     const insideAirMat = new THREE.MeshStandardMaterial({ color: 0xb06644, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
     const revealAirMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, side: THREE.DoubleSide,
       transparent: true, opacity: 0.3, depthWrite: false });
-    $('legend').innerHTML = sceneInfo.layers.filter(L => LABELS[L.name])
-      .map(L => `<i style="background:${L.color}"></i>${LABELS[L.name]}`).join('') +
+    $('legend').innerHTML = renderLayers.filter(L => LABELS[L.name])
+      .map(L => `<i style="background:${L.color}"></i>${
+        L.name === 'nodule' && L.id != null ? `${LABELS[L.name]} ${L.id}` : LABELS[L.name]
+      }`).join('') +
       `<i style="background:#63e6be"></i>route`;
 
     // minimap: airway tree from the front
     const miniAir = new THREE.Mesh(airways.geometry, new THREE.MeshLambertMaterial({ color: 0x8a8f99 }));
     mini.add(miniAir);
-    if (meshes.nodule) mini.add(new THREE.Mesh(meshes.nodule.geometry, new THREE.MeshBasicMaterial({ color: 0xf2b632 })));
+    for (const m of noduleMeshes) mini.add(new THREE.Mesh(m.geometry, new THREE.MeshBasicMaterial({ color: 0xf2b632 })));
     airways.geometry.computeBoundingBox();
     {
       const b = airways.geometry.boundingBox, c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3());
@@ -357,7 +373,7 @@
       setInside(false);
       reveal = true;
       airways.material = revealAirMat;
-      for (const [n, m] of Object.entries(meshes)) m.visible = n === 'airways' || n === 'nodule';
+      for (const [n, m] of Object.entries(meshes)) m.visible = n === 'airways' || m.userData.isNodule;
       routeGroup.children[0].visible = false; // wide glow tube; keep the core line and gap line
       marker.visible = false;
       $('mini').style.display = 'block';
@@ -395,11 +411,13 @@
       const pickable = Object.values(meshes).filter(m => m.visible && m.userData.baseOpacity >= 0.5);
       const hit = ray.intersectObjects(pickable, false)[0];
       if (!hit) return;
-      if (hit.object.name === 'nodule') setTarget(noduleTargets(), 'the nodule');
-      else setTarget([hit.point.clone()], `the clicked point (${hit.object.name})`);
+      if (hit.object.userData.isNodule) {
+        const id = hit.object.userData.noduleId;
+        setTarget(noduleTargets(hit.object), id == null ? 'the nodule' : `nodule ${id}`);
+      } else setTarget([hit.point.clone()], `the clicked point (${hit.object.name})`);
     });
-    function noduleTargets() {
-      const a = meshes.nodule.geometry.attributes.position, out = [];
+    function noduleTargets(mesh) {
+      const a = mesh.geometry.attributes.position, out = [];
       for (let i = 0; i < a.count; i++) out.push(new THREE.Vector3().fromBufferAttribute(a, i));
       return out;
     }
@@ -481,10 +499,10 @@ airway ${w.toFixed(1)} mm wide`;
           // while travelling, fade everything but the airways and the target so the route stays visible
           const travelling = progress > 0;
           for (const [n, mesh] of Object.entries(meshes)) {
-            if (n === 'nodule') { // keep the target visible through the vessels while travelling
+            if (mesh.userData.isNodule) { // keep the target visible through the vessels while travelling
               mesh.material.depthTest = !travelling; mesh.renderOrder = travelling ? 15 : 0;
             }
-            if (n === 'airways' || n === 'nodule' || n === 'lungs') continue;
+            if (n === 'airways' || mesh.userData.isNodule || n === 'lungs') continue;
             const m = mesh.material, base = mesh.userData.baseOpacity;
             m.transparent = travelling || base < 1;
             mesh.visible = !travelling || n in FADE; // heart and aorta would block the view
@@ -700,7 +718,10 @@ airway ${w.toFixed(1)} mm wide`;
 
     // start with the whole chest in view
     fitOutsideCamera();
-    if (meshes.nodule) setTarget(noduleTargets(), 'the nodule', false);
+    if (noduleMeshes.length) {
+      const target = noduleMeshes[0], id = target.userData.noduleId;
+      setTarget(noduleTargets(target), id == null ? 'the nodule' : `nodule ${id}`, false);
+    }
     if (A1 && !route) {
       // No nodule mask: fly to the farthest airway leaf so the inside view has a route.
       let best = -1, bestD = -1;

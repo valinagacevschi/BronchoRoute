@@ -1,3 +1,4 @@
+# Changes: nodule components get one layer and one unsmoothed mesh each.
 # Changes: context layers (lungs, vessels, heart) are built when masks exist and skipped when absent.
 """Synthetic masks for the multi-layer scene build."""
 from __future__ import annotations
@@ -90,3 +91,104 @@ def test_missing_airway_stops_the_build(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "TS_OUT", ts)
     with pytest.raises(SystemExit):
         bw.build_case(CASE)
+
+
+def _nodule_mask(tmp_path: Path, boxes) -> tuple[Path, Path]:
+    cases, ts = _case_tree(tmp_path)
+    mask = np.zeros(SHAPE, dtype=np.uint8)
+    for lo, hi in boxes:
+        mask[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] = 1
+    _save(ts / CASE / "nodule.nii.gz", mask)
+    return cases, ts
+
+
+def _instance_records() -> list[dict]:
+    return [
+        {"id": 1, "center_ras_mm": [6.0, 6.0, 6.0], "volume_mm3": 125.0,
+         "diameter_mm": 6.2, "axial_diameter_mm": 5.0,
+         "lobe": "lung_upper_lobe_left", "to_airway_mm": 4.5,
+         "score": 0.87, "match": "mask_and_box"},
+        {"id": 2, "center_ras_mm": [32.0, 26.0, 26.0], "volume_mm3": 125.0,
+         "diameter_mm": 6.4, "axial_diameter_mm": 5.2,
+         "lobe": "lung_lower_lobe_right", "to_airway_mm": 7.5,
+         "score": None, "match": "mask_only"},
+    ]
+
+
+def _mesh_span(path: Path, layer: dict) -> np.ndarray:
+    raw = np.frombuffer(path.read_bytes(), dtype=np.float32)
+    vertices = raw[:layer["vertices"] * 3].reshape(-1, 3)
+    return vertices.max(axis=0) - vertices.min(axis=0)
+
+
+def test_two_nodules_get_one_layer_and_mesh_each(tmp_path, monkeypatch):
+    cases, ts = _nodule_mask(tmp_path, [((4, 4, 4), (9, 9, 9)),
+                                        ((30, 24, 24), (35, 29, 29))])
+    (ts / CASE / "nodule_instances.json").write_text(
+        json.dumps({"nodules": _instance_records()}))
+    monkeypatch.setattr(paths, "LOCAL_CASES", cases)
+    monkeypatch.setattr(paths, "TS_OUT", ts)
+
+    out = bw.build_case(CASE)
+    scene = json.loads((out / "scene.json").read_text())
+
+    names = [layer["name"] for layer in scene["layers"]]
+    assert names == ["lungs", "heart", "arteries", "veins", "airways",
+                     "nodule", "nodule", "nodule"]
+    nodules = [layer for layer in scene["layers"] if layer["name"] == "nodule"]
+    merged = [layer for layer in nodules if layer.get("id") is None]
+    # The historical merged entry stays for older viewer code.
+    assert len(merged) == 1
+    assert merged[0]["file"] == "nodule.bin"
+    assert len((out / "nodule.bin").read_bytes()) == (
+        merged[0]["vertices"] * 12 + merged[0]["triangles"] * 12)
+    per_nodule = [layer for layer in nodules if layer.get("id") is not None]
+    records = _instance_records()
+    assert [layer["id"] for layer in per_nodule] == [1, 2]
+
+    for layer, record in zip(per_nodule, records):
+        assert layer["file"] == f"nodule-{layer['id']}.bin"
+        assert layer["color"] == "#f2b632"
+        assert layer["opacity"] == 1.0
+        assert layer["volume_mm3"] == record["volume_mm3"]
+        assert layer["diameter_mm"] == record["diameter_mm"]
+        assert layer["score"] == record["score"]
+        assert layer["lobe"] == record["lobe"]
+        assert layer["to_airway_mm"] == record["to_airway_mm"]
+        assert layer["match"] == record["match"]
+        assert len(layer["center_mm"]) == 3
+        assert layer["vertices"] > 0 and layer["triangles"] > 0
+        data = (out / layer["file"]).read_bytes()
+        assert len(data) == layer["vertices"] * 12 + layer["triangles"] * 12
+        # Each mesh is built from its own component crop, not the merged mask.
+        assert _mesh_span(out / layer["file"], layer).max() < 20.0
+
+
+def test_nodule_measurements_fall_back_to_the_mask(tmp_path, monkeypatch):
+    cases, ts = _nodule_mask(tmp_path, [((4, 4, 4), (9, 9, 9))])
+    monkeypatch.setattr(paths, "LOCAL_CASES", cases)
+    monkeypatch.setattr(paths, "TS_OUT", ts)
+
+    out = bw.build_case(CASE)
+    nodules = [layer for layer in json.loads((out / "scene.json").read_text())["layers"]
+               if layer["name"] == "nodule" and layer.get("id") is not None]
+
+    assert len(nodules) == 1
+    assert nodules[0]["id"] == 1
+    assert nodules[0]["volume_mm3"] == 125.0
+    assert nodules[0]["diameter_mm"] > 0.0
+    assert nodules[0]["score"] is None
+    assert nodules[0]["match"] is None
+
+
+def test_no_nodule_mask_adds_no_scene_entry(tmp_path, monkeypatch):
+    cases, ts = _case_tree(tmp_path)
+    monkeypatch.setattr(paths, "LOCAL_CASES", cases)
+    monkeypatch.setattr(paths, "TS_OUT", ts)
+
+    out = bw.build_case(CASE)
+    scene = json.loads((out / "scene.json").read_text())
+
+    assert [layer["name"] for layer in scene["layers"]] == [
+        "lungs", "heart", "arteries", "veins", "airways"]
+    assert not list(out.glob("nodule-*.bin"))

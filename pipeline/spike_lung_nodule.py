@@ -186,12 +186,24 @@ def run_case(ct: Path, detector, prep, post, device: torch.device) -> dict:
 
 
 def apply_to_case(result: dict, case_id: str, api: str, min_score: float) -> None:
-    """Push detections into a case record as candidates for clinician review."""
+    """Push detections into a case record as candidates for clinician review.
+
+    A detection that came from a nodule instance carries its stable ``id`` and
+    mask-derived ``volume_mm3``. The viewer links the contour and the 3D mesh by
+    that id, so it must travel with the candidate and not be rebuilt from the
+    list position.
+    """
     items = [
         {
             "ras_mm": d["ras_mm"],
             "diameter_mm": min(60.0, max(2.0, d["diameter_mm"])),
+            "size_mm": d["size_mm"],
             "score": d["score"],
+            **({"id": int(d["id"])} if d.get("id") is not None else {}),
+            **(
+                {"volume_mm3": float(d["volume_mm3"])}
+                if d.get("volume_mm3") is not None else {}
+            ),
         }
         for d in result["detections"] if d["score"] >= min_score
     ][:20]

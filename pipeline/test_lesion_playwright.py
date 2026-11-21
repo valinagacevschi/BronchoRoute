@@ -1,3 +1,4 @@
+# Changes: axial nodule contours replace the candidate circle on their own slice.
 # Changes: stamp the synthetic Case with the current pipeline version.
 # Changes: place a Lesion in the coronal pane and check CT, anatomical, and topology.
 """Lesion geometry and a real-click placement on a synthetic Case."""
@@ -70,9 +71,14 @@ def _seed(root: Path) -> None:
     _stamp_pipeline_version(paths["case"])
 
 
+_CASE_ROOT: Path | None = None
+
+
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
+    global _CASE_ROOT
     root = tmp_path_factory.mktemp("lesion33")
+    _CASE_ROOT = root
     _seed(root)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -379,7 +385,12 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
     _api_call(server, "PUT", "/api/cases/local-001/candidates", {
         "source": "lung_nodule_ct_detection",
         "candidates": [
-            {"ras_mm": near, "diameter_mm": 6.0, "score": 0.91},
+            {
+                "ras_mm": near, "diameter_mm": 6.0, "score": 0.91,
+                "id": 7, "volume_mm3": 113.1,
+                "lobe": "lung_upper_lobe_left", "to_airway_mm": 4.5,
+                "size_mm": [7.0, 6.0, 5.0],
+            },
             {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
         ],
     })
@@ -398,13 +409,28 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         )
         box = page.locator("#ct-candidates")
         assert box.is_visible()
-        labels = box.locator("button").all_inner_texts()
-        assert len(labels) == 3, labels
+        assert "Model output" in box.inner_text()
+        labels = box.locator(".ct-candidate-confirm").all_inner_texts()
+        assert len(labels) == 2, labels
         assert labels[0].startswith("Candidate 1")
         assert "0.91" in labels[0] and "6.0 mm" in labels[0]
+        assert "113.1 mm³" in labels[0]
+        assert "id 7" in labels[0]
+        assert "lung_upper_lobe_left" in labels[0]
+        assert "4.5 mm to airway" in labels[0]
+        # The list says candidate, not nodule: the glossary term is
+        # "Nodule candidate", and the id keeps the stable link.
+        assert "nodule" not in labels[0].lower()
+        assert box.locator(".ct-candidate-confirm").nth(0).get_attribute("data-nodule-id") == "7"
         assert labels[1].startswith("Candidate 2")
         assert "0.42" in labels[1] and "9.0 mm" in labels[1]
-        assert labels[2] == "Clear candidates"
+        assert "mm³" not in labels[1]
+        assert "to airway" not in labels[1]
+        assert box.locator(".ct-candidate-confirm").nth(1).get_attribute("data-nodule-id") is None
+        assert box.locator(".ct-candidate-goto").all_inner_texts() == ["Go to", "Go to"]
+        assert box.get_by_role("button", name="Go to candidate 1").is_visible()
+        assert box.get_by_role("button", name="Go to candidate 2").is_visible()
+        assert box.locator("button", has_text="Clear candidates").count() == 1
 
         page.evaluate("() => window.__p3_debug.ct().setWorld([32, 20, 32])")
         page.wait_for_timeout(300)
@@ -478,3 +504,281 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         assert payload["candidates"] == []
         assert not errors, errors
         browser.close()
+
+
+def test_candidate_goto_moves_ct_without_confirm(server):
+    """Go to moves the shared CT position without confirming or clearing."""
+    sync_playwright = _playwright_or_skip()
+    _api_call(server, "DELETE", "/api/cases/local-001/lesion")
+    _api_call(server, "DELETE", "/api/cases/local-001/candidates")
+    near = [32.0, 20.0, 32.0]
+    far = [28.0, 20.0, 28.0]
+    _api_call(server, "PUT", "/api/cases/local-001/candidates", {
+        "candidates": [
+            {"ras_mm": near, "diameter_mm": 6.0, "score": 0.91, "id": 7},
+            {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
+        ],
+    })
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        errors = []
+        requests = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("request", lambda request: requests.append(request.url))
+        _open(page, server)
+        page.wait_for_function(
+            """() => {
+              const ct = window.__p3_debug && window.__p3_debug.ct && window.__p3_debug.ct();
+              return !!(ct && ct.isLoaded && ct.isLoaded());
+            }""",
+            timeout=180_000,
+        )
+        page.evaluate("() => window.__p3_debug.ct().setWorld([32, 20, 32])")
+        page.wait_for_function(
+            "() => window.__p3_debug.ct().getSlices().axial === 32",
+            timeout=15_000,
+        )
+        box = page.locator("#ct-candidates")
+        assert box.is_visible()
+        box.get_by_role("button", name="Go to candidate 2").click()
+        page.wait_for_function(
+            "() => window.__p3_debug.ct().getSlices().axial === 28",
+            timeout=15_000,
+        )
+        crosshair = page.evaluate("() => window.__p3_debug.ct().getCrosshair()")
+        assert crosshair == pytest.approx(far)
+        assert page.evaluate("() => window.__p3_debug.sharedPosSource()") == "candidate"
+        # Go to is read-only: the list stays and nothing is confirmed.
+        assert box.is_visible()
+        assert box.get_by_role("button", name="Go to candidate 1").is_visible()
+        assert box.get_by_role("button", name="Go to candidate 2").is_visible()
+        assert not any("/confirm" in url for url in requests), requests
+        with urllib.request.urlopen(
+            f"{server}/api/cases/local-001/payload?allow_review=1", timeout=10,
+        ) as res:
+            payload = json.load(res)
+        assert payload.get("lesion") is None
+        assert len(payload["candidates"]) == 2
+        assert not errors, errors
+        browser.close()
+
+
+def test_candidate_list_shows_measured_diameter(server):
+    """A mask measurement outside the Lesion range stays visible in the list."""
+    sync_playwright = _playwright_or_skip()
+    assert _CASE_ROOT is not None
+    _api_call(server, "DELETE", "/api/cases/local-001/lesion")
+    _api_call(server, "DELETE", "/api/cases/local-001/candidates")
+    case_path = _CASE_ROOT / "data/extracted/local/local-001/case.json"
+    case = json.loads(case_path.read_text())
+    # The nodule stage writes measured candidates straight to the Case record.
+    case["candidates"] = {
+        "source": "lung_nodules",
+        "at": "2026-01-01T00:00:00Z",
+        "by": "pipeline",
+        "items": [
+            {
+                "ras_mm": [32.0, 20.0, 32.0], "diameter_mm": 64.5,
+                "score": 0.91, "id": 7,
+            },
+            # No measured diameter: keep the 10 mm display default.
+            {"ras_mm": [28.0, 20.0, 28.0], "score": 0.42},
+        ],
+    }
+    case_path.write_text(json.dumps(case, indent=2) + "\n")
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        try:
+            _open(page, server)
+            page.wait_for_function(
+                """() => {
+                  const ct = window.__p3_debug && window.__p3_debug.ct && window.__p3_debug.ct();
+                  return !!(ct && ct.isLoaded && ct.isLoaded());
+                }""",
+                timeout=180_000,
+            )
+            labels = page.locator("#ct-candidates .ct-candidate-confirm").all_inner_texts()
+        finally:
+            browser.close()
+    assert len(labels) == 2, labels
+    assert "Ø 64.5 mm" in labels[0], labels[0]
+    assert "Ø 10.0 mm" in labels[1], labels[1]
+
+
+def _world_of(affine, i, j, k):
+    return [
+        affine[a][0] * i + affine[a][1] * j + affine[a][2] * k + affine[a][3]
+        for a in range(3)
+    ]
+
+
+def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
+    """A contour follows the candidate's stable id, not its list position."""
+    sync_playwright = _playwright_or_skip()
+    assert _CASE_ROOT is not None
+    _api_call(server, "DELETE", "/api/cases/local-001/lesion")
+    _api_call(server, "DELETE", "/api/cases/local-001/candidates")
+
+    meta = _api_call(server, "GET", "/api/cases/local-001/ct/meta")
+    shape = meta["shape"]
+    affine = meta["affine"]
+    offset = meta.get("crop_offset_voxels") or [0, 0, 0]
+    cx, cy, ck = shape[0] // 2, shape[1] // 2, shape[2] // 2
+    reach = 3
+    contour_world = _world_of(affine, cx + 0.5, cy + 0.5, ck + 0.5)
+    box_world = _world_of(affine, cx + 12.5, cy + 0.5, ck + 0.5)
+    null_world = _world_of(affine, cx - 12.5, cy + 0.5, ck + 0.5)
+    far_world = _world_of(affine, cx + 0.5, cy + 12.5, ck + 0.5)
+
+    def square(origin_x, origin_y):
+        return [
+            [origin_x - reach + offset[0], origin_y - reach + offset[1]],
+            [origin_x + reach + offset[0], origin_y - reach + offset[1]],
+            [origin_x + reach + offset[0], origin_y + reach + offset[1]],
+            [origin_x - reach + offset[0], origin_y + reach + offset[1]],
+        ]
+
+    artifact = {
+        "shape": [shape[axis] + offset[axis] for axis in range(3)],
+        "nodules": [
+            {
+                "id": 2,
+                "slices": [{
+                    "slice_index": ck + offset[2],
+                    "polygons": [square(cx, cy)],
+                }],
+            },
+            # A contour at id 3 must never be borrowed by the id-less
+            # candidate at list position 3.
+            {
+                "id": 3,
+                "slices": [{
+                    "slice_index": ck + offset[2],
+                    "polygons": [square(cx, cy + 12)],
+                }],
+            },
+        ],
+    }
+    artifact_path = _CASE_ROOT / "ts_out" / "local-001" / "nodule_contours.json"
+    artifact_path.write_text(json.dumps(artifact))
+    _api_call(server, "PUT", "/api/cases/local-001/candidates", {
+        "source": "lung_nodule_ct_detection",
+        "candidates": [
+            {
+                "ras_mm": contour_world, "diameter_mm": 6.0, "score": 0.91,
+                "id": 2,
+            },
+            {
+                "ras_mm": box_world, "diameter_mm": 6.0, "score": 0.42,
+                "id": 1,
+            },
+            # No id: this is the dashed-circle path, even though the contour
+            # artifact has an entry with id 3 at the same list position.
+            {"ras_mm": null_world, "diameter_mm": 6.0, "score": 0.10},
+        ],
+    })
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        _open(page, server)
+        page.wait_for_function(
+            """() => {
+              const ct = window.__p3_debug && window.__p3_debug.ct && window.__p3_debug.ct();
+              return !!(ct && ct.isLoaded && ct.isLoaded());
+            }""",
+            timeout=180_000,
+        )
+        result = page.evaluate(
+            """(args) => {
+              const ct = window.__p3_debug.ct();
+              const canvas = document.querySelector('.ct-pane-axial canvas');
+              const ctx = canvas.getContext('2d');
+              const dpr = canvas.width / canvas.clientWidth;
+              const orangeAt = (pt) => {
+                if (!pt) return false;
+                const x = Math.round(pt.x * dpr);
+                const y = Math.round(pt.y * dpr);
+                for (let dx = -2; dx <= 2; dx++) {
+                  for (let dy = -2; dy <= 2; dy++) {
+                    const p = ctx.getImageData(x + dx, y + dy, 1, 1).data;
+                    if (p[0] > 180 && p[1] > 100 && p[1] < 190 && p[2] < 100) {
+                      return true;
+                    }
+                  }
+                }
+                return false;
+              };
+              const aff = args.aff;
+              const world = (i, j, k) => [0, 1, 2].map(a =>
+                aff[a][0] * i + aff[a][1] * j + aff[a][2] * k + aff[a][3]);
+              const {cx, cy, ck, reach} = args;
+              const edges = [];
+              const n = 8;
+              for (let t = 0; t <= n; t++) {
+                const f = t / n;
+                const xs = cx - reach + 0.5 + f * (2 * reach);
+                const ys = cy - reach + 0.5 + f * (2 * reach);
+                edges.push([xs, cy - reach + 0.5, ck + 0.5]);
+                edges.push([xs, cy + reach + 0.5, ck + 0.5]);
+                edges.push([cx - reach + 0.5, ys, ck + 0.5]);
+                edges.push([cx + reach + 0.5, ys, ck + 0.5]);
+              }
+              ct.setWorld(args.contourWorld);
+              const onSlice = edges.map(([i, j, k]) => {
+                const scr = ct.screenOfWorld('axial', world(i, j, k));
+                return {scr, hit: orangeAt(scr)};
+              });
+              // Move one slice away, with the crosshair clear of the outline.
+              ct.setWorld(world(2.5, 2.5, ck + 1.5));
+              const offSlice = edges.map(([i, j, k]) => {
+                const scr = ct.screenOfWorld('axial', world(i, j, k));
+                return {scr, hit: orangeAt(scr)};
+              });
+              const ringAt = (world) => {
+                ct.setWorld(world);
+                const centre = ct.screenOfWorld('axial', world);
+                const edge = ct.screenOfWorld('axial', [
+                  world[0] + 3, world[1], world[2],
+                ]);
+                const radius = Math.hypot(edge.x - centre.x, edge.y - centre.y);
+                let ring = 0;
+                for (let a = 0; a < 72; a++) {
+                  const ang = a * Math.PI / 36;
+                  if (orangeAt({
+                    x: centre.x + Math.cos(ang) * radius,
+                    y: centre.y + Math.sin(ang) * radius,
+                  })) ring += 1;
+                }
+                return ring;
+              };
+              return {
+                onSliceHits: onSlice.filter(e => e.hit).length,
+                offSliceHits: offSlice.filter(e => e.hit).length,
+                ring: ringAt(args.boxWorld),
+                nullRing: ringAt(args.nullWorld),
+                pane: {w: canvas.clientWidth, h: canvas.clientHeight},
+                screens: onSlice.map(e => e.scr),
+              };
+            }""",
+            {
+                "aff": affine, "cx": cx, "cy": cy, "ck": ck, "reach": reach,
+                "contourWorld": contour_world, "boxWorld": box_world,
+                "nullWorld": null_world,
+            },
+        )
+        assert not errors, errors
+        browser.close()
+
+    assert result["onSliceHits"] >= 12, result
+    assert result["offSliceHits"] == 0, result
+    assert result["ring"] >= 6, result
+    # The id-less candidate keeps its dashed circle; it must not draw contour 3.
+    assert result["nullRing"] >= 6, result
+    for scr in result["screens"]:
+        assert 0 <= scr["x"] <= result["pane"]["w"], scr
+        assert 0 <= scr["y"] <= result["pane"]["h"], scr

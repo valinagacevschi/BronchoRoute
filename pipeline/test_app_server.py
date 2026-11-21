@@ -1,3 +1,4 @@
+# Changes: the nodule contour route serves the artifact read-only and empty when absent.
 # Changes: records/lesion no longer 412 for missing initials (auto-generated).
 # Changes: stamp a freshly built synthetic Case as the current pipeline version.
 # Changes: About, bundled LICENSE, notices, and sponsors are same-origin.
@@ -737,6 +738,156 @@ def test_candidates_roundtrip_and_confirm(client, harness):
     assert payload2["candidates"] == []
 
     client.delete("/api/cases/local-001/candidates")
+
+
+def test_confirm_overdiameter_candidate_clamps_lesion(client, harness):
+    """A mask candidate above 60 mm confirms as a valid Lesion, unrewritten."""
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    shape = meta["shape"]
+    ijk = np.array([shape[0] * 0.45, shape[1] * 0.45, shape[2] * 0.45, 1.0])
+    near = (affine @ ijk)[:3].tolist()
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    case = json.loads(harness["case"].read_text())
+    case["records"] = [r for r in case.get("records", []) if r["kind"] != "lesion_confirmed"]
+    case.pop("lesion", None)
+    # The nodule stage writes measured candidates straight to the Case record.
+    case["candidates"] = {
+        "source": "lung_nodules",
+        "at": "2026-01-01T00:00:00Z",
+        "by": "pipeline",
+        "items": [{"ras_mm": near, "diameter_mm": 64.5, "score": 0.91, "id": 7}],
+    }
+    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+    assert (
+        json.loads(harness["case"].read_text())["candidates"]["items"][0]["diameter_mm"]
+        == pytest.approx(64.5)
+    )
+
+    chosen = client.post("/api/cases/local-001/candidates/0/confirm")
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.json()["lesion"]["diameter_mm"] == pytest.approx(60.0)
+
+    on_disk = json.loads(harness["case"].read_text())
+    assert on_disk["lesion"]["diameter_mm"] == pytest.approx(60.0)
+    assert on_disk["records"][-1]["data"]["diameter_mm"] == pytest.approx(60.0)
+    assert "candidates" not in on_disk
+
+
+def test_candidates_carry_nodule_measurements(client, harness):
+    """Mask measurements and the nodule id survive; box-only keeps detector diameter."""
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    shape = meta["shape"]
+
+    def ras_at(frac):
+        ijk = np.array([shape[0] * frac, shape[1] * frac, shape[2] * frac, 1.0])
+        return (affine @ ijk)[:3].tolist()
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    near = ras_at(0.45)
+    far = ras_at(0.55)
+    stored = client.put(
+        "/api/cases/local-001/candidates",
+        json={
+            "source": "lung_nodule_ct_detection",
+            "candidates": [
+                {
+                    "ras_mm": near, "diameter_mm": 6.0, "score": 0.91,
+                    "id": 7, "volume_mm3": 113.1,
+                    "lobe": "lung_upper_lobe_left", "to_airway_mm": 4.5,
+                    "size_mm": [7.0, 6.0, 5.0],
+                },
+                {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
+            ],
+        },
+    )
+    assert stored.status_code == 200
+    items = stored.json()["candidates"]["items"]
+    assert items[0]["id"] == 7
+    assert items[0]["volume_mm3"] == pytest.approx(113.1)
+    assert items[0]["lobe"] == "lung_upper_lobe_left"
+    assert items[0]["to_airway_mm"] == pytest.approx(4.5)
+    assert items[0]["size_mm"] == pytest.approx([7.0, 6.0, 5.0])
+    assert items[1]["id"] is None
+    assert items[1]["volume_mm3"] is None
+    assert items[1]["size_mm"] is None
+
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    measured, box_only = payload["candidates"]
+    assert measured["id"] == 7
+    assert measured["volume_mm3"] == pytest.approx(113.1)
+    assert measured["diameter_mm"] == pytest.approx(6.0)
+    assert measured["score"] == pytest.approx(0.91)
+    assert measured["lobe"] == "lung_upper_lobe_left"
+    assert measured["to_airway_mm"] == pytest.approx(4.5)
+    assert measured["size_mm"] == pytest.approx([7.0, 6.0, 5.0])
+    # A box-only candidate falls back to the detector diameter and has no volume.
+    assert box_only["id"] is None
+    assert box_only["volume_mm3"] is None
+    assert box_only["diameter_mm"] == pytest.approx(9.0)
+
+    negative_volume = client.put(
+        "/api/cases/local-001/candidates",
+        json={"candidates": [{"ras_mm": near, "volume_mm3": -1}]},
+    )
+    assert negative_volume.status_code == 422
+    bad_id = client.put(
+        "/api/cases/local-001/candidates",
+        json={"candidates": [{"ras_mm": near, "id": 0}]},
+    )
+    assert bad_id.status_code == 422
+    client.delete("/api/cases/local-001/candidates")
+
+
+def test_nodule_contours_artifact_is_served_read_only(client, harness, monkeypatch):
+    """The viewer reads the axial contour artifact; the route never writes."""
+    artifact = {
+        "shape": [24, 20, 16],
+        "nodules": [{
+            "id": 1,
+            "slices": [{
+                "slice_index": 5,
+                "polygons": [[[9.0, 7.0], [10.0, 7.0], [10.0, 8.0], [9.0, 8.0]]],
+            }],
+        }],
+    }
+    (harness["ts"] / "nodule_contours.json").write_text(json.dumps(artifact))
+
+    monkeypatch.setenv("LUNGNAV_VIEWER_ONLY", "1")
+    served = client.get("/api/cases/local-001/nodule-contours")
+    assert served.status_code == 200
+    body = served.json()
+    assert body["shape"] == artifact["shape"]
+    assert body["nodules"] == artifact["nodules"]
+    # The viewer needs the CT affine to bridge the traced grid to its crop.
+    assert body["affine"] == nib.load(harness["ct"]).affine.tolist()
+    monkeypatch.delenv("LUNGNAV_VIEWER_ONLY", raising=False)
+
+    (harness["ts"] / "nodule_contours.json").unlink()
+    empty = client.get("/api/cases/local-001/nodule-contours")
+    assert empty.status_code == 200
+    assert empty.json() == {"shape": [], "nodules": []}
+
+
+def test_nodule_contours_logs_a_missing_affine(client, harness, monkeypatch, caplog):
+    """An unreadable CT affine leaves the artifact usable and logs one warning."""
+    artifact = {"shape": [24, 20, 16], "nodules": []}
+    (harness["ts"] / "nodule_contours.json").write_text(json.dumps(artifact))
+
+    def unreadable(_path):
+        raise OSError("unreadable CT")
+
+    monkeypatch.setattr("app.server.nib.load", unreadable)
+    with caplog.at_level("WARNING", logger="app.server"):
+        served = client.get("/api/cases/local-001/nodule-contours")
+
+    assert served.status_code == 200
+    assert served.json() == artifact
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "affine" in warnings[0].getMessage()
 
 
 def test_about_licence_notices_and_sponsors(client):

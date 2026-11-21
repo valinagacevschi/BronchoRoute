@@ -49,7 +49,8 @@ def test_licensed_tasks_are_refused():
     for task in ("heartchambers_highres", "tissue_types"):
         with pytest.raises(SystemExit, match=task):
             segmentation.require_task(task)
-    for task in ("lung_vessels", "lung_vessels_LEGACY", "total", "total_v2"):
+    for task in ("lung_vessels", "lung_vessels_LEGACY", "total", "total_v2",
+                 "lung_nodules"):
         assert segmentation.require_task(task) == task
     with pytest.raises(SystemExit, match="license_number"):
         segmentation.guard_command([

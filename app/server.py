@@ -1,3 +1,4 @@
+# Changes: read-only axial nodule contour artifact route for the CT panes (#73).
 # Changes: route target accepts generate_realism so the viewer checkbox controls generation (#68).
 # Changes: route depth PNG endpoint before the RGB route so kf-N.depth.png resolves (#66).
 # Changes: load optional realism dependencies only when realism is requested.
@@ -32,6 +33,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import logging
 import math
 import os
 import socket
@@ -43,6 +45,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
+import nibabel as nib
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -284,7 +287,7 @@ class LesionBody(BaseModel):
 
 
 class CandidateItem(LesionBody):
-    """A detector suggestion: a lesion shape plus a confidence score."""
+    """A detector suggestion: a lesion shape plus score and nodule measurements."""
 
     score: float | None = Field(
         default=None,
@@ -292,6 +295,14 @@ class CandidateItem(LesionBody):
         le=CANDIDATE_SCORE_MAX,
         allow_inf_nan=False,
     )
+    id: int | None = Field(default=None, ge=1)
+    volume_mm3: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    lobe: str | None = None
+    to_airway_mm: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    size_mm: list[float] | None = Field(
+        default=None, min_length=3, max_length=3
+    )
+    review: bool = False
 
 
 class CandidatesBody(BaseModel):
@@ -929,6 +940,31 @@ def api_masks(case_id: str):
         media_type="application/octet-stream",
         headers={"X-Content-SHA256": meta["sha256"]},
     )
+
+
+@app.get("/api/cases/{case_id}/nodule-contours")
+def api_nodule_contours(case_id: str):
+    """Axial contour artifact written by the nodule stage (#71). Read-only."""
+    try:
+        ref = CaseRef.parse(case_id)
+    except (UnknownCase, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    path = ref.ts_out / "nodule_contours.json"
+    if not path.is_file():
+        # Optional overlay: an empty artifact keeps the panes unchanged and
+        # avoids a 404 console error in every Case without a nodule stage.
+        return JSONResponse({"shape": [], "nodules": []})
+    artifact = json.loads(path.read_text())
+    # The stage traces in the CT array frame; the browser shows a canonical
+    # crop. Send the CT affine so the viewer can bridge the two grids.
+    try:
+        artifact["affine"] = nib.load(ref.ct).affine.tolist()
+    except Exception as exc:  # noqa: BLE001 - optional bridge; the viewer falls back
+        logging.getLogger(__name__).warning(
+            "nodule contours: CT affine unavailable for %s: %s", case_id, exc
+        )
+    # A rebuild rewrites the artifact under the same path.
+    return JSONResponse(artifact, headers={"Cache-Control": "no-cache"})
 
 
 @app.put("/api/cases/{case_id}/lesion")
