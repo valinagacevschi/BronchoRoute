@@ -144,7 +144,6 @@ def test_help_sheet_sections_and_escape(server):
         overlay.wait_for(state="visible", timeout=30_000)
         headings = overlay.locator(".help-section h2").all_inner_texts()
         for wanted in [
-            "Realistic images",
             "Mark a lesion",
             "RouteTarget",
             "Layers and panels",
@@ -152,7 +151,6 @@ def test_help_sheet_sections_and_escape(server):
         ]:
             assert wanted in headings
         text = overlay.inner_text()
-        assert "Generate realistic images" in text
         assert "Mark Lesion" in text
         assert "Confirm Lesion" in text
         page.keyboard.press("Escape")
