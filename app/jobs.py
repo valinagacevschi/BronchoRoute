@@ -151,7 +151,7 @@ def _failure_message(job: "JobState", *, timed_out: bool = False) -> str:
 def redact_log_line(line: str) -> str:
     """Drop identifier lines; keep routes while hiding Archive paths."""
     if re.search(
-        r"patient[ _]?(?:name|id|birth)|birth[ _]?date|\bdob\b|archive|\.zip\b",
+        r"patient[ _]?(?:name|id|birth)|birth[ _]?date|\bdob\b|archive|\.(?:zip|rar)\b",
         line, re.IGNORECASE,
     ):
         return "[redacted]"
