@@ -32,6 +32,16 @@ window.CtCandidates = (function () {
     let contours = null;
     let contourMapPoint = null;
 
+    // A mask measurement can exceed the Lesion range. The list shows it as
+    // measured; only the CT circle keeps the Lesion clamp.
+    function candidateDiameterOf(rec) {
+      const measured = rec && Number(rec.diameter_mm);
+      if (rec && rec.diameter_mm != null && Number.isFinite(measured)) {
+        return measured;
+      }
+      return diameterOf(rec || {});
+    }
+
     // mapPoint turns one contour point on an axial slice into crop voxel
     // coordinates, so the viewer does not assume the artifact grid is its crop.
     function setContours(artifact, mapPoint) {
@@ -159,7 +169,7 @@ window.CtCandidates = (function () {
         if (item && item.score != null) {
           parts.push(Number(item.score).toFixed(2));
         }
-        parts.push(`Ø ${diameterOf(item || {}).toFixed(1)} mm`);
+        parts.push(`Ø ${candidateDiameterOf(item || {}).toFixed(1)} mm`);
         const volume = item && Number(item.volume_mm3);
         if (item && item.volume_mm3 != null && Number.isFinite(volume)) {
           parts.push(`${volume.toFixed(1)} mm³`);
