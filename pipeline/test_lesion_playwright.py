@@ -385,7 +385,10 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
     _api_call(server, "PUT", "/api/cases/local-001/candidates", {
         "source": "lung_nodule_ct_detection",
         "candidates": [
-            {"ras_mm": near, "diameter_mm": 6.0, "score": 0.91},
+            {
+                "ras_mm": near, "diameter_mm": 6.0, "score": 0.91,
+                "id": 7, "volume_mm3": 113.1,
+            },
             {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
         ],
     })
@@ -404,12 +407,18 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         )
         box = page.locator("#ct-candidates")
         assert box.is_visible()
+        assert "Model output" in box.inner_text()
         labels = box.locator("button").all_inner_texts()
         assert len(labels) == 3, labels
         assert labels[0].startswith("Candidate 1")
         assert "0.91" in labels[0] and "6.0 mm" in labels[0]
+        assert "113.1 mm³" in labels[0]
+        assert "nodule 7" in labels[0]
+        assert box.locator("button").nth(0).get_attribute("data-nodule-id") == "7"
         assert labels[1].startswith("Candidate 2")
         assert "0.42" in labels[1] and "9.0 mm" in labels[1]
+        assert "mm³" not in labels[1]
+        assert box.locator("button").nth(1).get_attribute("data-nodule-id") is None
         assert labels[2] == "Clear candidates"
 
         page.evaluate("() => window.__p3_debug.ct().setWorld([32, 20, 32])")
@@ -494,7 +503,7 @@ def _world_of(affine, i, j, k):
 
 
 def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
-    """A traced polygon follows its axial slice; a box-only candidate keeps the circle."""
+    """A contour follows the candidate's stable id, not its list position."""
     sync_playwright = _playwright_or_skip()
     assert _CASE_ROOT is not None
     _api_call(server, "DELETE", "/api/cases/local-001/lesion")
@@ -517,7 +526,7 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
     artifact = {
         "shape": [shape[axis] + offset[axis] for axis in range(3)],
         "nodules": [{
-            "id": 1,
+            "id": 2,
             "slices": [{
                 "slice_index": ck + offset[2],
                 "polygons": [polygon],
@@ -529,8 +538,14 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
     _api_call(server, "PUT", "/api/cases/local-001/candidates", {
         "source": "lung_nodule_ct_detection",
         "candidates": [
-            {"ras_mm": contour_world, "diameter_mm": 6.0, "score": 0.91},
-            {"ras_mm": box_world, "diameter_mm": 6.0, "score": 0.42},
+            {
+                "ras_mm": contour_world, "diameter_mm": 6.0, "score": 0.91,
+                "id": 2,
+            },
+            {
+                "ras_mm": box_world, "diameter_mm": 6.0, "score": 0.42,
+                "id": 1,
+            },
         ],
     })
     with sync_playwright() as playwright:

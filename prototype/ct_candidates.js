@@ -140,15 +140,30 @@ window.CtCandidates = (function () {
         return;
       }
       box.hidden = false;
+      // The geometry and scores come from the detector and nodule model, not a
+      // radiologist annotation, so the list must say so.
+      const source = document.createElement("div");
+      source.className = "ct-candidates-source";
+      source.textContent = "Model output";
+      box.appendChild(source);
       items.forEach((item, index) => {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "secondary";
-        const score = item && item.score != null
-          ? ` · ${Number(item.score).toFixed(2)}`
-          : "";
-        const dia = `Ø ${diameterOf(item || {}).toFixed(1)} mm`;
-        btn.textContent = `Candidate ${index + 1}${score} · ${dia}`;
+        const parts = [`Candidate ${index + 1}`];
+        if (item && item.id != null) {
+          parts.push(`nodule ${item.id}`);
+          btn.dataset.noduleId = String(item.id);
+        }
+        if (item && item.score != null) {
+          parts.push(Number(item.score).toFixed(2));
+        }
+        parts.push(`Ø ${diameterOf(item || {}).toFixed(1)} mm`);
+        const volume = item && Number(item.volume_mm3);
+        if (item && item.volume_mm3 != null && Number.isFinite(volume)) {
+          parts.push(`${volume.toFixed(1)} mm³`);
+        }
+        btn.textContent = parts.join(" · ");
         btn.onclick = () => confirm(index);
         box.appendChild(btn);
       });

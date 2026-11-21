@@ -740,6 +740,63 @@ def test_candidates_roundtrip_and_confirm(client, harness):
     client.delete("/api/cases/local-001/candidates")
 
 
+def test_candidates_carry_nodule_measurements(client, harness):
+    """Mask measurements and the nodule id survive; box-only keeps detector diameter."""
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    shape = meta["shape"]
+
+    def ras_at(frac):
+        ijk = np.array([shape[0] * frac, shape[1] * frac, shape[2] * frac, 1.0])
+        return (affine @ ijk)[:3].tolist()
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    near = ras_at(0.45)
+    far = ras_at(0.55)
+    stored = client.put(
+        "/api/cases/local-001/candidates",
+        json={
+            "source": "lung_nodule_ct_detection",
+            "candidates": [
+                {
+                    "ras_mm": near, "diameter_mm": 6.0, "score": 0.91,
+                    "id": 7, "volume_mm3": 113.1,
+                },
+                {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
+            ],
+        },
+    )
+    assert stored.status_code == 200
+    items = stored.json()["candidates"]["items"]
+    assert items[0]["id"] == 7
+    assert items[0]["volume_mm3"] == pytest.approx(113.1)
+    assert items[1]["id"] is None
+    assert items[1]["volume_mm3"] is None
+
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    measured, box_only = payload["candidates"]
+    assert measured["id"] == 7
+    assert measured["volume_mm3"] == pytest.approx(113.1)
+    assert measured["diameter_mm"] == pytest.approx(6.0)
+    assert measured["score"] == pytest.approx(0.91)
+    # A box-only candidate falls back to the detector diameter and has no volume.
+    assert box_only["id"] is None
+    assert box_only["volume_mm3"] is None
+    assert box_only["diameter_mm"] == pytest.approx(9.0)
+
+    negative_volume = client.put(
+        "/api/cases/local-001/candidates",
+        json={"candidates": [{"ras_mm": near, "volume_mm3": -1}]},
+    )
+    assert negative_volume.status_code == 422
+    bad_id = client.put(
+        "/api/cases/local-001/candidates",
+        json={"candidates": [{"ras_mm": near, "id": 0}]},
+    )
+    assert bad_id.status_code == 422
+    client.delete("/api/cases/local-001/candidates")
+
+
 def test_nodule_contours_artifact_is_served_read_only(client, harness, monkeypatch):
     """The viewer reads the axial contour artifact; the route never writes."""
     artifact = {
