@@ -25,6 +25,7 @@ window.CtCandidates = (function () {
       statusMessage,
       diameterOf,
       geometry,
+      sharedPos,
       onConfirmed,
     } = opts;
     let items = [];
@@ -157,9 +158,11 @@ window.CtCandidates = (function () {
       source.textContent = "Model output";
       box.appendChild(source);
       items.forEach((item, index) => {
+        const row = document.createElement("div");
+        row.className = "ct-candidate-row";
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "secondary";
+        btn.className = "secondary ct-candidate-confirm";
         const parts = [`Candidate ${index + 1}`];
         if (item && item.id != null) {
           // The stable nodule id links the list entry to its contour and mesh.
@@ -186,7 +189,15 @@ window.CtCandidates = (function () {
         }
         btn.textContent = parts.join(" · ");
         btn.onclick = () => confirm(index);
-        box.appendChild(btn);
+        row.appendChild(btn);
+        const goBtn = document.createElement("button");
+        goBtn.type = "button";
+        goBtn.className = "secondary ct-candidate-goto";
+        goBtn.textContent = "Go to";
+        goBtn.setAttribute("aria-label", `Go to candidate ${index + 1}`);
+        goBtn.onclick = () => goTo(item);
+        row.appendChild(goBtn);
+        box.appendChild(row);
       });
       const clearBtn = document.createElement("button");
       clearBtn.type = "button";
@@ -209,6 +220,11 @@ window.CtCandidates = (function () {
       box.hidden = true;
       parent.appendChild(box);
       render();
+    }
+
+    function goTo(item) {
+      if (!item || !item.ras_mm) return;
+      sharedPos.set(item.ras_mm, "candidate");
     }
 
     function confirm(index) {

@@ -345,6 +345,7 @@ window.CtPanes = (function () {
       statusMessage,
       diameterOf: lesionDiameterOf,
       geometry: { sliceFrame, lesionSliceGeometry, worldToVoxelCont },
+      sharedPos,
       onConfirmed: (next) => {
         lesion = next;
         provisional = null;
