@@ -52,16 +52,22 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.caseref import CASE_ID_RE, CaseRef
 from app.cases import (
+    CANDIDATE_SCORE_MAX,
+    CANDIDATE_SCORE_MIN,
+    MAX_CANDIDATES,
     RECORD_KINDS,
     ReviewBlocked,
     UnknownCase,
     append_record,
     case_payload,
+    clear_candidates,
     clear_lesion,
+    confirm_candidate,
     confirm_existing_series,
     list_cases,
     load_versions,
     qualifying_route_start_terminals,
+    set_candidates,
     set_lesion,
     set_route_start,
     validate_lesion_diameter,
@@ -277,6 +283,24 @@ class LesionBody(BaseModel):
         return cleaned
 
 
+class CandidateItem(LesionBody):
+    """A detector suggestion: a lesion shape plus a confidence score."""
+
+    score: float | None = Field(
+        default=None,
+        ge=CANDIDATE_SCORE_MIN,
+        le=CANDIDATE_SCORE_MAX,
+        allow_inf_nan=False,
+    )
+
+
+class CandidatesBody(BaseModel):
+    candidates: list[CandidateItem] = Field(
+        min_length=1, max_length=MAX_CANDIDATES
+    )
+    source: str = "detector"
+
+
 class ImportScanBody(BaseModel):
     path: str
 
@@ -348,6 +372,13 @@ def _validation_detail(exc: ValidationError) -> str | list[str]:
             msg = msg[len("Value error, "):]
         msgs.append(msg)
     return msgs[0] if len(msgs) == 1 else msgs
+
+
+async def _json_body(request: Request) -> object:
+    try:
+        return await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
 
 
 class SeriesConfirmBody(BaseModel):
@@ -643,12 +674,9 @@ def api_route_candidates(case_id: str):
 async def api_route_target(case_id: str, request: Request):
     """Parse body manually so NaN/inf yield a plain 422; gate runs under lock."""
     clinician = _require_clinician()
+    body = await _json_body(request)
     try:
-        body_raw = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
-    try:
-        body = RouteTargetBody.model_validate(body_raw)
+        body = RouteTargetBody.model_validate(body)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
     try:
@@ -913,20 +941,11 @@ async def api_put_lesion(case_id: str, request: Request):
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
-    try:
-        body = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+    body = await _json_body(request)
     try:
         parsed = LesionBody.model_validate(body)
     except ValidationError as exc:
-        msgs = []
-        for err in exc.errors():
-            msg = err.get("msg", "validation error")
-            if msg.startswith("Value error, "):
-                msg = msg[len("Value error, "):]
-            msgs.append(msg)
-        raise HTTPException(status_code=422, detail=msgs[0] if len(msgs) == 1 else msgs) from exc
+        raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
     try:
         return set_lesion(
             case_id, parsed.ras_mm, clinician["clinician"], parsed.diameter_mm
@@ -940,6 +959,44 @@ def api_delete_lesion(case_id: str):
     clinician = _require_clinician()
     try:
         return clear_lesion(case_id, clinician["clinician"])
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.put("/api/cases/{case_id}/candidates")
+async def api_put_candidates(case_id: str, request: Request):
+    """Store detector candidates. Suggestions only until one is confirmed."""
+    clinician = _require_clinician()
+    body = await _json_body(request)
+    try:
+        parsed = CandidatesBody.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
+    try:
+        return set_candidates(
+            case_id,
+            [item.model_dump() for item in parsed.candidates],
+            parsed.source,
+            clinician["clinician"],
+        )
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.delete("/api/cases/{case_id}/candidates")
+def api_delete_candidates(case_id: str):
+    clinician = _require_clinician()
+    try:
+        return clear_candidates(case_id, clinician["clinician"])
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/candidates/{index}/confirm")
+def api_confirm_candidate(case_id: str, index: int):
+    clinician = _require_clinician()
+    try:
+        return confirm_candidate(case_id, index, clinician["clinician"])
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
 
@@ -1132,7 +1189,10 @@ def case_web(case_id: str, name: str):
     media = "application/octet-stream"
     if name.endswith(".json"):
         media = "application/json"
-    return FileResponse(target, media_type=media)
+    # A rebuild rewrites these files under the same paths; without this the
+    # browser's heuristic cache keeps serving the previous scene.
+    return FileResponse(target, media_type=media,
+                        headers={"Cache-Control": "no-cache"})
 
 
 app.mount(

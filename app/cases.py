@@ -467,6 +467,129 @@ def _load_or_init_record(ref: CaseRef, path: Path) -> dict:
     raise FileNotFoundError(f"case.json not found for {ref.case_id}")
 
 
+def _update_record(case_id: str, event: str, mutate):
+    """Run one read-modify-write under the case lock.
+
+    A None result means the mutation was a no-op and nothing is written.
+    """
+    ref = CaseRef.parse(case_id)
+    path = ref.case_json
+    with json_file_lock(path):
+        record = _load_or_init_record(ref, path)
+        result = mutate(record)
+        if result is None:
+            return None
+        from app.versions import note_change
+
+        note_change(record, event)
+        atomic_write_json(path, record)
+        return result
+
+
+MAX_CANDIDATES = 20
+CANDIDATE_SCORE_MIN = 0.0
+CANDIDATE_SCORE_MAX = 1.0
+
+
+def _clean_candidate(case_id: str, item: object) -> dict:
+    """Validate one detection candidate against the CT crop."""
+    if not isinstance(item, dict):
+        raise ValueError("candidate must be an object")
+    ras = validate_lesion_ras(case_id, item.get("ras_mm"))
+    diameter = validate_lesion_diameter(item.get("diameter_mm"))
+    score = item.get("score")
+    if score is not None:
+        try:
+            score = float(score)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("candidate score must be a number") from exc
+        if not math.isfinite(score) or not (
+            CANDIDATE_SCORE_MIN <= score <= CANDIDATE_SCORE_MAX
+        ):
+            raise ValueError(
+                f"candidate score must be between {CANDIDATE_SCORE_MIN:g} and "
+                f"{CANDIDATE_SCORE_MAX:g}"
+            )
+    return {"ras_mm": ras, "diameter_mm": diameter, "score": score}
+
+
+def set_candidates(
+    case_id: str,
+    items: object,
+    source: str,
+    clinician: str,
+) -> dict:
+    """Store detector candidates as suggestions; they never become the lesion."""
+    if not isinstance(items, list) or not items:
+        raise ValueError("candidates must be a non-empty list")
+    if len(items) > MAX_CANDIDATES:
+        raise ValueError(f"at most {MAX_CANDIDATES} candidates")
+    cleaned = [_clean_candidate(case_id, item) for item in items]
+
+    def apply(record: dict) -> dict:
+        record["candidates"] = {
+            "source": str(source or "detector"),
+            "at": _utc_now(),
+            "by": clinician,
+            "items": cleaned,
+        }
+        return {"candidates": record["candidates"]}
+
+    return _update_record(case_id, "candidates", apply)
+
+
+def clear_candidates(case_id: str, clinician: str) -> dict:
+    def apply(record: dict) -> dict | None:
+        if "candidates" not in record:
+            return None
+        record.pop("candidates", None)
+        return {"candidates": None}
+
+    result = _update_record(case_id, "candidates_cleared", apply)
+    return result if result is not None else {"candidates": None}
+
+
+def confirm_candidate(case_id: str, index: object, clinician: str) -> dict:
+    """Promote one candidate to the confirmed lesion and drop the rest, atomically."""
+    from app.workflow import WorkflowStep
+
+    try:
+        position = int(index)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("candidate index must be an integer") from exc
+
+    def apply(record: dict) -> dict:
+        block = record.get("candidates")
+        items = block.get("items") if isinstance(block, dict) else None
+        if not isinstance(items, list) or not items:
+            raise ValueError("no candidates stored for this case")
+        if position < 0 or position >= len(items):
+            raise ValueError("candidate index out of range")
+        item = items[position]
+        coords = validate_lesion_ras(case_id, item["ras_mm"])
+        diameter = validate_lesion_diameter(item.get("diameter_mm"))
+        at = _utc_now()
+        lesion = {
+            "ras_mm": coords,
+            "diameter_mm": diameter,
+            "confirmed_by": clinician,
+            "at": at,
+        }
+        entry = {
+            "step": int(WorkflowStep.LESION),
+            "kind": "lesion_confirmed",
+            "data": {"ras_mm": coords, "diameter_mm": diameter},
+            "clinician": clinician,
+            "at": at,
+        }
+        record["lesion"] = lesion
+        record.setdefault("records", []).append(entry)
+        record.pop("candidates", None)
+        return {"lesion": lesion, "record": entry}
+
+    return _update_record(case_id, "lesion", apply)
+
+
 def set_lesion(
     case_id: str,
     ras_mm: list[float],
@@ -478,21 +601,15 @@ def set_lesion(
 
     coords = validate_lesion_ras(case_id, ras_mm)
     diameter = validate_lesion_diameter(diameter_mm)
-    ref = CaseRef.parse(case_id)
-    path = ref.case_json
-    at = _utc_now()
-    with json_file_lock(path):
-        record = _load_or_init_record(ref, path)
-        from app.versions import note_change
 
-        note_change(record, "lesion")
+    def apply(record: dict) -> dict:
+        at = _utc_now()
         lesion = {
             "ras_mm": coords,
             "diameter_mm": diameter,
             "confirmed_by": clinician,
             "at": at,
         }
-        record["lesion"] = lesion
         entry = {
             "step": int(WorkflowStep.LESION),
             "kind": "lesion_confirmed",
@@ -500,34 +617,30 @@ def set_lesion(
             "clinician": clinician,
             "at": at,
         }
+        record["lesion"] = lesion
         record.setdefault("records", []).append(entry)
-        atomic_write_json(path, record)
         return {"lesion": lesion, "record": entry}
+
+    return _update_record(case_id, "lesion", apply)
 
 
 def clear_lesion(case_id: str, clinician: str) -> dict:
     """Clear lesion and append lesion_cleared under one case lock."""
     from app.workflow import WorkflowStep
 
-    ref = CaseRef.parse(case_id)
-    path = ref.case_json
-    at = _utc_now()
-    with json_file_lock(path):
-        record = _load_or_init_record(ref, path)
-        from app.versions import note_change
-
-        note_change(record, "lesion_cleared")
+    def apply(record: dict) -> dict:
         record.pop("lesion", None)
         entry = {
             "step": int(WorkflowStep.LESION),
             "kind": "lesion_cleared",
             "data": {},
             "clinician": clinician,
-            "at": at,
+            "at": _utc_now(),
         }
         record.setdefault("records", []).append(entry)
-        atomic_write_json(path, record)
         return {"lesion": None, "record": entry}
+
+    return _update_record(case_id, "lesion_cleared", apply)
 
 
 def validate_record_data(data: object) -> None:
@@ -627,7 +740,12 @@ __all__ = [
     "append_record",
     "atomic_write_json",
     "case_payload",
+    "CANDIDATE_SCORE_MAX",
+    "CANDIDATE_SCORE_MIN",
+    "MAX_CANDIDATES",
+    "clear_candidates",
     "clear_lesion",
+    "confirm_candidate",
     "confirm_existing_series",
     "default_aeropath_record",
     "list_cases",
@@ -636,6 +754,7 @@ __all__ = [
     "qualifying_route_start_terminals",
     "read_case_json",
     "route_start_info",
+    "set_candidates",
     "set_lesion",
     "validate_lesion_diameter",
     "set_route_start",

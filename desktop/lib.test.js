@@ -287,6 +287,14 @@ test("builder includes only runtime resources and targets unsigned arm64 macOS",
   assert.ok(pipeline.filter.every((name) => !name.startsWith("test_") && !name.includes("*")));
   const root = build.extraResources.find((row) => row.to === "app");
   assert.deepEqual(root.filter, ["LICENSE", "THIRD_PARTY_NOTICES.md", "sponsors.json"]);
+  // Every local script the template loads must ship, or the packaged page 404s it.
+  const prototype = build.extraResources.find((row) => row.to === "app/prototype");
+  const template = fs.readFileSync(path.join(__dirname, "..", "prototype", "renderer.template.html"), "utf8");
+  const localScripts = [...template.matchAll(/<script src="(?!https?:|\/)([^":]+\.js)"><\/script>/g)].map((row) => row[1]);
+  assert.ok(localScripts.length > 0);
+  for (const name of localScripts) {
+    assert.ok(prototype.filter.includes(name), `extraResources omits ${name}`);
+  }
 });
 
 test("save image names accept only local-NNN view stills", () => {

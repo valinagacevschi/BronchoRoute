@@ -295,6 +295,7 @@ window.CtPanes = (function () {
       route: false,
       lesion: true,
       target: true,
+      candidates: true,
     };
     const estimatedDrawn = { axial: 0, coronal: 0, sagittal: 0 };
     let marking = false;
@@ -335,6 +336,27 @@ window.CtPanes = (function () {
     const toolbar = document.createElement("div");
     toolbar.className = "ct-toolbar";
     rootEl.appendChild(toolbar);
+
+    const candidates = window.CtCandidates.create({
+      caseId,
+      readOnly,
+      ensureClinician,
+      statusMessage,
+      diameterOf: lesionDiameterOf,
+      geometry: { sliceFrame, lesionSliceGeometry, worldToVoxelCont },
+      onConfirmed: (next) => {
+        lesion = next;
+        provisional = null;
+        marking = false;
+        lesionDrag = null;
+        provisionalDiameter = lesionDiameterOf(next);
+        airway.lesion = next;
+        airway.candidates = [];
+        if (onLesionChange) onLesionChange(next);
+        updateLesionStatus();
+        drawAll();
+      },
+    });
 
     const bridgeList = document.createElement("div");
     bridgeList.id = "bridge-list";
@@ -503,6 +525,7 @@ window.CtPanes = (function () {
         ["airway", "Airway mask"],
         ["route", "Route"],
         ["lesion", "Lesion"],
+        ["candidates", "Candidates"],
         ["target", "RouteTarget"],
         ["estimated", "Estimated airway"],
       ]) {
@@ -579,11 +602,13 @@ window.CtPanes = (function () {
       toolbar.appendChild(ov);
       if (!readOnly) {
         toolbar.appendChild(lesionBox);
+        candidates.mount(toolbar);
       }
       syncOverlayEnablement();
       syncConfirmEnabled();
       updateLesionStatus();
       updateWlReadout();
+      candidates.setItems(airway.candidates);
     }
 
     function updateWlReadout() {
@@ -1193,6 +1218,11 @@ window.CtPanes = (function () {
       }
 
       drawLesionGlyph(ctx, key, map, fit, fixed);
+      candidates.draw(ctx, {
+        key, map, fit, fixed,
+        visible: overlays.candidates,
+        diameterOf: lesionDiameterOf,
+      });
       bridgeDraw[key] = [];
       for (const bridge of bridges) {
         const ijk = worldToVoxelCont(bridge.midpoint_ras_mm);

@@ -676,6 +676,69 @@ def test_payload_origin_and_lesion_roundtrip(client, harness):
     assert client.get("/api/cases/local-001/payload?allow_review=true").json()["lesion"] is None
 
 
+def test_candidates_roundtrip_and_confirm(client, harness):
+    """Detector candidates stay suggestions until one is confirmed as the lesion."""
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    shape = meta["shape"]
+
+    def ras_at(frac):
+        ijk = np.array([
+            shape[0] * frac, shape[1] * frac, shape[2] * frac, 1.0,
+        ])
+        return (affine @ ijk)[:3].tolist()
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    case = json.loads(harness["case"].read_text())
+    case["records"] = [r for r in case.get("records", []) if r["kind"] != "lesion_confirmed"]
+    case.pop("lesion", None)
+    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+
+    outside = client.put(
+        "/api/cases/local-001/candidates",
+        json={"candidates": [{"ras_mm": [1e6, 1e6, 1e6], "diameter_mm": 6}]},
+    )
+    assert outside.status_code == 422
+
+    near = ras_at(0.45)
+    far = ras_at(0.55)
+    stored = client.put(
+        "/api/cases/local-001/candidates",
+        json={
+            "source": "lung_nodule_ct_detection",
+            "candidates": [
+                {"ras_mm": near, "diameter_mm": 6.0, "score": 0.91},
+                {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
+            ],
+        },
+    )
+    assert stored.status_code == 200
+    assert len(stored.json()["candidates"]["items"]) == 2
+
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert payload["lesion"] is None
+    assert len(payload["candidates"]) == 2
+    assert payload["candidates"][0]["score"] == pytest.approx(0.91)
+    assert payload["candidates"][0]["ras_mm"] == pytest.approx(near, abs=1e-3)
+
+    bad_index = client.post("/api/cases/local-001/candidates/5/confirm")
+    assert bad_index.status_code == 422
+
+    chosen = client.post("/api/cases/local-001/candidates/1/confirm")
+    assert chosen.status_code == 200
+    body = chosen.json()
+    assert body["lesion"]["ras_mm"] == pytest.approx(far)
+    assert body["lesion"]["diameter_mm"] == pytest.approx(9.0)
+
+    on_disk = json.loads(harness["case"].read_text())
+    assert "candidates" not in on_disk
+    payload2 = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert payload2["lesion"]["ras_mm"] == pytest.approx(far)
+    assert payload2["candidates"] == []
+
+    client.delete("/api/cases/local-001/candidates")
+
+
 def test_about_licence_notices_and_sponsors(client):
     pyproject = Path(__file__).resolve().parents[1] / "pipeline" / "pyproject.toml"
     version = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
