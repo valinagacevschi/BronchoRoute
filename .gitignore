@@ -20,3 +20,6 @@ desktop/dist/
 
 # Standalone Python build artifacts.
 desktop/build/
+
+# Local agent memory; never tracked.
+.trail/
