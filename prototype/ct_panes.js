@@ -1544,17 +1544,23 @@ window.CtPanes = (function () {
       return true;
     }
 
-    // The contour artifact is in the original CT voxel grid; the browser CT is
-    // a crop, so shift by crop_offset_voxels when the shapes differ.
-    function contourOffsetFor(artifact) {
+    // The stage traces in the CT array frame; the browser shows a canonical
+    // crop. Map contour points through the CT affine into crop voxels. Without
+    // an affine, fall back to the crop offset when the grids share a shape.
+    function contourMapPoint(artifact) {
+      const affine = artifact && artifact.affine;
+      if (Array.isArray(affine) && affine.length === 4) {
+        return (x, y, k) => worldToVoxelCont(mat4MulVec(affine, [x, y, k, 1]));
+      }
       const shape = artifact && artifact.shape;
       if (!Array.isArray(shape) || shape.length !== 3) return null;
       const crop = ctMeta.shape;
       if (shape[0] === crop[0] && shape[1] === crop[1] && shape[2] === crop[2]) {
-        return [0, 0, 0];
+        return (x, y, k) => [x, y, k];
       }
       const offset = ctMeta.crop_offset_voxels;
-      return Array.isArray(offset) && offset.length === 3 ? offset : null;
+      if (!Array.isArray(offset) || offset.length !== 3) return null;
+      return (x, y, k) => [x - offset[0], y - offset[1], k - offset[2]];
     }
 
     async function loadNoduleContours() {
@@ -1567,9 +1573,9 @@ window.CtPanes = (function () {
           return;
         }
         const artifact = await res.json();
-        const offset = contourOffsetFor(artifact);
-        // Without a known offset the artifact frame is ambiguous: draw nothing.
-        candidates.setContours(offset ? artifact : null, offset || [0, 0, 0]);
+        const mapPoint = contourMapPoint(artifact);
+        // An ambiguous grid must not draw the outline in the wrong place.
+        candidates.setContours(mapPoint ? artifact : null, mapPoint);
       } catch (err) {
         candidates.setContours(null);
       }

@@ -30,13 +30,14 @@ window.CtCandidates = (function () {
     let items = [];
     let box = null;
     let contours = null;
-    let contourOffset = [0, 0, 0];
+    let contourMapPoint = null;
 
-    function setContours(artifact, offset) {
-      contourOffset = Array.isArray(offset) && offset.length === 3
-        ? offset.map(Number)
-        : [0, 0, 0];
+    // mapPoint turns one contour point on an axial slice into crop voxel
+    // coordinates, so the viewer does not assume the artifact grid is its crop.
+    function setContours(artifact, mapPoint) {
+      contourMapPoint = typeof mapPoint === "function" ? mapPoint : null;
       contours = new Map();
+      if (!contourMapPoint) return;
       const nodules = artifact && Array.isArray(artifact.nodules)
         ? artifact.nodules
         : [];
@@ -45,13 +46,19 @@ window.CtCandidates = (function () {
         const slices = new Map();
         for (const entry of Array.isArray(nodule.slices) ? nodule.slices : []) {
           if (!entry || !Array.isArray(entry.polygons)) continue;
-          slices.set(Number(entry.slice_index), entry.polygons);
+          const sliceIndex = Number(entry.slice_index);
+          const plane = contourMapPoint(0, 0, sliceIndex);
+          if (!plane) continue;
+          slices.set(Math.round(plane[2]), {
+            sliceIndex,
+            polygons: entry.polygons,
+          });
         }
         contours.set(Number(nodule.id), slices);
       }
     }
 
-    function drawContour(ctx, polygons, map, fit, fixed, label) {
+    function drawContour(ctx, entry, map, fit, label) {
       ctx.save();
       // The polygon may run past the CT image; clip it to the pane viewport.
       ctx.beginPath();
@@ -61,15 +68,19 @@ window.CtCandidates = (function () {
       ctx.lineCap = "round";
       let topY = Infinity;
       let leftX = Infinity;
-      for (const polygon of polygons) {
+      for (const polygon of entry.polygons) {
         if (!Array.isArray(polygon) || polygon.length < 3) continue;
         ctx.beginPath();
         polygon.forEach((point, index) => {
           if (!Array.isArray(point) || point.length < 2) return;
+          const mapped = contourMapPoint(
+            Number(point[0]), Number(point[1]), entry.sliceIndex,
+          );
+          if (!mapped) return;
+          // Contour points sit on voxel centres; uvFromIjk takes the
+          // half-voxel corner coordinate.
           const uv = map.uvFromIjk(
-            Number(point[0]) + 0.5 - contourOffset[0],
-            Number(point[1]) + 0.5 - contourOffset[1],
-            fixed + 0.5,
+            mapped[0] + 0.5, mapped[1] + 0.5, mapped[2] + 0.5,
           );
           const x = fit.ox + uv.u * fit.drawW;
           const y = fit.oy + uv.v * fit.drawH;
@@ -190,10 +201,8 @@ window.CtCandidates = (function () {
         if (noduleSlices) {
           // A mask-backed candidate uses its traced outline on the axial pane;
           // other panes keep the circle because the artifact is axial only.
-          const polygons = noduleSlices.get(view.fixed - contourOffset[2]);
-          if (polygons) {
-            drawContour(ctx, polygons, view.map, view.fit, view.fixed, label);
-          }
+          const entry = noduleSlices.get(view.fixed);
+          if (entry) drawContour(ctx, entry, view.map, view.fit, label);
           return;
         }
         const diameter = view.diameterOf(item);

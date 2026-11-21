@@ -44,6 +44,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
+import nibabel as nib
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -944,12 +945,15 @@ def api_nodule_contours(case_id: str):
         # Optional overlay: an empty artifact keeps the panes unchanged and
         # avoids a 404 console error in every Case without a nodule stage.
         return JSONResponse({"shape": [], "nodules": []})
+    artifact = json.loads(path.read_text())
+    # The stage traces in the CT array frame; the browser shows a canonical
+    # crop. Send the CT affine so the viewer can bridge the two grids.
+    try:
+        artifact["affine"] = nib.load(ref.ct).affine.tolist()
+    except Exception:  # noqa: BLE001 - optional bridge; the viewer falls back
+        pass
     # A rebuild rewrites the artifact under the same path.
-    return FileResponse(
-        path,
-        media_type="application/json",
-        headers={"Cache-Control": "no-cache"},
-    )
+    return JSONResponse(artifact, headers={"Cache-Control": "no-cache"})
 
 
 @app.put("/api/cases/{case_id}/lesion")
