@@ -96,10 +96,10 @@
             <div class="drop-idle" id="drop-idle">
               ${DROP_ICON}
               <strong>Drop an Archive here</strong>
-              <p>Zip, folder or DICOMDIR · processed on this Mac</p>
+              <p>Zip, RAR, folder or DICOMDIR · processed on this Mac</p>
               <button type="button" id="archive-choose">Choose…</button>
               <div class="drop-or" id="archive-hotkey" hidden><kbd>⌘</kbd> <kbd>O</kbd> also opens an Archive</div>
-              <input id="archive-file" type="file" accept=".zip" hidden>
+              <input id="archive-file" type="file" accept=".zip,.rar" hidden>
             </div>
             <div class="drop-busy" id="drop-busy" hidden>
               <div class="intake-spinner" aria-hidden="true"></div>

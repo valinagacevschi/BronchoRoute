@@ -104,7 +104,8 @@
           "run_totalsegmentator.py",
           "series_rule.py",
           "snomed.py",
-          "pyproject.toml"
+          "pyproject.toml",
+          "build_endoluminal_web.py"
         ]
       },
       {
@@ -116,7 +117,9 @@
           "import.js",
           "import.css",
           "fonts/*.woff2",
-          "fonts/OFL*.txt"
+          "fonts/OFL*.txt",
+          "endoluminal.html",
+          "vendor/**"
         ]
       },
       {

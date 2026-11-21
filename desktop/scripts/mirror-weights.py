@@ -21,10 +21,10 @@ REPO = "valinagacevschi/BronchoRoute"
 TAG = "weights-v1"
 VERSION = "2.18.0"
 
-# TotalSegmentator 2.18.0 loads these for the default two calls:
-# lung_vessels is task 117 and, with robust_crop, the 3 mm model 297;
-# total --roi_subset of the five lobes plus trachea runs organs part 291
-# and the 6 mm crop model 298. Parts 292–295 are not run for that subset.
+# TotalSegmentator 3.0.1 runs the lobe step as total_v2, which loads the same
+# v2 weights: lung_vessels is task 117 and, with robust_crop, the 3 mm model
+# 297; total_v2 --roi_subset of the five lobes plus trachea runs organs part
+# 291 and the 6 mm crop model 298. Parts 292–295 are not run for that subset.
 DATASETS = (
     "Dataset117_lung_airways_arteries_veins_282subj",
     "Dataset291_TotalSegmentator_part1_organs_1559subj",

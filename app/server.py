@@ -47,6 +47,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.caseref import CASE_ID_RE, CaseRef
@@ -491,7 +492,7 @@ async def api_import_upload(request: Request):
                 if total > MAX_ARCHIVE_BYTES:
                     raise HTTPException(status_code=413, detail="Archive size limit exceeded")
                 target.write(chunk)
-        return scan_series(filename)
+        return await run_in_threadpool(scan_series, filename)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
@@ -1113,6 +1114,25 @@ def sponsors_file():
 def viewer_page():
     """Main page: left-rail renderer in read-only viewer mode."""
     return FileResponse(PROTOTYPE / "renderer.template.html")
+
+
+@app.get("/case-web/{case_id}/{name}")
+def case_web(case_id: str, name: str):
+    """Surface mesh assets for the 3D endoluminal view."""
+    try:
+        ref = CaseRef.parse(case_id)
+    except UnknownCase as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    base = (ref.case_json.parent / "web").resolve()
+    target = (base / name).resolve()
+    if base not in target.parents and target != base:
+        return JSONResponse({"error": "invalid path"}, status_code=404)
+    if not target.is_file():
+        return JSONResponse({"error": "not built"}, status_code=404)
+    media = "application/octet-stream"
+    if name.endswith(".json"):
+        media = "application/json"
+    return FileResponse(target, media_type=media)
 
 
 app.mount(

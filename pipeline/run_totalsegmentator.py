@@ -1,3 +1,4 @@
+# Changes: run the lobe step on total_v2 so TotalSegmentator 3 keeps v2 weights.
 # Changes: refuse TotalSegmentator tasks outside lung_vessels and total.
 # Changes: empty or missing lobe masks exit as segmentation: no lungs found.
 # Changes: emit airway-model progress before mask combination.
@@ -5,9 +6,11 @@
 """Run TotalSegmentator for airway and lobe masks.
 
 The airway fallback combines the lung_vessels task's lung_airways lumen with
-the total task's trachea, then keeps the largest 26-connected component. Pass
---legacy to use lung_vessels_LEGACY's lung_trachea_bronchia instead. The total
-task also produces the five lobe masks, which are merged into lobes.nii.gz;
+the total_v2 task's trachea, then keeps the largest 26-connected component. Pass
+--legacy to use lung_vessels_LEGACY's lung_trachea_bronchia instead. The lobe
+step runs total_v2, because TotalSegmentator 3's total task ships new weights
+and renumbers class 26. total_v2 keeps the v2 weights already mirrored. It
+also produces the five lobe masks, which are merged into lobes.nii.gz;
 the trachea is deliberately excluded from that merge.
 """
 
@@ -26,7 +29,7 @@ from snomed import LOBES as LOBE_TABLE
 
 LOBES = {info["key"]: value for value, info in LOBE_TABLE.items()}
 ROIS = [*LOBES, "trachea"]
-ALLOWED_TASKS = frozenset({"lung_vessels", "lung_vessels_LEGACY", "total"})
+ALLOWED_TASKS = frozenset({"lung_vessels", "lung_vessels_LEGACY", "total", "total_v2"})
 
 
 def require_task(task: str) -> str:
@@ -289,10 +292,11 @@ def main() -> None:
                adopt_cache=args.adopt_cache)
 
     lobe_dir = args.out / "lobes"
-    print("lobes and trachea (total task, six structures only)")
+    print("lobes and trachea (total_v2 task, six structures only)")
     cmd = [sys.executable, "-m", "totalsegmentator.bin.TotalSegmentator",
            "-i", str(args.ct), "-o", str(lobe_dir),
-           "--roi_subset", *ROIS, "--device", args.device]
+           "--task", "total_v2", "--roi_subset", *ROIS,
+           "--device", args.device]
     if args.fast:
         cmd.append("--fast")
     if args.higher_order:

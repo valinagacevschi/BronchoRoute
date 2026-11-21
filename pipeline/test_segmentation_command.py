@@ -40,7 +40,8 @@ def test_segmentation_passes_use_current_python(tmp_path, monkeypatch, legacy, e
         [*prefix, "-i", str(ct), "-o", str(out / "airways_source"),
          "--task", task, "--device", "mps", *suffix],
         [*prefix, "-i", str(ct), "-o", str(out / "lobes"),
-         "--roi_subset", *segmentation.ROIS, "--device", "mps", *suffix],
+         "--task", "total_v2", "--roi_subset", *segmentation.ROIS,
+         "--device", "mps", *suffix],
     ]
 
 
@@ -48,7 +49,7 @@ def test_licensed_tasks_are_refused():
     for task in ("heartchambers_highres", "tissue_types"):
         with pytest.raises(SystemExit, match=task):
             segmentation.require_task(task)
-    for task in ("lung_vessels", "lung_vessels_LEGACY", "total"):
+    for task in ("lung_vessels", "lung_vessels_LEGACY", "total", "total_v2"):
         assert segmentation.require_task(task) == task
     with pytest.raises(SystemExit, match="license_number"):
         segmentation.guard_command([

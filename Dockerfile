@@ -13,6 +13,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# libarchive-tools provides bsdtar, which extracts RAR Archives (app/imports.py).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libarchive-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --system --uid 10001 --user-group --create-home lungnav \
     && mkdir -p /cache /tmp \
     && chown -R 10001:10001 /cache /tmp
