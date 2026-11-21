@@ -97,6 +97,7 @@
           "estimated_airway.py",
           "import_dicom.py",
           "make_prototype_data.py",
+          "nodule_candidates.py",
           "paths.py",
           "repo_root.py",
           "review_signoff.py",
