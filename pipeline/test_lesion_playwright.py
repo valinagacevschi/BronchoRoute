@@ -410,8 +410,8 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         box = page.locator("#ct-candidates")
         assert box.is_visible()
         assert "Model output" in box.inner_text()
-        labels = box.locator("button").all_inner_texts()
-        assert len(labels) == 3, labels
+        labels = box.locator(".ct-candidate-confirm").all_inner_texts()
+        assert len(labels) == 2, labels
         assert labels[0].startswith("Candidate 1")
         assert "0.91" in labels[0] and "6.0 mm" in labels[0]
         assert "113.1 mm³" in labels[0]
@@ -421,13 +421,16 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         # The list says candidate, not nodule: the glossary term is
         # "Nodule candidate", and the id keeps the stable link.
         assert "nodule" not in labels[0].lower()
-        assert box.locator("button").nth(0).get_attribute("data-nodule-id") == "7"
+        assert box.locator(".ct-candidate-confirm").nth(0).get_attribute("data-nodule-id") == "7"
         assert labels[1].startswith("Candidate 2")
         assert "0.42" in labels[1] and "9.0 mm" in labels[1]
         assert "mm³" not in labels[1]
         assert "to airway" not in labels[1]
-        assert box.locator("button").nth(1).get_attribute("data-nodule-id") is None
-        assert labels[2] == "Clear candidates"
+        assert box.locator(".ct-candidate-confirm").nth(1).get_attribute("data-nodule-id") is None
+        assert box.locator(".ct-candidate-goto").all_inner_texts() == ["Go to", "Go to"]
+        assert box.get_by_role("button", name="Go to candidate 1").is_visible()
+        assert box.get_by_role("button", name="Go to candidate 2").is_visible()
+        assert box.locator("button", has_text="Clear candidates").count() == 1
 
         page.evaluate("() => window.__p3_debug.ct().setWorld([32, 20, 32])")
         page.wait_for_timeout(300)
@@ -503,6 +506,64 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         browser.close()
 
 
+def test_candidate_goto_moves_ct_without_confirm(server):
+    """Go to moves the shared CT position without confirming or clearing."""
+    sync_playwright = _playwright_or_skip()
+    _api_call(server, "DELETE", "/api/cases/local-001/lesion")
+    _api_call(server, "DELETE", "/api/cases/local-001/candidates")
+    near = [32.0, 20.0, 32.0]
+    far = [28.0, 20.0, 28.0]
+    _api_call(server, "PUT", "/api/cases/local-001/candidates", {
+        "candidates": [
+            {"ras_mm": near, "diameter_mm": 6.0, "score": 0.91, "id": 7},
+            {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
+        ],
+    })
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        errors = []
+        requests = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("request", lambda request: requests.append(request.url))
+        _open(page, server)
+        page.wait_for_function(
+            """() => {
+              const ct = window.__p3_debug && window.__p3_debug.ct && window.__p3_debug.ct();
+              return !!(ct && ct.isLoaded && ct.isLoaded());
+            }""",
+            timeout=180_000,
+        )
+        page.evaluate("() => window.__p3_debug.ct().setWorld([32, 20, 32])")
+        page.wait_for_function(
+            "() => window.__p3_debug.ct().getSlices().axial === 32",
+            timeout=15_000,
+        )
+        box = page.locator("#ct-candidates")
+        assert box.is_visible()
+        box.get_by_role("button", name="Go to candidate 2").click()
+        page.wait_for_function(
+            "() => window.__p3_debug.ct().getSlices().axial === 28",
+            timeout=15_000,
+        )
+        crosshair = page.evaluate("() => window.__p3_debug.ct().getCrosshair()")
+        assert crosshair == pytest.approx(far)
+        assert page.evaluate("() => window.__p3_debug.sharedPosSource()") == "candidate"
+        # Go to is read-only: the list stays and nothing is confirmed.
+        assert box.is_visible()
+        assert box.get_by_role("button", name="Go to candidate 1").is_visible()
+        assert box.get_by_role("button", name="Go to candidate 2").is_visible()
+        assert not any("/confirm" in url for url in requests), requests
+        with urllib.request.urlopen(
+            f"{server}/api/cases/local-001/payload?allow_review=1", timeout=10,
+        ) as res:
+            payload = json.load(res)
+        assert payload.get("lesion") is None
+        assert len(payload["candidates"]) == 2
+        assert not errors, errors
+        browser.close()
+
+
 def test_candidate_list_shows_measured_diameter(server):
     """A mask measurement outside the Lesion range stays visible in the list."""
     sync_playwright = _playwright_or_skip()
@@ -539,13 +600,12 @@ def test_candidate_list_shows_measured_diameter(server):
                 }""",
                 timeout=180_000,
             )
-            labels = page.locator("#ct-candidates button").all_inner_texts()
+            labels = page.locator("#ct-candidates .ct-candidate-confirm").all_inner_texts()
         finally:
             browser.close()
-    assert len(labels) == 3, labels
+    assert len(labels) == 2, labels
     assert "Ø 64.5 mm" in labels[0], labels[0]
     assert "Ø 10.0 mm" in labels[1], labels[1]
-    assert labels[2] == "Clear candidates"
 
 
 def _world_of(affine, i, j, k):
