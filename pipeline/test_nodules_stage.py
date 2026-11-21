@@ -142,6 +142,86 @@ def test_detector_candidates_are_fused_into_the_instances(tmp_path):
     assert first["box_size_mm"] == [4.0, 4.0, 4.0]
 
 
+def test_stage_publishes_fused_candidates_on_the_case(tmp_path):
+    """Fused instances join the Case candidate list as suggestions."""
+    ct = _write_ct(tmp_path)
+    out = tmp_path / "ts"
+    lobes = _write_lobes(out)
+    data = np.zeros(SHAPE, dtype=bool)
+    data[10:13, 10:13, 10:13] = True   # matched by the proposal below
+    data[16:19, 16:19, 16:19] = True   # mask only
+    mask = _write_mask(tmp_path, data=data)
+    # The box is wide enough to reach the component centre (3.57 mm away);
+    # falling back to the 4 mm diameter would miss it.
+    case = _write_case(tmp_path, candidates=[
+        {
+            "ras_mm": [15.0, 11.0, 11.0], "diameter_mm": 4.0,
+            "size_mm": [12.0, 4.0, 4.0], "score": 0.9,
+        },
+    ])
+
+    nodules.write_artifacts(
+        ct, mask, out, lobes_path=lobes,
+        graph_path=None, proposals=nodules.proposals_from_case(case),
+        case_json=case,
+    )
+
+    record = json.loads(case.read_text())
+    assert "lesion" not in record
+    block = record["candidates"]
+    assert block["source"] == "lung_nodules"
+    items = {item["id"]: item for item in block["items"]}
+    assert sorted(items) == [1, 2]
+    matched = items[1]
+    assert matched["score"] == 0.9
+    assert matched["size_mm"] == [12.0, 4.0, 4.0]
+    assert matched["volume_mm3"] == 27.0
+    assert matched["diameter_mm"] > 0.0
+    assert matched["lobe"] == "lung_upper_lobe_left"
+    assert matched["to_airway_mm"] is None
+    assert "review" not in matched
+    mask_only = items[2]
+    assert mask_only["id"] == 2
+    assert mask_only["score"] is None
+    assert mask_only["review"] is True
+    assert mask_only["volume_mm3"] == 27.0
+    assert mask_only["diameter_mm"] > 0.0
+
+
+def test_empty_mask_leaves_the_case_candidates_unchanged(tmp_path):
+    ct = _write_ct(tmp_path)
+    out = tmp_path / "ts"
+    lobes = _write_lobes(out)
+    case = _write_case(tmp_path, candidates=[
+        {"ras_mm": [11.0, 11.0, 11.0], "diameter_mm": 4.0, "score": 0.9},
+    ])
+    before = json.loads(case.read_text())
+
+    empty = _write_mask(tmp_path, data=np.zeros(SHAPE, dtype=bool))
+    assert nodules.write_artifacts(
+        ct, empty, out, lobes_path=lobes, case_json=case,
+    ) is None
+
+    assert json.loads(case.read_text()) == before
+
+
+def test_candidate_box_size_survives_the_case_roundtrip(tmp_path):
+    """A stored proposal keeps its detector box for the fusion radius."""
+    case = tmp_path / "case.json"
+    case.write_text(json.dumps({
+        "candidates": {
+            "items": [{
+                "ras_mm": [15.0, 11.0, 11.0], "diameter_mm": 4.0,
+                "size_mm": [12.0, 4.0, 4.0], "score": 0.9,
+            }],
+        },
+    }))
+
+    proposals = nodules.proposals_from_case(case)
+
+    assert proposals[0]["size_mm"] == [12.0, 4.0, 4.0]
+
+
 def test_empty_or_missing_mask_writes_no_artifacts(tmp_path):
     ct = _write_ct(tmp_path)
     out = tmp_path / "ts"
