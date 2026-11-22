@@ -434,12 +434,14 @@ def test_job_commands_use_current_python(harness):
         [sys.executable, "run_totalsegmentator.py"],
         [sys.executable, "build_graph.py"],
         [sys.executable, "run_nodules.py"],
+        [sys.executable, "build_endoluminal_web.py"],
     ]
     nodule = commands[2]
     assert nodule[nodule.index("--case-json") + 1] == str(
         CaseRef.parse("local-001").case_json
     )
     assert nodule[nodule.index("--graph") + 1].endswith("local-001_graph.json")
+    assert commands[3][2] == "local-001"
 
 
 def test_job_commands_name_their_progress_step():
@@ -448,6 +450,7 @@ def test_job_commands_name_their_progress_step():
     assert _step_for_command([sys.executable, "run_totalsegmentator.py"]) == "segmentation"
     assert _step_for_command([sys.executable, "build_graph.py"]) == "graph"
     assert _step_for_command([sys.executable, "run_nodules.py"]) == "nodules"
+    assert _step_for_command([sys.executable, "build_endoluminal_web.py"]) == "nodules"
 
 
 def test_latest_step_prefers_nodules_over_graph():
