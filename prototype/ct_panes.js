@@ -644,10 +644,8 @@ window.CtPanes = (function () {
       if (marking && provisional) {
         el.textContent = `Ø ${provisionalDiameter.toFixed(1)} mm`;
       } else if (lesion && lesion.ras_mm) {
-        const who = lesion.confirmed_by || "";
-        const when = lesion.at || "";
         const dia = lesionDiameterOf(lesion).toFixed(1);
-        el.textContent = `Lesion confirmed · Ø ${dia} mm${who ? " · " + who : ""}${when ? " · " + when : ""}`;
+        el.textContent = `Lesion confirmed · Ø ${dia} mm`;
       } else if (marking) {
         el.textContent = "Click a CT pane to place the Lesion";
       } else {
