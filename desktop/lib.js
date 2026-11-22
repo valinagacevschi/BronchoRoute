@@ -152,7 +152,9 @@ function startPageUrl(origin, caseId) {
   if (!caseId) {
     return base;
   }
-  return `${base}?case=${encodeURIComponent(caseId)}`;
+  // Launch on panel 1 with the first detected nodule under the crosshair.
+  return `${base}?case=${encodeURIComponent(caseId)}`
+    + "&variant=ct-panes&focus=nodule";
 }
 
 function requestFilterUrls(port) {

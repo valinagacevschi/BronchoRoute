@@ -1182,14 +1182,7 @@ let lastSharedPosSource = "ct-init";
 // After a case reset the viewer opens on panel 1 with the first detected
 // nodule under the crosshair. ct_panes sets this flag, then reloads.
 const RESET_SELECT_FLAG = "bronchoroute-reset-select-nodule";
-async function applyResetSelection() {
-  let flagged = false;
-  try {
-    flagged = sessionStorage.getItem(RESET_SELECT_FLAG) === "1";
-    if (flagged) sessionStorage.removeItem(RESET_SELECT_FLAG);
-  } catch (err) { return; }
-  if (!flagged) return;
-  setVariant(CT_PANES_IDX);
+async function focusFirstNodule() {
   const first = Array.isArray(A.candidates) ? A.candidates[0] : null;
   if (!first || !Array.isArray(first.ras_mm)) return;
   SharedPos.set(first.ras_mm, "candidate");
@@ -1204,7 +1197,18 @@ async function applyResetSelection() {
     ctPanesApi.setWorld(first.ras_mm);
   }
 }
+async function applyResetSelection() {
+  let flagged = false;
+  try {
+    flagged = sessionStorage.getItem(RESET_SELECT_FLAG) === "1";
+    if (flagged) sessionStorage.removeItem(RESET_SELECT_FLAG);
+  } catch (err) { return; }
+  if (!flagged) return;
+  setVariant(CT_PANES_IDX);
+  await focusFirstNodule();
+}
 setTimeout(applyResetSelection, 0);
+if (params.get("focus") === "nodule") setTimeout(focusFirstNodule, 0);
 
 /** Put the shared marker at the top of the trachea (the root node). */
 function resetSharedPositionToRoot() {

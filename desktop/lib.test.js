@@ -524,11 +524,12 @@ test("save video default path uses an injected movies directory", () => {
   assert.throws(() => resolveSaveVideoBaseDir("", "  "), /videos directory/);
 });
 
-test("start page URL opens the editing page with or without a Case", () => {
+test("start page URL opens panel 1 focused on the first nodule", () => {
   const origin = "http://127.0.0.1:8765";
   assert.equal(
     startPageUrl(origin, "local-001"),
-    `${origin}/renderer.template.html?case=local-001`,
+    `${origin}/renderer.template.html?case=local-001`
+      + "&variant=ct-panes&focus=nodule",
   );
   assert.equal(startPageUrl(origin, null), `${origin}/renderer.template.html`);
 });
