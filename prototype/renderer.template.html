@@ -217,6 +217,7 @@ body.endo3d-active .limitations-panel { display: none; }
 .readout { display: flex; justify-content: space-between; gap: 10px;
   font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px;
   font-variant-numeric: tabular-nums; }
+.readout[hidden] { display: none; }
 .readout dt { color: var(--muted); }
 .readout dd { margin: 0; text-align: right; }
 .readout dd.warm { color: var(--mucosa); }
@@ -611,13 +612,13 @@ body.walkthrough-active .walk-sim-label { display: block; }
   </div>
 
   <div class="group" id="g-nav">
-    <h2>Position</h2>
-    <dl class="readout"><dt>Generation</dt><dd id="r-gen" class="warm">—</dd></dl>
-    <dl class="readout"><dt>Lumen radius</dt><dd id="r-rad">—</dd></dl>
-    <dl class="readout"><dt>To target</dt><dd id="r-togo">—</dd></dl>
-    <dl class="readout"><dt>Turns ahead</dt><dd id="r-turns">—</dd></dl>
-    <dl class="readout"><dt>CT window</dt><dd id="ct-wl-readout">W 1500 / L -600</dd></dl>
-    <dl class="readout"><dt>CT view</dt><dd id="ct-view-readout">Radiologist</dd></dl>
+    <h2 id="g-nav-title">Position</h2>
+    <dl class="readout" id="row-gen"><dt>Generation</dt><dd id="r-gen" class="warm">—</dd></dl>
+    <dl class="readout" id="row-rad"><dt>Lumen radius</dt><dd id="r-rad">—</dd></dl>
+    <dl class="readout" id="row-togo"><dt>To target</dt><dd id="r-togo">—</dd></dl>
+    <dl class="readout" id="row-turns"><dt>Turns ahead</dt><dd id="r-turns">—</dd></dl>
+    <dl class="readout" id="row-ct-wl"><dt>Window</dt><dd id="ct-wl-readout">W 1500 / L -600</dd></dl>
+    <dl class="readout" id="row-ct-view"><dt>View</dt><dd id="ct-view-readout">Radiologist</dd></dl>
   </div>
 
   <div class="group group-depth">
@@ -5512,9 +5513,24 @@ window.addEventListener("message", (ev) => {
     if (variant !== 1) return;
     const world = endo3dMessageToWorld(data);
     if (world) SharedPos.set(world, "endoluminal");
+    // Panel 4 draws in the iframe, so its Position rows come from its metrics.
+    if (Number.isFinite(data.gen) && Number.isFinite(data.radius)
+        && Number.isFinite(data.togo) && Number.isFinite(data.turns)) {
+      setReadout({
+        gen: String(Math.round(data.gen)),
+        rad: data.radius.toFixed(2) + " mm",
+        togo: data.togo.toFixed(0) + " mm",
+        turns: String(Math.round(data.turns)),
+      });
+    }
     return;
   }
   if (data.type === "endo3d-ready") {
+    // The first set-active can arrive before the iframe listens. Send it again.
+    try {
+      document.getElementById("endo3d-frame")
+        ?.contentWindow.postMessage({ type: "endo3d-set-active", active: true }, location.origin);
+    } catch (err) { /* not loaded */ }
     // Hand the Anatomical position to a freshly loaded Endoluminal panel so
     // both open on the same point. Leave the default start (and split) alone.
     const pos = SharedPos.get();
@@ -6008,8 +6024,18 @@ function render() {
     ctPanesApi.renderBridges();
   }
   const walkActive = variant === 4;
-  const endoActive = variant === 1 || walkActive;
-  document.getElementById("g-nav").style.opacity = endoActive ? "1" : ".45";
+  // Position metrics belong to Endoluminal; CT window and view belong to CT panes.
+  const showPosition = variant === 1;
+  const showCtView = variant === 3;
+  for (const id of ["row-gen", "row-rad", "row-togo", "row-turns"]) {
+    document.getElementById(id).hidden = !showPosition;
+  }
+  for (const id of ["row-ct-wl", "row-ct-view"]) {
+    document.getElementById(id).hidden = !showCtView;
+  }
+  document.getElementById("g-nav").hidden = !showPosition && !showCtView;
+  document.getElementById("g-nav-title").textContent =
+    showPosition ? "Position" : "CT";
   if (estimatedDefaultVariant !== variant) {
     estimatedDefaultVariant = variant;
     setShowEstimatedAirway(variant === 0 || variant === 2);

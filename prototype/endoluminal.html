@@ -205,6 +205,23 @@
     const P = Float32Array.from(graph.pos);
     const graphAdj = EndoRoute.adjacency(graph);
     const deg = graphAdj.deg;
+    // Generation is the BFS depth from the trachea, like the Case route samples.
+    const generation = new Int32Array(graph.radius.length).fill(-1);
+    {
+      const queue = new Int32Array(graph.radius.length);
+      let head = 0, tail = 0;
+      generation[graph.start] = 0;
+      queue[tail++] = graph.start;
+      while (head < tail) {
+        const n = queue[head++];
+        for (let k = graphAdj.off[n]; k < graphAdj.off[n + 1]; k++) {
+          const m = graphAdj.nbr[k];
+          if (generation[m] !== -1) continue;
+          generation[m] = generation[n] + 1;
+          queue[tail++] = m;
+        }
+      }
+    }
 
     // ---------- route state ----------
     let route = null; // { curve, length, s[], radius[], branches[], frames, gap, end, target }
@@ -242,7 +259,8 @@
         branches.push(count);
       });
       const segments = Math.max(16, Math.round(length));
-      return { curve, length, s, path, radius: path.map(n => graph.radius[n]), branches, ms,
+      return { curve, length, s, path, radius: path.map(n => graph.radius[n]),
+        gen: path.map(n => generation[n]), branches, ms,
         frames: curve.computeFrenetFrames(segments, false), segments,
         gap: r.gap,
         end: new THREE.Vector3(r.end[0], r.end[1], r.end[2]),
@@ -616,10 +634,15 @@ airway ${w.toFixed(1)} mm wide`;
       if (route && active3d && nowPos - lastPosPost > 100) {
         lastPosPost = nowPos;
         const c = insideCam.position;
+        const totalBranches = route.branches[route.branches.length - 1];
         parent.postMessage({
           type: "endo3d-position",
           pos: [c.x, c.y, c.z],
           center: sceneInfo.center_mm || [0, 0, 0],
+          gen: lookup(route.gen, progress),
+          radius: lookup(route.radius, progress),
+          togo: Math.max(0, route.length - progress),
+          turns: Math.max(0, totalBranches - lookup(route.branches, progress)),
         }, location.origin);
       }
       requestAnimationFrame(frame);

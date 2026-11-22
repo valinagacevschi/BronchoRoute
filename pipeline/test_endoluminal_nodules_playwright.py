@@ -461,3 +461,83 @@ def test_save_inside_repairs_a_stale_inside_camera(server):
             assert pos == pytest.approx(marker, abs=0.05), (pos, marker)
         finally:
             browser.close()
+
+
+def test_position_sidebar_shows_iframe_metrics(server):
+    sync_playwright = _playwright_or_skip()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport=VIEWPORT)
+        page.goto(
+            f"{server}/renderer.template.html?case=local-001&allow_review=1"
+            "&debug=1&variant=endoluminal",
+            wait_until="domcontentloaded",
+            timeout=120_000,
+        )
+        page.wait_for_function(
+            "() => window.__p3_debug && window.__p3_debug.airway()",
+            timeout=120_000,
+        )
+        # Panel 4 sets the shared readout from the iframe's route metrics.
+        page.wait_for_function(
+            """() => {
+              const v = id => document.getElementById(id).textContent;
+              return v("r-gen") !== "—" && v("r-rad").endsWith(" mm")
+                && v("r-togo").endsWith(" mm") && v("r-turns") !== "—";
+            }""",
+            timeout=120_000,
+        )
+        values = page.evaluate(
+            """() => ["r-gen", "r-rad", "r-togo", "r-turns"]
+              .map(id => document.getElementById(id).textContent)""")
+        assert values[0].isdigit(), values
+        assert values[1].endswith(" mm"), values
+        assert values[2].endswith(" mm"), values
+        assert values[3].isdigit(), values
+        browser.close()
+
+
+def test_position_rows_follow_the_panel(server):
+    sync_playwright = _playwright_or_skip()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport=VIEWPORT)
+        page.goto(
+            f"{server}/renderer.template.html?case=local-001&allow_review=1"
+            "&debug=1&variant=ct-panes",
+            wait_until="domcontentloaded",
+            timeout=120_000,
+        )
+        page.wait_for_function(
+            "() => window.__p3_debug && window.__p3_debug.airway()",
+            timeout=120_000,
+        )
+
+        def shown():
+            return page.evaluate(
+                """() => {
+                  const drawn = id => {
+                    const el = document.getElementById(id);
+                    return !!el && el.getClientRects().length > 0;
+                  };
+                  return {
+                    group: drawn("g-nav"),
+                    title: document.getElementById("g-nav-title").textContent,
+                    position: drawn("row-gen"),
+                    ct: drawn("row-ct-wl"),
+                  };
+                }""")
+
+        # Panel 1 (CT panes) shows the CT rows only.
+        assert shown() == {"group": True, "title": "CT",
+                           "position": False, "ct": True}
+        # Panels 2 and 3 show neither group.
+        page.evaluate("() => window.__p3_debug.setVariant(0)")
+        assert shown()["group"] is False
+        page.evaluate("() => window.__p3_debug.setVariant(2)")
+        assert shown()["group"] is False
+        # Panel 4 (Endoluminal) shows the Position rows only.
+        page.evaluate("() => window.__p3_debug.setVariant(1)")
+        assert shown() == {"group": True, "title": "Position",
+                           "position": True, "ct": False}
+        browser.close()
