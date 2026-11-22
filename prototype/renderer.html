@@ -511,7 +511,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 #settings-form .about-close { margin-top: 0; }
 #save-image[hidden] { display: none; }
 .save-image-row { display: flex; gap: 6px; flex-wrap: wrap; }
-#save-image-btn, #save-image-options {
+#save-image-btn {
   font: 500 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
   letter-spacing: .03em;
   border: 1px solid var(--edge); border-radius: 6px;
@@ -519,7 +519,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 }
 #save-image-btn { background: var(--steel); border-color: var(--steel); color: #fff; }
 #save-image-btn:disabled { opacity: .55; cursor: progress; }
-#save-image-btn:focus-visible, #save-image-options:focus-visible,
+#save-image-btn:focus-visible,
 #record-btn:focus-visible, #record-stop:focus-visible,
 #flythrough-btn:focus-visible, #orbit-btn:focus-visible, #spin-btn:focus-visible,
 #flythrough-cancel:focus-visible {
@@ -536,7 +536,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 #spin-btn:disabled, #flythrough-cancel:disabled {
   opacity: .55; cursor: progress;
 }
-#record-btn[hidden], #record-stop[hidden], #record-indicator[hidden], #record-size-label[hidden],
+#record-btn[hidden], #record-stop[hidden], #record-indicator[hidden],
 #flythrough-btn[hidden], #orbit-btn[hidden], #spin-btn[hidden], #flythrough-cancel[hidden],
 #flythrough-progress[hidden], #flythrough-reason[hidden] {
   display: none;
@@ -557,20 +557,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
 #flythrough-progress { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 #flythrough-count { display: block; white-space: nowrap; min-width: 28ch; }
 #flythrough-bar { width: 100%; height: 8px; }
-#record-size {
-  font: inherit; color: var(--ink); background: var(--ground);
-  border: 1px solid var(--edge); border-radius: 4px; margin-left: 6px;
-}
-.save-image-popover {
-  margin: 8px 0 0; width: max-content; height: max-content;
-  padding: 8px 10px; border: 1px solid var(--edge); border-radius: 8px;
-  background: var(--surface); color: var(--ink); box-shadow: var(--shadow);
-}
-.save-image-popover:popover-open { margin: 0; inset: auto; }
-.save-image-popover label {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 12.5px; margin: 4px 0;
-}
 </style>
 
 <div class="stage"><canvas id="c"></canvas><div id="endo3d" hidden><iframe id="endo3d-frame" title="Endoluminal 3D"></iframe></div><div class="shared-marker shared-marker-3d" id="shared-marker-3d"></div><div class="shared-marker shared-marker-topology" id="shared-marker-topology"></div></div>
@@ -649,8 +635,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
       <button type="button" id="orbit-btn" hidden>Export orbit</button>
       <button type="button" id="spin-btn" hidden>Export spin</button>
       <button type="button" id="flythrough-cancel" hidden>Cancel</button>
-      <button type="button" id="save-image-options" popovertarget="save-image-popover"
-        aria-controls="save-image-popover">Options</button>
     </div>
     <p id="record-status" role="status"></p>
     <p id="flythrough-reason" hidden></p>
@@ -658,16 +642,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <div id="flythrough-progress" hidden>
       <progress id="flythrough-bar" value="0" max="1"></progress>
       <span id="flythrough-count"></span>
-    </div>
-    <div id="save-image-popover" class="save-image-popover" popover>
-      <label><input type="checkbox" id="save-image-hud" checked> Include HUD</label>
-      <label><input type="checkbox" id="save-image-lesion" checked> Show Lesion</label>
-      <label id="record-size-label" hidden>Resolution
-        <select id="record-size" aria-label="Record resolution">
-          <option value="1080" selected>1080p</option>
-          <option value="720">720p</option>
-        </select>
-      </label>
     </div>
   </div>
   </div>
@@ -772,53 +746,75 @@ body.walkthrough-active .walk-sim-label { display: block; }
       <!-- prototype/renderer.template.html:5327-5334; prototype/ct_panes.js#onPointerDown --></li>
     </ol>
     <p>If a target already exists, the app asks you to replace it. A stored target that is no longer reachable
-    is shown as stale. Choose a new target.
-    <!-- prototype/renderer.template.html:5218-5222, 5235-5244 --></p>
+    is shown as stale. Choose a new target.</p>
+    <p>A bridge is a synthetic join that connects a small airway fragment to the tree. Panel 1 lists each
+    unmatched bridge with its gap and its CT air coverage. Confirm or reject it there, or click Go to to
+    move the shared position to the join. A bridge with air along at least 75% of its length is confirmed
+    for you. A bridge with air along 10% or less is rejected for you. The rest waits for you.</p>
   </section>
 
   <section class="help-section" aria-labelledby="help-layers">
     <h2 id="help-layers">Layers and panels</h2>
-    <p>The Controls section has these keys: <kbd>A</kbd> Airway mask, <kbd>R</kbd> Route,
-    <kbd>C</kbd> Candidates, <kbd>L</kbd> Lesion, <kbd>T</kbd> RouteTarget. A lit key is on. <kbd>E</kbd> toggles Estimated airway on panels 2 and 3.
-    <!-- prototype/ct_panes.js#buildToolbar --></p>
-    <p>The bottom switcher has four panels:</p>
-    <ol>
-      <li>CT panes</li>
-      <li>Anatomical 3D</li>
-      <li>Topology map</li>
-      <li>Endoluminal</li>
-    </ol>
-    <p>Press 1 to 4 to switch panels.
-    <!-- prototype/renderer.template.html:1219-1224, 4805-4809 --></p>
+    <p>The bottom switcher has four panels. Press 1 for CT panes, 2 for Anatomical 3D, 3 for Topology map,
+    and 4 for Endoluminal.</p>
+    <p>Panel 1: <kbd>V</kbd> switches between the radiologist and bronchoscopist view.
+    <kbd>A</kbd> Airway mask, <kbd>R</kbd> Route, <kbd>C</kbd> Candidates, <kbd>L</kbd> Lesion and
+    <kbd>T</kbd> RouteTarget toggle the overlays. A lit key is on.</p>
+    <p>Panel 2: <kbd>F</kbd>, <kbd>H</kbd>, <kbd>O</kbd> and <kbd>T</kbd> choose a camera preset, and
+    <kbd>V</kbd> cycles the presets. Drag pans, Shift-drag orbits and scroll zooms. The circle at the
+    bottom right shows the patient axes: R right, A anterior, S superior, F front.</p>
+    <p>Panel 3: <kbd>A</kbd> starts or stops the auto-spin, <kbd>R</kbd> resets the rotation, and
+    <kbd>←</kbd> or <kbd>→</kbd> rotates the map 15 degrees. Drag pans, Shift-drag rotates and scroll
+    zooms.</p>
+    <p>Panels 2 and 3: <kbd>E</kbd> toggles the Estimated airway layer. <kbd>↑</kbd> or <kbd>↓</kbd>
+    moves the shared position 3 mm along the route.</p>
     <p>All four panels show one shared position in patient coordinates. A move in one panel moves the
-    other panels with it. The blue marker shows that position on Anatomical 3D and on Topology map.
-    <!-- prototype/ct_panes.js#mount; prototype/renderer.template.html:3811, 5342, 5819-5820 --></p>
-    <p>In Anatomical 3D or Topology map, press Up or Down to move the shared position 3 mm along the
-    route. In Topology map, press ← or → to rotate the map 15 degrees, A to start or stop auto-spin,
-    and R to reset the rotation.
-    <!-- prototype/renderer.template.html:5570-5579 --></p>
+    other panels with it. Panel 2 draws the same trail and destination as panel 4. The blue marker shows
+    the shared position on panels 2 and 3.</p>
     <p>Point at a RouteTarget card to highlight that route in the CT panes and move the shared
-    position to the card's target.
-    <!-- prototype/renderer.template.html:5434-5450, 5974 --></p>
+    position to the card's target.</p>
   </section>
 
   <section class="help-section" aria-labelledby="help-endoluminal">
     <h2 id="help-endoluminal">Endoluminal 3D view</h2>
-    <p>Endoluminal shows the airway as a 3D surface. Click the view, then press V to cycle inside,
-    outside, and a split view with both halves in sync while you navigate.</p>
-    <p>Inside, you fly through the lumen. Press Up or Down to move, hold Shift for faster movement.
-    Press R to go back to the start.
-    <!-- prototype/endoluminal.html:388 --></p>
+    <p>In a Case, panel 4 is a live 3D scene of the airway. Click the view first so it takes the
+    keyboard.</p>
+    <p>Press <kbd>V</kbd> to cycle inside, outside, and a split view with both halves. The split keeps
+    the same camera position in both halves while you navigate.</p>
+    <p>Inside, you fly through the lumen. <kbd>↑</kbd> and <kbd>↓</kbd> move, hold Shift for faster
+    movement, <kbd>Space</kbd> auto-plays and pauses at each fork, and <kbd>R</kbd> returns to the start.
+    Drag on the scope clock to roll.</p>
     <p>Outside, the view shows the whole chest, upright and fitted to the window. Only the airway
-    (white) and the target nodules show; vessels, lungs and other organs stay hidden. The route is
-    mint green. Drag to move the view, hold Shift and drag to rotate, and scroll to zoom.</p>
-    <p>The bottom right shows the route distance in mm, the branch points passed and the airway
-    width. At the route end, a label shows the gap from the route end to the target.
-    <!-- prototype/endoluminal.html:414-430 --></p>
-    <p>In a Case, the route comes from the RouteTarget confirmed in panel 1. A click in this
-    view does not change the target.</p>
-    <p>Press 1 to 4 while the 3D view has focus to switch panels.
-    <!-- prototype/renderer.template.html:5452-5457 --></p>
+    (white) and the target nodule show; vessels, lungs and other organs stay hidden. The route is
+    mint green, and the route point stays about a third of the way down the view. Drag pans, Shift-drag
+    rotates and scroll zooms.</p>
+    <p>The corner readout shows the route distance, the forks passed and the lumen width. At the route
+    end, a label shows the gap from the route end to the target.</p>
+    <p>The route comes from the RouteTarget confirmed in panel 1. A click in this view does not change
+    the target.</p>
+    <p>Without a Case, panel 4 draws a built-in demonstration. There <kbd>←</kbd> and <kbd>→</kbd> roll
+    5 degrees, <kbd>T</kbd> restarts the route, and <kbd>M</kbd> toggles the aids layer with the green
+    distance rings.</p>
+    <p>Press 1 to 4 while the 3D view has focus to switch panels.</p>
+  </section>
+
+  <section class="help-section" aria-labelledby="help-export">
+    <h2 id="help-export">Export</h2>
+    <p>The Export section appears on panels 2, 3 and 4. Save image writes a PNG of the panel. Record
+    captures the panel as live video.</p>
+    <p>Export fly-through (panel 4) renders the route from its start to the target, frame by frame. It
+    stays disabled until a RouteTarget exists and the route has more than one point, and it waits while
+    the realistic fork stills generate. The line under the button gives the reason.</p>
+    <p>Export orbit (panel 2) turns the camera once around the tree. Export spin (panel 3) turns the
+    topology map once. Both take 12 seconds at 30 frames per second.</p>
+    <p>Every export includes the HUD and the lesion marker, at 1920 by 1080. The HUD carries the view
+    name, the case id, the date, the review warnings and the footer "Simulated · CT-derived · research
+    use".</p>
+    <p>The desktop app writes MP4 video at 30 frames per second. A web browser has no MP4 encoder, so
+    the app hides the video buttons there. Record still works in a browser for the Endoluminal panel and
+    saves WebM.</p>
+    <p>The Realistic tissue option appears only when the realistic model is installed. It adds generated
+    tissue frames to the fly-through export and is slow.</p>
   </section>
 
   <section class="help-section" aria-labelledby="help-open-case">
@@ -1169,11 +1165,11 @@ const tok = n => css.getPropertyValue(n).trim();
 
 const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
-    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front) · <button type='button' class='ct-key' id='view-e-key' title='Estimated airway'>E</button> Estimated airway · <kbd>M</kbd> aids" },
+    hint: "<button type='button' class='ct-key' id='view-e-key' title='Estimated airway'>E</button> Estimated airway · <kbd>V</kbd> view preset · <kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom" },
   { key: "endoluminal", name: "Endoluminal",
     hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>T</kbd> reset route · <kbd>M</kbd> aids · <kbd>Enter</kbd> back inside" },
   { key: "topology", name: "Topology map",
-    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>←</kbd> / <kbd>→</kbd> rotate 15° · <kbd>A</kbd> auto-spin · <kbd>R</kbd> reset rotation · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy · <button type='button' class='ct-key' id='view-e-key' title='Estimated airway'>E</button> Estimated airway" },
+    hint: "<kbd>A</kbd> auto-spin · <kbd>R</kbd> reset rotation · <button type='button' class='ct-key' id='view-e-key' title='Estimated airway'>E</button> Estimated airway · <kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>←</kbd> / <kbd>→</kbd> rotate 15° · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
   { key: "ct-panes", name: "CT panes",
     hint: VIEWER_MODE
       ? "<span id=\"ct-overlay-keys\"></span> · <kbd>V</kbd> view · <kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L"
@@ -1198,7 +1194,7 @@ const SERVER_MODE = !!CASE_ID;
 // its own keys: V cycles inside, outside and split, R returns to the start.
 if (SERVER_MODE) {
   VARIANTS.find(v => v.key === "endoluminal").hint =
-    "<kbd>↑</kbd><kbd>↓</kbd> fly (shift = faster) · <kbd>V</kbd> inside / outside / split · <kbd>R</kbd> back to start · drag to orbit";
+    "<kbd>V</kbd> inside / outside / split · <kbd>R</kbd> back to start · <kbd>↑</kbd><kbd>↓</kbd> fly (shift = faster) · drag to orbit";
 }
 const CT_PANES_IDX = VARIANTS.findIndex(v => v.key === "ct-panes");
 let variant = VARIANTS.findIndex(v => v.key === params.get("variant"));
@@ -1894,11 +1890,6 @@ function drawAnatomical(pose) {
   drawOrientationGizmo();
   drawPatientEdgeLabels();
   drawSharedPositionMarker3d();
-  if (aidsOn && !exportFrame.active) {
-    const world = SharedPos.get();
-    const origin = A.origin_mm || [0, 0, 0];
-    drawMinimap(world ? [world[0] - origin[0], world[1] - origin[1], world[2] - origin[2]] : null);
-  }
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
   } finally {
     anatomicalDrawCam = prevCam;
@@ -5432,7 +5423,7 @@ function handleViewClick(clientX, clientY) {
         const panel = document.getElementById("route-target-panel");
         if (panel) panel.hidden = false;
         refreshRouteTargetPanel();
-        showViewerToast(A.lesion ? "Choose a RouteTarget" : "Confirm a lesion first");
+        if (!A.lesion) showViewerToast("Confirm a lesion first");
         return;
       }
     }
@@ -5709,7 +5700,10 @@ addEventListener("keydown", e => {
     if (e.key === "h" || e.key === "H") applyPreset("head45");
     if (e.key === "o" || e.key === "O") applyPreset("operator0");
     if (e.key === "t" || e.key === "T") applyPreset("topdown90");
-    if (e.key === "r" || e.key === "R") applyPreset("radiologist");
+    if (e.key === "v" || e.key === "V") {
+      const order = ["radiologist", "head45", "operator0", "topdown90"];
+      applyPreset(order[(Math.max(0, order.indexOf(cam.preset)) + 1) % order.length]);
+    }
   } else if (endoKeys && (e.key === "t" || e.key === "T")) {
     fly.s = 0; fly.pausedFork = null; fly.pauseUntil = null;
     fly.armed = new Set(A.forks.map(f => f.fork));
@@ -6355,12 +6349,6 @@ function syncSaveImageControl() {
   }
   const exporting = flythroughSession != null;
   box.hidden = !on && !exporting;
-  if (!on && !exporting) {
-    const pop = document.getElementById("save-image-popover");
-    if (pop && typeof pop.hidePopover === "function" && pop.matches(":popover-open")) {
-      pop.hidePopover();
-    }
-  }
   const mode = !recordSession ? "idle" : (recordSession.stopping ? "stopping" : "recording");
   setRecordUi(mode);
   syncFlythroughUi();
@@ -7027,8 +7015,6 @@ function browserRecordAvailable() {
 }
 
 function recordSize() {
-  const select = document.getElementById("record-size");
-  if (select && select.value === "720") return { width: 1280, height: 720 };
   return { width: 1920, height: 1080 };
 }
 
@@ -7059,16 +7045,12 @@ function setRecordUi(mode) {
   const start = document.getElementById("record-btn");
   const stop = document.getElementById("record-stop");
   const indicator = document.getElementById("record-indicator");
-  const sizeLabel = document.getElementById("record-size-label");
-  const size = document.getElementById("record-size");
   if (start) {
     start.hidden = !can || !onView || recording || stopping;
     start.disabled = stopping || flythroughSession != null;
   }
   if (stop) stop.hidden = !recording;
   if (indicator) indicator.hidden = !recording;
-  if (sizeLabel) sizeLabel.hidden = !can || !onView;
-  if (size) size.disabled = recording || stopping || flythroughSession != null;
   syncFlythroughUi();
 }
 
@@ -7255,8 +7237,8 @@ async function startRecording() {
     return;
   }
   const size = recordSize();
-  const hud = document.getElementById("save-image-hud").checked;
-  const lesion = document.getElementById("save-image-lesion").checked;
+  const hud = true;
+  const lesion = true;
   showRecordStatus("");
   const startBtn = document.getElementById("record-btn");
   if (startBtn) startBtn.disabled = true;
@@ -7460,7 +7442,10 @@ function syncFlythroughUi() {
   const gateKey = gate ? `${gate.done}/${gate.total}` : "";
   const tissueProgress = !running ? realismProgressModel() : null;
   const tissueKey = tissueProgress ? realismProgressText(tissueProgress) : "";
-  const key = `${view}|${running}|${reason}|${recording}|${gateKey}|${tissueKey}`;
+  // Orbit, spin and fly-through all record through the desktop bridge. In a
+  // plain browser they would be dead controls, so hide them.
+  const canVideo = !!recordApi();
+  const key = `${view}|${running}|${reason}|${recording}|${gateKey}|${tissueKey}|${canVideo}`;
   if (key === flythroughUiKey) return;
   flythroughUiKey = key;
   const btn = document.getElementById("flythrough-btn");
@@ -7471,7 +7456,7 @@ function syncFlythroughUi() {
   const progress = document.getElementById("flythrough-progress");
   const busy = running || recording;
   if (btn) {
-    btn.hidden = !onEndo;
+    btn.hidden = !onEndo || !canVideo;
     btn.disabled = busy || !!reason || !!gate;
     btn.title = gate ? "Waiting for fork textures" : reason;
     btn.textContent = gate
@@ -7479,15 +7464,15 @@ function syncFlythroughUi() {
       : "Export fly-through";
   }
   if (orbitBtn) {
-    orbitBtn.hidden = !onAnat;
+    orbitBtn.hidden = !onAnat || !canVideo;
     orbitBtn.disabled = busy;
   }
   if (spinBtn) {
-    spinBtn.hidden = !onTopo;
+    spinBtn.hidden = !onTopo || !canVideo;
     spinBtn.disabled = busy;
   }
   if (reasonEl) {
-    reasonEl.hidden = !onEndo || running || !reason;
+    reasonEl.hidden = !onEndo || !canVideo || running || !reason;
     reasonEl.textContent = reason;
   }
   if (cancel) cancel.hidden = !running;
@@ -7694,8 +7679,8 @@ async function startFlythrough() {
   const when = new Date();
   const name = exportFlythroughFileName(when);
   const size = recordSize();
-  const hud = document.getElementById("save-image-hud").checked;
-  const lesion = document.getElementById("save-image-lesion").checked;
+  const hud = true;
+  const lesion = true;
   if (status) status.textContent = "";
   let started;
   try {
@@ -7752,21 +7737,13 @@ async function startFlythrough() {
 }
 
 let saveImageBusy = false;
-document.getElementById("save-image-options").addEventListener("click", () => {
-  const pop = document.getElementById("save-image-popover");
-  const btn = document.getElementById("save-image-options");
-  if (!pop || typeof pop.showPopover !== "function") return;
-  const rect = btn.getBoundingClientRect();
-  pop.style.left = `${Math.round(rect.left)}px`;
-  pop.style.top = `${Math.round(rect.bottom + 6)}px`;
-});
 document.getElementById("save-image-btn").addEventListener("click", () => {
   if (saveImageBusy) return;
   const when = new Date();
   const name = exportImageFileName(when);
   if (!name) return;
-  const hud = document.getElementById("save-image-hud").checked;
-  const lesion = document.getElementById("save-image-lesion").checked;
+  const hud = true;
+  const lesion = true;
   const options = { hud, lesion, when };
   if (window.bronchoroute && typeof window.bronchoroute.saveImage === "function") {
     saveImageBusy = true;
@@ -8011,8 +7988,8 @@ async function startOfflineVideo(kind) {
   const when = new Date();
   const name = kind === "orbit" ? exportOrbitFileName(when) : exportSpinFileName(when);
   const size = recordSize();
-  const hud = document.getElementById("save-image-hud").checked;
-  const lesion = document.getElementById("save-image-lesion").checked;
+  const hud = true;
+  const lesion = true;
   if (status) status.textContent = "";
   let started;
   try {

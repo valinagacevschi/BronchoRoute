@@ -140,6 +140,10 @@ Where this spec conflicts with `docs/Product Requirements Document_ Lung Navigat
 Reference prototype: `prototype/proto_endoluminal_rig.html` on branch `prototype/endoluminal-rig`
 (`0378814`; never merged). Carry its angle tests into the real tests.
 
+- **Panel and views:** in a Case, panel 4 is the embedded 3D scene. V cycles inside, outside, and a
+  split view; the split keeps one camera position in both halves while the user navigates. Outside
+  frames the whole chest upright with only the airway and the target; drag pans, Shift-drag rotates,
+  scroll zooms. Panel 2 draws the same trail and destination.
 - **No auto-roll.** The image turns with the scope, only when the user rolls it; roll persists along
   the route (parallel-transported frame, `up' = up·cosφ + right·sinφ`).
 - **Controls:** ←/→ roll 5° per press (auto-repeat allowed); drag on the scope clock sets the roll;
@@ -212,16 +216,18 @@ confirm/reject in the CT panes, and review-flag warnings.
 ## 8. Export ([Image and video export](https://git.xelasys.ro/vali/lung-navigator/-/issues/10))
 
 - **Stills:** "Save image" per view (anatomical, topology, endoluminal); PNG at 2× screen resolution
-  as seen, HUD included; toggle to hide the HUD.
-- **Video**, MP4 H.264, 1920×1080 at 30 fps (1280×720 option), no GIF:
+  as seen, HUD included. The HUD is always on: the Options popover is gone, and the lesion marker is
+  always drawn.
+- **Video**, MP4 H.264, 1920×1080 at 30 fps, no GIF. There is no resolution option:
   1. **Record:** live capture of the current view.
   2. **Route fly-through:** endoluminal, RouteStart → RouteTarget. The scope **auto-aligns** the route
      branch to 12 before each fork (video only; interactive stays manual).
   3. **Anatomical 360° orbit.**
   4. **Topology spin.**
   Types 2–4 are rendered offline frame by frame through the same camera function as interactive
-  navigation (PRD EN-07), with progress and Cancel; the app stays usable.
-- **Burn-in:** view name, `local-NNN`, export date, Lesion (default on), scale bar (anatomical),
+  navigation (PRD EN-07), with progress and Cancel; the app stays usable. The web viewer has no MP4
+  encoder, so it hides these three buttons; Record there saves WebM from the Endoluminal panel.
+- **Burn-in:** view name, `local-NNN`, export date, lesion marker, scale bar (anatomical),
   review flags, footer "Simulated · CT-derived · research use". Never patient name/ID or Study date.
 - **Files:** native save dialog; defaults `~/Pictures/BronchoRoute/` and `~/Movies/BronchoRoute/`;
   names like `local-007_endoluminal_20261101-2350.mp4`; no extra metadata.

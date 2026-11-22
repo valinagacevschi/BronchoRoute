@@ -147,6 +147,8 @@ def test_help_sheet_sections_and_escape(server):
             "Mark a lesion",
             "RouteTarget",
             "Layers and panels",
+            "Endoluminal 3D view",
+            "Export",
             "Viewer and edit mode",
         ]:
             assert wanted in headings
