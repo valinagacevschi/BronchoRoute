@@ -602,6 +602,15 @@ window.CtPanes = (function () {
       clearBtn.onclick = () => {
         clearLesion().catch(err => statusMessage(String(err.message || err)));
       };
+      const resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.id = "ct-reset-case";
+      resetBtn.className = "secondary";
+      resetBtn.textContent = "Reset case";
+      resetBtn.onclick = () => {
+        resetCase().catch(err => statusMessage(String(err.message || err)));
+      };
+      resetBtn.hidden = readOnly;
       const statusEl = document.createElement("span");
       statusEl.className = "ct-lesion-status";
       statusEl.id = "ct-lesion-status";
@@ -609,6 +618,7 @@ window.CtPanes = (function () {
       lesionBox.appendChild(confirmBtn);
       lesionBox.appendChild(cancelBtn);
       lesionBox.appendChild(clearBtn);
+      lesionBox.appendChild(resetBtn);
       lesionBox.appendChild(statusEl);
 
       // The Lesion strip stays visible in the read-only viewer: it shows the
@@ -752,6 +762,34 @@ window.CtPanes = (function () {
       if (onLesionChange) onLesionChange(null);
       buildToolbar();
       drawAll();
+    }
+
+    async function resetCase() {
+      if (readOnly) return;
+      const proceed = window.confirm(
+        "Reset the case to the state right after processing?"
+        + "\n\nThe Lesion, RouteTarget, RouteStart, bridge decisions, corrections,"
+        + " and sign-off are removed. Detected nodules stay."
+      );
+      if (!proceed) return;
+      let res;
+      try {
+        res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/reset`, {
+          method: "POST",
+        });
+      } catch (err) {
+        statusMessage(String(err.message || err));
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        statusMessage(body.detail || `Reset failed (${res.status})`);
+        return;
+      }
+      try {
+        sessionStorage.setItem("bronchoroute-reset-select-nodule", "1");
+      } catch (err) { /* reload still resets the panels */ }
+      location.reload();
     }
 
     function statusMessage(msg) {

@@ -38,6 +38,7 @@ RECORD_KINDS = frozenset({
     "bifurcation_confirmed",
     "correction",
     "bridge_decision",
+    "case_reset",
     "note",
     "signoff",
 })
@@ -750,6 +751,62 @@ def set_lesion(
     return _update_record(case_id, "lesion", apply)
 
 
+RESET_KEEP_RECORD_KINDS = frozenset({"series_confirmed", "segmentation_done"})
+RESET_DROP_FIELDS = (
+    "lesion",
+    "route_target",
+    "route_start",
+    "corrections",
+    "pending_return",
+    "review_signoff",
+    "versions",
+)
+
+
+def reset_case(case_id: str, clinician: str) -> dict:
+    """Return the Case to its post-processing state, keeping detected nodules.
+
+    Removes human decisions: Lesion, RouteTarget, RouteStart, corrections,
+    review sign-off, and bridge decisions by a person. Detector candidates,
+    the auto bridge decisions, and the pipeline records stay.
+    """
+    def apply(record: dict) -> dict:
+        for key in RESET_DROP_FIELDS:
+            record.pop(key, None)
+        decisions = record.get("bridge_decisions")
+        if isinstance(decisions, dict):
+            kept = {
+                key: value for key, value in decisions.items()
+                if isinstance(value, dict) and value.get("source") == "auto"
+            }
+            if kept:
+                record["bridge_decisions"] = kept
+            else:
+                record.pop("bridge_decisions", None)
+        records = []
+        for rec in record.get("records") or []:
+            if not isinstance(rec, dict):
+                continue
+            kind = rec.get("kind")
+            data = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+            if kind in RESET_KEEP_RECORD_KINDS or (
+                kind == "bridge_decision" and data.get("source") == "auto"
+            ):
+                records.append(rec)
+        entry = {
+            "step": 1,
+            "kind": "case_reset",
+            "data": {},
+            "clinician": clinician,
+            "at": _utc_now(),
+        }
+        records.append(entry)
+        record["records"] = records
+        return {"reset": True, "record": entry}
+
+    return _update_record(case_id, "case_reset", apply)
+
+
 def clear_lesion(case_id: str, clinician: str) -> dict:
     """Clear a manually placed Lesion and append lesion_cleared.
 
@@ -888,6 +945,7 @@ __all__ = [
     "load_versions",
     "qualifying_route_start_terminals",
     "read_case_json",
+    "reset_case",
     "route_start_info",
     "set_candidates",
     "set_lesion",

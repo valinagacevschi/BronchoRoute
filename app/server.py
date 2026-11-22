@@ -70,6 +70,7 @@ from app.cases import (
     list_cases,
     load_versions,
     qualifying_route_start_terminals,
+    reset_case,
     set_candidates,
     set_lesion,
     set_route_start,
@@ -1031,6 +1032,16 @@ def api_delete_lesion(case_id: str):
     clinician = _require_clinician()
     try:
         return clear_lesion(case_id, clinician["clinician"])
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/reset")
+def api_reset_case(case_id: str):
+    """Discard human decisions and return to the post-processing state."""
+    clinician = _require_clinician()
+    try:
+        return reset_case(case_id, clinician["clinician"])
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
 

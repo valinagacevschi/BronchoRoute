@@ -1,3 +1,4 @@
+<!-- Changes: Reset case returns to the post-processing state, panel 1, first nodule picked. -->
 <!-- Changes: RouteTarget is auto-picked; candidate cards, point picking, and realism controls removed. -->
 <!-- Changes: shared ? help button and help sheet on every screen (#71). -->
 <!-- Changes: route-target replace confirm, Generate realistic images checkbox, fork-still progress (#68). -->
@@ -1174,6 +1175,27 @@ const SharedPos = (window.CtPanes && window.CtPanes.createSharedPosition)
   : { get: () => null, set() {}, subscribe() { return () => {}; } };
 let nearestHighlight = null; // { world, dist } for 3D/topology
 let lastSharedPosSource = "ct-init";
+
+// After a case reset the viewer opens on panel 1 with the first detected
+// nodule under the crosshair. ct_panes sets this flag, then reloads.
+const RESET_SELECT_FLAG = "bronchoroute-reset-select-nodule";
+async function applyResetSelection() {
+  let flagged = false;
+  try {
+    flagged = sessionStorage.getItem(RESET_SELECT_FLAG) === "1";
+    if (flagged) sessionStorage.removeItem(RESET_SELECT_FLAG);
+  } catch (err) { return; }
+  if (!flagged) return;
+  setVariant(CT_PANES_IDX);
+  const first = Array.isArray(A.candidates) ? A.candidates[0] : null;
+  if (!first || !Array.isArray(first.ras_mm)) return;
+  SharedPos.set(first.ras_mm, "candidate");
+  await ensureCtPanes().catch(() => {});
+  if (ctPanesApi && typeof ctPanesApi.setWorld === "function") {
+    ctPanesApi.setWorld(first.ras_mm);
+  }
+}
+setTimeout(applyResetSelection, 0);
 
 /** Put the shared marker at the top of the trachea (the root node). */
 function resetSharedPositionToRoot() {

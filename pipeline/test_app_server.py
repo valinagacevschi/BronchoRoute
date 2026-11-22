@@ -682,6 +682,63 @@ def test_payload_origin_and_lesion_roundtrip(client, harness):
     assert client.get("/api/cases/local-001/payload?allow_review=true").json()["lesion"] is None
 
 
+def test_reset_case_keeps_nodules_and_drops_decisions(client, harness):
+    """Reset returns to post-processing: nodules and auto decisions stay."""
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    case = json.loads(harness["case"].read_text())
+    case["lesion"] = {"ras_mm": [1.0, 2.0, 3.0], "diameter_mm": 8.0,
+                      "confirmed_by": "Radiologist, A.B.", "at": "2026-01-01T00:00:02Z",
+                      "source": "manual"}
+    case["route_target"] = {"edge_id": 1, "sample_index": 0, "ras_mm": [1.0, 2.0, 3.0]}
+    case["route_start"] = {"node": 2, "confirmed": True}
+    case["corrections"] = [{"kind": "remove"}]
+    case["review_signoff"] = [{"kind": "signoff"}]
+    case["versions"] = [{"n": 1, "frozen": True}]
+    case["candidates"] = {"items": [{"ras_mm": [4.0, 5.0, 6.0], "diameter_mm": 7.0}]}
+    case["bridge_decisions"] = {
+        "auto-bridge": {"bridge_id": "auto-bridge", "decision": "confirmed", "source": "auto"},
+        "human-bridge": {"bridge_id": "human-bridge", "decision": "rejected", "source": "manual"},
+    }
+    case["records"] = [
+        {"step": 1, "kind": "series_confirmed", "data": {}, "clinician": "x",
+         "at": "2026-01-01T00:00:00Z"},
+        {"step": 3, "kind": "segmentation_done", "data": {}, "clinician": "x",
+         "at": "2026-01-01T00:00:01Z"},
+        {"step": 4, "kind": "bridge_decision",
+         "data": {"bridge_id": "auto-bridge", "decision": "confirmed", "source": "auto"},
+         "clinician": "auto", "at": "2026-01-01T00:00:01Z"},
+        {"step": 4, "kind": "bridge_decision",
+         "data": {"bridge_id": "human-bridge", "decision": "rejected", "source": "manual"},
+         "clinician": "Radiologist, A.B.", "at": "2026-01-01T00:00:02Z"},
+        {"step": 2, "kind": "lesion_confirmed", "data": {}, "clinician": "Radiologist, A.B.",
+         "at": "2026-01-01T00:00:02Z"},
+        {"step": 6, "kind": "route_target_chosen", "data": {},
+         "clinician": "Radiologist, A.B.", "at": "2026-01-01T00:00:02Z"},
+    ]
+    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+
+    res = client.post("/api/cases/local-001/reset")
+    assert res.status_code == 200, res.text
+    assert res.json()["reset"] is True
+    reset = json.loads(harness["case"].read_text())
+    for gone in ("lesion", "route_target", "route_start", "corrections",
+                 "review_signoff"):
+        assert gone not in reset, gone
+    # Old version history is gone; the reset event opens version 1 again.
+    assert [v["n"] for v in reset.get("versions") or []] == [1]
+    assert reset["versions"][0]["changes"] == ["case_reset"]
+    assert reset["candidates"]["items"][0]["ras_mm"] == [4.0, 5.0, 6.0]
+    assert list(reset["bridge_decisions"]) == ["auto-bridge"]
+    kinds = [r["kind"] for r in reset["records"]]
+    assert kinds == ["series_confirmed", "segmentation_done", "bridge_decision", "case_reset"]
+    assert reset["records"][-1]["clinician"] == "Radiologist, A.B."
+
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert payload["lesion"] is None
+    assert payload["route_target"] is None
+    assert len(payload["candidates"]) == 1
+
+
 def test_candidates_roundtrip_and_confirm(client, harness):
     """Detector candidates stay suggestions until one is confirmed as the lesion."""
     meta = client.get("/api/cases/local-001/ct/meta").json()
