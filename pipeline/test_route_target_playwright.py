@@ -356,9 +356,9 @@ def test_route_target_cards_select_and_pick(server):
               const state = window.__p2_debug.routeTargetState();
               const lesion = state.topologyLesion;
               return state.visible
-                && state.topologyTarget && state.topologyTarget.label === "RouteTarget"
-                && state.topologyTarget.gapDashed === true
-                && lesion && lesion.label.indexOf("target gap") >= 0
+                && !state.topologyTarget
+                && lesion && lesion.label === "Nodule"
+                && lesion.color === "#f2b632"
                 && lesion.onRouteTarget === true;
             }""",
             timeout=10_000,

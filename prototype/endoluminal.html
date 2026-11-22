@@ -73,12 +73,15 @@
     const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 1, 5000);
     camera.position.set(0, 20, 420);
     world.add(camera);
+    const insideCam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 5000);
+    insideCam.position.set(0, 20, 420);
+    world.add(insideCam);
     world.add(new THREE.HemisphereLight(0xffffff, 0x334055, 1.1));
     const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
     keyLight.position.set(0.3, 0.5, 1);
     camera.add(keyLight);
     const headLight = new THREE.PointLight(0xfff1e6, 0, 0, 0);
-    camera.add(headLight);
+    insideCam.add(headLight);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     // Match Anatomical 3D: drag moves the view, Shift-drag orbits, the wheel zooms.
@@ -137,7 +140,27 @@
     }));
     noduleMeshes.sort((a, b) =>
       (a.userData.noduleId ?? 0) - (b.userData.noduleId ?? 0));
-    window.__endoDebug = { meshes, noduleMeshes };
+    window.__endoDebug = {
+      meshes,
+      noduleMeshes,
+      THREE,
+      camera,
+      insideCam,
+      controls,
+      markerPos: () => marker.position.toArray(),
+      markerNDC: () => marker.position.clone().project(camera).toArray(),
+      routeInfo: () => route && {
+        length: route.length,
+        end: route.end.toArray(),
+        target: route.target.toArray(),
+      },
+      targetPickAllowed: () => !BASE,
+      viewMode: () => viewMode,
+      reveal: () => reveal,
+      progress: () => progress,
+      captureFrame: (w, h) => composeEndoFrame(w, h).toDataURL("image/png"),
+      routeLength: () => route && route.length,
+    };
     const airways = meshes.airways;
     const outsideAirMat = airways.material;
     const insideAirMat = new THREE.MeshStandardMaterial({ color: 0xb06644, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
@@ -227,7 +250,10 @@
     // ---------- route state ----------
     let route = null; // { curve, length, s[], radius[], branches[], frames, gap, end, target }
     let progress = 0; // mm along the route
-    let inside = false;
+    let inside = false; // single inside view
+    let split = false; // inside and outside side by side
+    let splitNeedsFit = false; // fit the outside half when it appears or navigation starts
+    let viewMode = "outside"; // inside | outside | split
     const routeGroup = new THREE.Group(), ringGroup = new THREE.Group(), miniRoute = new THREE.Group();
     world.add(routeGroup, ringGroup); mini.add(miniRoute);
     const marker = new THREE.Mesh(new THREE.SphereGeometry(2.2, 16, 12),
@@ -332,10 +358,12 @@
     // Whole chest upright (patient standing) and fitted to the window.
     let userOrbit = false;
     controls.addEventListener('start', () => { if (!inside) userOrbit = true; });
-    function fitOutsideCamera(margin = 1.12) {
+    function fitOutsideCamera(margin = 1 / 0.9) {
       userOrbit = false;
-      const box = new THREE.Box3();
-      for (const m of Object.values(meshes)) if (m.visible) box.expandByObject(m);
+      navZoomed = false;
+      followP = null;
+      // Frame the airway tree to fill 90% of the shorter screen side.
+      const box = new THREE.Box3().expandByObject(airways);
       if (box.isEmpty() || !(innerWidth > 0) || !(innerHeight > 0)) return;
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
@@ -349,27 +377,52 @@
       camera.updateProjectionMatrix();
       controls.update();
     }
-    function setInside(on) {
-      inside = on && !!route;
-      reveal = false;
+    function applyViewState(mode) {
+      const isInside = mode === 'inside';
       if (routeGroup.children[0]) routeGroup.children[0].visible = true;
       marker.visible = true;
-      airways.material = inside ? insideAirMat : outsideAirMat;
-      for (const m of Object.values(meshes)) if (m !== airways) m.visible = !inside;
-      routeGroup.visible = !inside; ringGroup.visible = inside;
-      world.background.set(inside ? BG_IN : BG_OUT);
-      world.fog = inside ? new THREE.Fog(BG_IN, 8, 70) : null;
-      headLight.intensity = inside ? 2.5 : 0;
-      keyLight.intensity = inside ? 0.4 : 1.6;
-      camera.near = inside ? 0.05 : 1; camera.fov = inside ? 70 : 40; camera.updateProjectionMatrix();
-      controls.enabled = !inside;
-      $('mini').style.display = inside ? 'block' : 'none';
-      if (!inside) fitOutsideCamera();
+      airways.material = isInside ? insideAirMat : outsideAirMat;
+      // Outside shows the airways and the target only; vessels and organs stay hidden.
+      for (const m of Object.values(meshes)) {
+        if (m === airways) continue;
+        m.visible = !isInside && !!m.userData.isNodule;
+      }
+      routeGroup.visible = !isInside; ringGroup.visible = isInside;
+      world.background.set(isInside ? BG_IN : BG_OUT);
+      world.fog = isInside ? new THREE.Fog(BG_IN, 8, 70) : null;
+      renderer.setClearColor(isInside ? BG_IN : BG_OUT, 1);
+      headLight.intensity = isInside ? 2.5 : 0;
+      keyLight.intensity = isInside ? 0.4 : 1.6;
+    }
+    function setViewMode(mode) {
+      if (mode !== 'inside' && mode !== 'outside' && mode !== 'split') return;
+      if (mode !== 'outside' && !route) mode = 'outside';
+      viewMode = mode;
+      inside = mode === 'inside';
+      split = mode === 'split';
+      reveal = false;
+      camera.fov = 40; camera.near = 1; camera.updateProjectionMatrix();
+      insideCam.fov = 70; insideCam.near = 0.05; insideCam.updateProjectionMatrix();
+      controls.enabled = mode !== 'inside';
+      $('mini').style.display = mode === 'inside' ? 'block' : 'none';
+      if (mode === 'outside') { applyViewState('outside'); fitOutsideCamera(); }
+      else if (mode === 'inside') { applyViewState('inside'); }
+      else if (mode === 'split') splitNeedsFit = true;
+    }
+    function setInside(on) { setViewMode(on && route ? 'inside' : 'outside'); }
+    function cycleViewMode() {
+      if (reveal) revealDismissed = true;
+      const order = ['inside', 'outside', 'split'];
+      const at = order.indexOf(viewMode);
+      setViewMode(order[(at + 1) % order.length]);
     }
     // end of the inside flight (a1 video): step outside, airway as glass, nodule and gap in view
     let reveal = false;
+    let revealReturn = 'inside'; // view to restore when the route leaves the end
+    let revealDismissed = false; // V at the end leaves the reveal in place
     const revealGoal = new THREE.Vector3();
     function enterReveal() {
+      revealReturn = split ? 'split' : 'inside';
       setInside(false);
       reveal = true;
       airways.material = revealAirMat;
@@ -386,7 +439,7 @@
       revealGoal.copy(mid).add(side.setLength(Math.max(90, route.gap * 6)));
       camera.position.copy(route.end); // start where the inside camera was, then pull back
     }
-    function exitReveal() { setInside(true); }
+    function exitReveal() { setViewMode(revealReturn); }
 
     // ---------- input ----------
     const keys = {};
@@ -398,15 +451,17 @@
       }
       keys[e.key] = true;
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') e.preventDefault();
-      if (e.key === 'v' || e.key === 'V') setInside(!inside);
-      if (e.key === 'r' || e.key === 'R') { progress = 0; chaseZoom = -1; }
+      if (e.key === 'v' || e.key === 'V') cycleViewMode();
+      if (e.key === 'r' || e.key === 'R') { progress = 0; }
     });
     addEventListener('keyup', e => { keys[e.key] = false; if (e.key === 'Shift') keys.Shift = false; });
     addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
     const ray = new THREE.Raycaster(), down = new THREE.Vector2();
     renderer.domElement.addEventListener('pointerdown', e => down.set(e.clientX, e.clientY));
     renderer.domElement.addEventListener('pointerup', e => {
-      if (inside || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return; // drag = orbit
+      if (inside || split || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return; // drag = orbit
+      // In a Case the confirmed RouteTarget owns the route. A click must not re-plan it.
+      if (BASE) return;
       ray.setFromCamera(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, -e.clientY / innerHeight * 2 + 1), camera);
       const pickable = Object.values(meshes).filter(m => m.visible && m.userData.baseOpacity >= 0.5);
       const hit = ray.intersectObjects(pickable, false)[0];
@@ -423,17 +478,25 @@
     }
     addEventListener('resize', () => {
       if (!(innerWidth > 0) || !(innerHeight > 0)) return; // iframe still hidden
-      camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+      const aspect = innerWidth / innerHeight;
+      camera.aspect = aspect; camera.updateProjectionMatrix();
+      insideCam.aspect = aspect; insideCam.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
-      if (!inside && !userOrbit) fitOutsideCamera();
+      if (viewMode === 'outside' && !userOrbit) fitOutsideCamera();
     });
 
     // ---------- frame loop ----------
     const clock = new THREE.Clock(), look = new THREE.Vector3(), tmp = new THREE.Vector3();
-    let lookInit = false, lastProgress = 0, chaseZoom = -1;
-    const CHASE_MM = 220, FADE = { arteries: 0.35, veins: 0.35 };
+    let lookInit = false, lastProgress = 0, navZoomed = false;
+    let followP = null; // route point the outside camera last followed
+    const upV = new THREE.Vector3();
     function updateHud() {
-      if (!route) { $('hud').textContent = 'click the nodule (or any vessel) to plan a route'; return; }
+      if (!route) {
+        $('hud').textContent = BASE
+          ? 'no route target'
+          : 'click the nodule (or any vessel) to plan a route';
+        return;
+      }
       const atEnd = progress >= route.length - 0.5;
       const w = 2 * lookup(route.radius, progress), b = lookup(route.branches, progress);
       $('hud').style.display = atEnd ? 'none' : 'block';
@@ -447,7 +510,7 @@ airway ${w.toFixed(1)} mm wide`;
       $('f-branch').textContent = route.branches[route.branches.length - 1];
       $('f-gap').textContent = `${route.gap.toFixed(0)} mm`;
       const label = $('gaplabel');
-      if (atEnd && !inside) {
+      if (atEnd && viewMode === 'outside') {
         tmp.copy(route.end).add(route.target).multiplyScalar(0.5).project(camera);
         label.style.display = 'block';
         label.style.left = `${(tmp.x + 1) / 2 * innerWidth}px`;
@@ -464,60 +527,104 @@ airway ${w.toFixed(1)} mm wide`;
         const u = progress / route.length, p = route.curve.getPointAt(u);
         miniDot.position.copy(p);
         marker.position.copy(p);
-        if (inside && A1 && progress >= route.length - 0.5) enterReveal();
+        // Split keeps the outside half fitted to the airway while navigating.
+        if (viewMode === 'split' && progress !== lastProgress) splitNeedsFit = true;
+        if (revealDismissed && progress < route.length - 0.5) revealDismissed = false;
+        if (!revealDismissed && (split || (inside && A1))
+            && progress >= route.length - 0.5) enterReveal();
         else if (reveal && progress < route.length - 0.5) exitReveal();
         if (reveal) {
           if (camera.position.distanceTo(revealGoal) > 0.5)
             camera.position.lerp(revealGoal, 1 - Math.exp(-dt * 2));
-        } else if (inside) {
+        } else {
+          // The inside camera follows the route in every view so the clocks and
+          // the split half stay in sync with the navigation.
           const ahead = route.curve.getPointAt(Math.min(1, u + 6 / route.length));
           if (u > 0.999) ahead.copy(p).add(route.curve.getTangentAt(1));
           if (!lookInit) { look.copy(ahead); lookInit = true; }
           look.lerp(ahead, 1 - Math.exp(-dt * 8));
-          camera.position.copy(p);
-          camera.up.copy(route.frames.normals[Math.round(u * route.segments)]);
-          camera.lookAt(look);
+          insideCam.position.copy(p);
+          insideCam.up.copy(route.frames.normals[Math.round(u * route.segments)]);
+          insideCam.lookAt(look);
           // fade rings the camera is about to pass through
           for (const ring of ringGroup.children) {
             const d = ring.position.distanceTo(p);
             ring.material.opacity = d < 1.5 ? 0 : Math.min(0.85, d / 6);
           }
-        } else {
-          // once moving, the camera follows the route point; orbit/zoom still work around it
-          if (progress !== lastProgress) {
-            tmp.copy(p).sub(controls.target);
-            camera.position.add(tmp);
-            controls.target.copy(p);
-            if (chaseZoom < 0) chaseZoom = 1; // first move: fly in close
-          }
-          if (chaseZoom > 0) {
-            tmp.copy(camera.position).sub(p);
-            tmp.setLength(THREE.MathUtils.lerp(tmp.length(), CHASE_MM, 1 - Math.exp(-dt * 3)));
-            camera.position.copy(p).add(tmp);
-            if (Math.abs(tmp.length() - CHASE_MM) < 1) chaseZoom = 0; // done; wheel zoom is free again
-          }
-          // while travelling, fade everything but the airways and the target so the route stays visible
-          const travelling = progress > 0;
-          for (const [n, mesh] of Object.entries(meshes)) {
-            if (mesh.userData.isNodule) { // keep the target visible through the vessels while travelling
-              mesh.material.depthTest = !travelling; mesh.renderOrder = travelling ? 15 : 0;
+          if (viewMode === 'outside') {
+            // Follow the route point; the first navigation step zooms in 2x.
+            if (progress !== lastProgress) {
+              if (!followP) followP = p.clone();
+              tmp.copy(p).sub(followP);
+              camera.position.add(tmp);
+              controls.target.add(tmp);
+              followP.copy(p);
+              if (!navZoomed && progress > 0) {
+                navZoomed = true;
+                tmp.copy(camera.position).sub(p);
+                const d = tmp.length() / 2;
+                camera.position.copy(p).add(tmp.setLength(d));
+                window.__endoDebug.lastZoom = {
+                  before: d * 2,
+                  after: camera.position.distanceTo(p),
+                };
+              }
             }
-            if (n === 'airways' || mesh.userData.isNodule || n === 'lungs') continue;
-            const m = mesh.material, base = mesh.userData.baseOpacity;
-            m.transparent = travelling || base < 1;
-            mesh.visible = !travelling || n in FADE; // heart and aorta would block the view
-            m.opacity = travelling ? FADE[n] ?? base : base;
-            m.depthWrite = !travelling;
+            // Once navigating, place the route point at 30% from the top.
+            if (navZoomed && progress > 0) {
+              const d = camera.position.distanceTo(p);
+              const lift = 0.4 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+              upV.set(0, 1, 0).applyQuaternion(camera.quaternion);
+              controls.target.copy(p).add(upV.multiplyScalar(-lift));
+            }
+            if (progress === 0 && navZoomed) { // start over at 1x, centred on the fit
+              fitOutsideCamera();
+              followP = null;
+            }
+            // keep the target readable through the airway surface while moving
+            const travelling = progress > 0;
+            for (const mesh of Object.values(meshes)) {
+              if (!mesh.userData.isNodule) continue;
+              mesh.material.depthTest = !travelling;
+              mesh.renderOrder = travelling ? 15 : 0;
+            }
           }
         }
       }
       if (route) lastProgress = progress;
       if (!inside) controls.update();
       updateHud();
-      renderer.setViewport(0, 0, innerWidth, innerHeight);
+      const vw = innerWidth, vh = innerHeight;
       renderer.setScissorTest(false);
-      renderer.clear();
-      renderer.render(world, camera);
+      renderer.setViewport(0, 0, vw, vh);
+      if (viewMode === 'split') {
+        const half = Math.floor(vw / 2);
+        const aspect = (vw - half) / vh;
+        for (const cam of [insideCam, camera]) {
+          if (cam.aspect !== aspect) { cam.aspect = aspect; cam.updateProjectionMatrix(); }
+        }
+        if (splitNeedsFit) { splitNeedsFit = false; fitOutsideCamera(); }
+        applyViewState('inside');
+        renderer.setScissorTest(true);
+        renderer.setScissor(0, 0, half, vh);
+        renderer.setViewport(0, 0, half, vh);
+        renderer.clear();
+        renderer.render(world, insideCam);
+        applyViewState('outside');
+        renderer.setScissor(half, 0, vw - half, vh);
+        renderer.setViewport(half, 0, vw - half, vh);
+        renderer.clear();
+        renderer.render(world, camera);
+        renderer.setScissorTest(false);
+        renderer.setViewport(0, 0, vw, vh);
+      } else {
+        for (const cam of [insideCam, camera]) {
+          if (cam.aspect !== vw / vh) { cam.aspect = vw / vh; cam.updateProjectionMatrix(); }
+        }
+        if (!reveal) applyViewState(viewMode === 'inside' ? 'inside' : 'outside');
+        renderer.clear();
+        renderer.render(world, viewMode === 'inside' ? insideCam : camera);
+      }
       if (rec3d && rec3d.source) {
         const nowMs = performance.now();
         if (nowMs - rec3d.last >= 1000 / rec3d.fps - 1) {
@@ -544,9 +651,9 @@ airway ${w.toFixed(1)} mm wide`;
       drawClocks();
       // Report the live 3D position so Anatomical 3D and Topology follow.
       const nowPos = performance.now();
-      if (inside && active3d && nowPos - lastPosPost > 100) {
+      if (route && active3d && nowPos - lastPosPost > 100) {
         lastPosPost = nowPos;
-        const c = camera.position;
+        const c = insideCam.position;
         parent.postMessage({
           type: "endo3d-position",
           pos: [c.x, c.y, c.z],
@@ -561,7 +668,6 @@ airway ${w.toFixed(1)} mm wide`;
     function drawClocks() {
       const g = clockCtx, cw = 260, chh = 170;
       g.clearRect(0, 0, cw, chh);
-      if (!inside) return;
       g.fillStyle = 'rgba(17, 27, 33, 0.88)';
       g.beginPath();
       g.roundRect(0, 0, cw, chh, 8);
@@ -569,8 +675,8 @@ airway ${w.toFixed(1)} mm wide`;
       g.font = '11px system-ui';
       g.textAlign = 'center';
       g.textBaseline = 'middle';
-      camera.getWorldDirection(clockFwd);
-      clockUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+      insideCam.getWorldDirection(clockFwd);
+      clockUp.set(0, 1, 0).applyQuaternion(insideCam.quaternion);
       // three.js mesh axes: x = patient left, y = superior, z = anterior
       const patient = [
         ['A', 0, -1], ['R', 1, 0], ['P', 0, 1], ['L', -1, 0],
@@ -611,10 +717,59 @@ airway ${w.toFixed(1)} mm wide`;
     }
 
     // Product export: render one frame and return the composed canvas.
+    // The save and record paths must not depend on the animation loop having
+    // just run. Put the inside camera on the route point before composing.
+    function aimInsideCamera() {
+      if (!route) return;
+      const u = Math.max(0, Math.min(1, progress / route.length));
+      const p = route.curve.getPointAt(u);
+      const ahead = route.curve.getPointAt(Math.min(1, u + 6 / route.length));
+      if (u > 0.999) ahead.copy(p).add(route.curve.getTangentAt(1));
+      const n = route.frames.normals[Math.round(u * route.segments)];
+      insideCam.position.copy(p);
+      if (n && Number.isFinite(n.x) && Number.isFinite(n.y) && Number.isFinite(n.z)) {
+        insideCam.up.copy(n);
+      } else {
+        insideCam.up.set(0, 1, 0);
+      }
+      insideCam.lookAt(ahead);
+      insideCam.updateMatrixWorld(true);
+    }
+
     function composeEndoFrame(width, height) {
+      // Render exactly what the panel shows: inside, outside, or both halves.
+      const vw = innerWidth, vh = innerHeight;
+      if (viewMode === 'inside' || viewMode === 'split') aimInsideCamera();
       renderer.setScissorTest(false);
-      renderer.setViewport(0, 0, innerWidth, innerHeight);
-      renderer.render(world, camera);
+      renderer.setViewport(0, 0, vw, vh);
+      if (viewMode === 'split') {
+        const half = Math.floor(vw / 2);
+        const aspect = (vw - half) / vh;
+        for (const cam of [insideCam, camera]) {
+          if (cam.aspect !== aspect) { cam.aspect = aspect; cam.updateProjectionMatrix(); }
+        }
+        applyViewState('inside');
+        renderer.setScissorTest(true);
+        renderer.setScissor(0, 0, half, vh);
+        renderer.setViewport(0, 0, half, vh);
+        renderer.clear();
+        renderer.render(world, insideCam);
+        applyViewState('outside');
+        renderer.setScissor(half, 0, vw - half, vh);
+        renderer.setViewport(half, 0, vw - half, vh);
+        renderer.clear();
+        renderer.render(world, camera);
+        renderer.setScissorTest(false);
+        renderer.setViewport(0, 0, vw, vh);
+      } else {
+        const aspect = vw / vh;
+        for (const cam of [insideCam, camera]) {
+          if (cam.aspect !== aspect) { cam.aspect = aspect; cam.updateProjectionMatrix(); }
+        }
+        if (!reveal) applyViewState(viewMode === 'inside' ? 'inside' : 'outside');
+        renderer.clear();
+        renderer.render(world, viewMode === 'inside' ? insideCam : camera);
+      }
       const src = renderer.domElement;
       const out = document.createElement("canvas");
       out.width = width || src.width;
@@ -625,7 +780,7 @@ airway ${w.toFixed(1)} mm wide`;
       const sx = out.width / base.width;
       const sy = out.height / base.height;
       const clocks = document.getElementById("clocks");
-      if (inside && clocks) {
+      if (clocks) {
         const r = clocks.getBoundingClientRect();
         g.drawImage(clocks, (r.left - base.left) * sx, (r.top - base.top) * sy,
           r.width * sx, r.height * sy);
@@ -716,8 +871,8 @@ airway ${w.toFixed(1)} mm wide`;
       if (data.type === "endo3d-record-stop") rec3d = null;
     });
 
-    // start with the whole chest in view
-    fitOutsideCamera();
+    // start with the whole chest in view, outside layers applied
+    setInside(false);
     if (noduleMeshes.length) {
       const target = noduleMeshes[0], id = target.userData.noduleId;
       setTarget(noduleTargets(target), id == null ? 'the nodule' : `nodule ${id}`, false);
@@ -737,7 +892,9 @@ airway ${w.toFixed(1)} mm wide`;
         setTarget([new THREE.Vector3(P[3 * best], P[3 * best + 1], P[3 * best + 2])], 'auto', false);
       }
     }
-    if (A1 && route) setInside(true);
+    // Panel 4 opens in split view; V then keeps the last chosen state.
+    if (BASE && route) setViewMode('split');
+    else if (A1 && route) setInside(true);
     frame();
   </script>
 </body>

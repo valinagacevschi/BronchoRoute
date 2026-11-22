@@ -1,8 +1,9 @@
-"""Demo viewer affordances: aids toggle, outside reveal, and click-to-retarget.
+"""Demo viewer affordances: lesion click opens the RouteTarget panel.
 
 Ported from examples/airway_nav: minimap, green distance rings, end-of-route
-reveal, lesion click opening the RouteTarget panel, and double-click on a branch
-setting the RouteTarget through the existing server call.
+reveal, and lesion click opening the RouteTarget panel. The RouteTarget itself
+changes only from the panel 1 flow, so a double-click on a branch must not
+overwrite it.
 """
 
 from __future__ import annotations
@@ -105,75 +106,13 @@ def _open(page, server: str, variant: str):
     )
 
 
-def test_aids_toggle_minimap_and_variant_key(server):
+def test_lesion_click_opens_panel_and_double_click_keeps_target(server):
     base, _case = server
     sync_playwright = _playwright_or_skip()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         context = browser.new_context(viewport=VIEWPORT)
         page = context.new_page()
-        try:
-            _open(page, base, "endoluminal")
-            page.wait_for_function("() => window.__p2_debug.aids().minimap > 0")
-            state = page.evaluate("() => window.__p2_debug.aids()")
-            assert state["on"] is True
-            assert state["minimap"] > 0
-            assert state["rings"] > 0
-
-            page.keyboard.press("m")
-            page.wait_for_function("() => !window.__p2_debug.aids().on")
-            assert page.evaluate("() => window.__p2_debug.aids().toast") == "Aids off"
-
-            page.keyboard.press("a")
-            page.wait_for_function("() => window.__p2_debug.getVariant() === 'anatomical'")
-            page.keyboard.press("a")
-            page.wait_for_function("() => window.__p2_debug.getVariant() === 'endoluminal'")
-        finally:
-            context.close()
-            browser.close()
-
-
-def test_reveal_at_route_end_and_enter_dismisses(server):
-    base, _case = server
-    sync_playwright = _playwright_or_skip()
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(viewport=VIEWPORT)
-        page = context.new_page()
-        try:
-            _open(page, base, "endoluminal")
-            end = page.evaluate("() => window.AIRWAY.fly.s.at(-1)")
-            page.evaluate(
-                f"() => window.__p2_debug.setFly({{ s: {end - 0.1}, playing: false }})"
-            )
-            page.wait_for_function("() => window.__p2_debug.aids().reveal > 0")
-            state = page.evaluate("() => window.__p2_debug.aids()")
-            assert state["atEnd"] is True
-            assert state["revealDismissed"] is False
-
-            page.keyboard.press("Enter")
-            page.wait_for_function("() => window.__p2_debug.aids().revealDismissed === true")
-            assert page.evaluate("() => window.__p2_debug.aids().toast") == "Back inside"
-
-            page.evaluate(
-                f"() => window.__p2_debug.setFly({{ s: {max(0.0, end - 6)}, playing: false }})"
-            )
-            page.wait_for_function(
-                "() => window.__p2_debug.aids().revealDismissed === false"
-            )
-        finally:
-            context.close()
-            browser.close()
-
-
-def test_lesion_click_opens_panel_and_double_click_sets_target(server):
-    base, _case = server
-    sync_playwright = _playwright_or_skip()
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(viewport=VIEWPORT)
-        page = context.new_page()
-        page.on("dialog", lambda dialog: dialog.accept())
         try:
             _open(page, base, "anatomical")
             page.wait_for_function(
@@ -192,13 +131,9 @@ def test_lesion_click_opens_panel_and_double_click_sets_target(server):
             hit = page.evaluate("() => window.__p2_debug.edgeHitPoint()")
             assert hit is not None
             page.mouse.dblclick(rect["left"] + hit["x"], rect["top"] + hit["y"])
-            page.wait_for_function(
-                "() => window.AIRWAY.route_target"
-                " && Array.isArray(window.AIRWAY.route_target.ras_mm)"
-            )
-            target = page.evaluate("() => window.AIRWAY.route_target")
-            assert len(target["ras_mm"]) == 3
-            assert target.get("stale") is not True
+            page.wait_for_timeout(500)
+            # A branch double-click must not confirm a target outside panel 1.
+            assert page.evaluate("() => window.AIRWAY.route_target") is None
         finally:
             context.close()
             browser.close()

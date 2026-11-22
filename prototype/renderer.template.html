@@ -852,22 +852,19 @@ body.walkthrough-active .walk-sim-label { display: block; }
 
   <section class="help-section" aria-labelledby="help-endoluminal">
     <h2 id="help-endoluminal">Endoluminal 3D view</h2>
-    <p>Endoluminal shows the airway as a 3D surface. Click the view, then press V to switch between
-    inside and outside.
-    <!-- prototype/endoluminal.html:383 --></p>
+    <p>Endoluminal shows the airway as a 3D surface. Click the view, then press V to cycle inside,
+    outside, and a split view with both halves in sync while you navigate.</p>
     <p>Inside, you fly through the lumen. Press Up or Down to move, hold Shift for faster movement.
     Press R to go back to the start.
     <!-- prototype/endoluminal.html:388 --></p>
-    <p>Outside, the view shows the whole chest, upright and fitted to the window. The airway is white,
-    the arteries are blue, the veins are red, and the lungs are translucent. The heart, aorta and
-    pulmonary vein show when the case has those masks. The route is mint green. Drag to move the view, hold Shift and drag to rotate, and
-    scroll to zoom.
-    <!-- prototype/endoluminal.html:85-99, 330-347; pipeline/build_endoluminal_web.py:35-55 --></p>
+    <p>Outside, the view shows the whole chest, upright and fitted to the window. Only the airway
+    (white) and the target nodules show; vessels, lungs and other organs stay hidden. The route is
+    mint green. Drag to move the view, hold Shift and drag to rotate, and scroll to zoom.</p>
     <p>The bottom right shows the route distance in mm, the branch points passed and the airway
     width. At the route end, a label shows the gap from the route end to the target.
     <!-- prototype/endoluminal.html:414-430 --></p>
-    <p>In the outside view, click the nodule or a vessel to set the route target.
-    <!-- prototype/endoluminal.html:390-402 --></p>
+    <p>In a Case, the route comes from the RouteTarget confirmed in panel 1. A click in this
+    view does not change the target.</p>
     <p>Press 1 to 4 while the 3D view has focus to switch panels.
     <!-- prototype/renderer.template.html:5452-5457 --></p>
   </section>
@@ -1216,7 +1213,7 @@ const tok = n => css.getPropertyValue(n).trim();
 
 const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
-    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front) · <kbd>A</kbd> Endoluminal · <kbd>M</kbd> aids · click Lesion opens RouteTarget · dbl-click airway sets RouteTarget" },
+    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front) · <kbd>A</kbd> Endoluminal · <kbd>M</kbd> aids · click Lesion opens RouteTarget" },
   { key: "endoluminal", name: "Endoluminal",
     hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>T</kbd> reset route · <kbd>A</kbd> Anatomical · <kbd>M</kbd> aids · <kbd>Enter</kbd> back inside" },
   { key: "topology", name: "Topology map",
@@ -1242,10 +1239,10 @@ const DEBUG = params.get("debug") === "1";
 const CASE_ID = params.get("case");
 const SERVER_MODE = !!CASE_ID;
 // With a case, the Endoluminal panel is the endoluminal.html iframe, which owns
-// its own keys: V toggles inside/outside, R returns to the start.
+// its own keys: V cycles inside, outside and split, R returns to the start.
 if (SERVER_MODE) {
   VARIANTS.find(v => v.key === "endoluminal").hint =
-    "<kbd>↑</kbd><kbd>↓</kbd> fly (shift = faster) · <kbd>V</kbd> inside / outside · <kbd>R</kbd> back to start · drag to orbit · click a nodule or vessel to set the target";
+    "<kbd>↑</kbd><kbd>↓</kbd> fly (shift = faster) · <kbd>V</kbd> inside / outside / split · <kbd>R</kbd> back to start · drag to orbit";
 }
 const CT_PANES_IDX = VARIANTS.findIndex(v => v.key === "ct-panes");
 let variant = VARIANTS.findIndex(v => v.key === params.get("variant"));
@@ -4590,7 +4587,6 @@ function mucosa(d) {
 /* --------------------------------------------------- variant C: topology */
 let topoLayout = null;
 let lastTopologyLesion = null;
-let lastTopologyRouteTarget = null;
 let topologyHighlightDraws = 0;
 let topologyEstimatedHits = [];
 let topoPointer = null;
@@ -4636,7 +4632,6 @@ function routeTargetLesionAnchor(lesionRas) {
 
 function drawTopologyLesion() {
   lastTopologyLesion = null;
-  lastTopologyRouteTarget = null;
   if (!A.lesion || !A.lesion.ras_mm || !topoLayout) return;
   if (!window.CtPanes || typeof window.CtPanes.nearestCtSeenSample !== "function") return;
   const anchored = routeTargetLesionAnchor(A.lesion.ras_mm)
@@ -4651,58 +4646,27 @@ function drawTopologyLesion() {
     x: a.x + (b.x - a.x) * frac,
     y: a.y + (b.y - a.y) * frac,
   };
-  const pa = topoToScreen(a);
-  const pb = topoToScreen(b);
   const pt = topoToScreen(local);
-  let ox = pb.x - pa.x;
-  let oy = pb.y - pa.y;
-  const len = Math.hypot(ox, oy) || 1;
-  const x = pt.x + (-oy / len) * 14;
-  const y = pt.y + (ox / len) * 14;
-  const label = anchored.onRouteTarget
-    ? `Lesion · target gap ${anchored.distMm.toFixed(1)} mm`
-    : `Lesion · ${anchored.distMm.toFixed(1)} mm from airway`;
-  if (anchored.onRouteTarget) {
-    ctx.save();
-    ctx.strokeStyle = "#727d84";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(pt.x, pt.y);
-    ctx.lineTo(x, y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.strokeStyle = "#2E6E88";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.font = '10px "IBM Plex Mono", monospace';
-    ctx.fillStyle = "#2E6E88";
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillText("RouteTarget", pt.x + 10, pt.y - 10);
-    ctx.restore();
-    lastTopologyRouteTarget = {
-      x: pt.x, y: pt.y, label: "RouteTarget", gapDashed: true,
-    };
-  }
-  if (!exportSkipsLesion()) {
-    ctx.save();
-    ctx.fillStyle = "#e85d4c";
-    ctx.beginPath();
-    ctx.arc(x, y, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.font = '500 11px "IBM Plex Sans", sans-serif';
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillText(label, x + 8, y);
-    ctx.restore();
-    lastTopologyLesion = {
-      x, y, label, distMm: anchored.distMm, from: edge.f, to: edge.t, frac,
-      onRouteTarget: !!anchored.onRouteTarget,
-    };
-  }
+  if (exportSkipsLesion()) return;
+  ctx.save();
+  ctx.fillStyle = "#f2b632";
+  ctx.beginPath();
+  ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.font = '600 10px "IBM Plex Sans", sans-serif';
+  ctx.fillStyle = "#f2b632";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Nodule", pt.x + 8, pt.y);
+  ctx.restore();
+  lastTopologyLesion = {
+    x: pt.x, y: pt.y, label: "Nodule", distMm: anchored.distMm,
+    from: edge.f, to: edge.t, frac, color: "#f2b632",
+    onRouteTarget: !!anchored.onRouteTarget,
+  };
 }
 
 let topoRot = 0;
@@ -5009,15 +4973,6 @@ function drawTopology(pose) {
     ctx.setLineDash([]);
   }
   drawTopologyEstimated();
-  const routed = A.route_target && !A.route_target.stale && A.endpoint;
-  if (!routed) {
-    const t = topoLayout.get(A.target);
-    if (t) {
-      const pt = topoToScreen(t);
-      ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(pt.x, pt.y, 9, 0, 7); ctx.stroke();
-    }
-  }
   const railRight = document.querySelector(".rail").getBoundingClientRect().right;
   ctx.fillStyle = tok("--muted");
   ctx.font = '500 11px "IBM Plex Sans", sans-serif';
@@ -5054,6 +5009,11 @@ function frame(now) {
     return;
   }
   const endoWrap = document.getElementById("endo3d");
+  // Panel 4 in a Case has no 2D fallback; the iframe owns the view.
+  if (variant === 1 && CASE_ID && !exportFrame.active) {
+    requestAnimationFrame(frame);
+    return;
+  }
   if (variant === 1 && endoWrap && !endoWrap.hidden) {
     requestAnimationFrame(frame);
     return;
@@ -5129,19 +5089,6 @@ cv.addEventListener("pointermove", e => {
     else { cam.panX += dx; cam.panY += dy; }
   }
 });
-cv.addEventListener("dblclick", e => {
-  // Double-click a branch to set the RouteTarget directly. Single click keeps
-  // its review meaning (select branch / remove panel).
-  if (variant !== 0 || VIEWER_MODE || !CASE_ID) return;
-  const rect = cv.getBoundingClientRect();
-  const hit = nearestProjectedEdge(e.clientX - rect.left, e.clientY - rect.top, A.edges || [], 8);
-  if (!hit.edge || !hit.point) return;
-  if (!A.lesion || !A.lesion.ras_mm) {
-    showViewerToast("Confirm a lesion first");
-    return;
-  }
-  setRouteTargetAt(hit.point);
-});
 cv.addEventListener("pointerleave", () => { topoPointer = null; });
 cv.addEventListener("wheel", e => {
   if (variant === 3) return;
@@ -5153,7 +5100,6 @@ let selectedEdgeOi = null;
 let highlightRouteOis = new Set();
 let routeTargetPickArmed = false;
 let chooseRouteTargetFromPick = async () => {};
-let setRouteTargetAt = async () => {};
 let refreshRouteTargetPanel = async () => {};
 let refreshCasePayload = async () => {};
 
@@ -5344,13 +5290,6 @@ function handleViewClick(clientX, clientY) {
     }
     if (live.point) {
       SharedPos.set(live.point, "anatomical");
-      if (routeTargetPickArmed && !VIEWER_MODE) {
-        window.parent.postMessage(
-          { type: "route-target-pick", ras_mm: live.point },
-          location.origin,
-        );
-        return;
-      }
       if (!VIEWER_MODE && live.edge && live.edge.oi != null && live.edge.selectable !== false) {
         selectedEdgeOi = live.edge.oi;
         showRemovePanel(live.edge);
@@ -5807,6 +5746,7 @@ async function syncEndo3d() {
   const canvas = document.getElementById("c");
   if (!wrap || !frame || !canvas) return;
   const wanted = variant === 1 && !exportFrame.active && !!CASE_ID;
+  if (wanted) canvas.style.visibility = "hidden";
   if (!wanted) {
     if (endo3dWasVisible) {
       endo3dWasVisible = false;
@@ -5826,7 +5766,6 @@ async function syncEndo3d() {
   const ok = await endo3dAssets;
   if (!ok) {
     wrap.hidden = true;
-    canvas.style.visibility = "visible";
     return;
   }
   const src = `/endoluminal.html?mode=a1&case=/case-web/${encodeURIComponent(CASE_ID)}`;
@@ -6112,10 +6051,6 @@ function setupRouteTargetPanel() {
 
   chooseRouteTargetFromPick = async function (ras) {
     if (!routeTargetPickArmed) return;
-    if (!Array.isArray(ras) || ras.length !== 3) return;
-    await putRouteTarget({ ras_mm: ras.map(Number) });
-  };
-  setRouteTargetAt = async function (ras) {
     if (!Array.isArray(ras) || ras.length !== 3) return;
     await putRouteTarget({ ras_mm: ras.map(Number) });
   };
@@ -8000,7 +7935,6 @@ if (DEBUG) {
       topologyHighlightDraws,
       anatomicalTarget: lastAnatomicalRouteTarget,
       anatomicalGap: lastAnatomicalGap,
-      topologyTarget: lastTopologyRouteTarget,
       topologyLesion: lastTopologyLesion,
     }),
     topology: () => ({

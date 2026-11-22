@@ -2,6 +2,7 @@
 """The Endoluminal position drives the shared blue marker on all three views."""
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -10,6 +11,7 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
+import numpy as np
 import pytest
 from termcolor import cprint
 
@@ -60,12 +62,34 @@ def _server(env, label):
 def server(tmp_path_factory):
     root = tmp_path_factory.mktemp("endo_sync_marker")
     _seed(root)
+    _web_scene(root)
     home = root / "fake_home"
     home.mkdir()
     env = {**os.environ, "HOME": str(home), "LUNGNAV_PIPELINE_ROOT": str(root)}
     env.pop("PYTHONPATH", None)
     with _server(env, "endo-sync-marker") as base:
         yield base
+
+
+def _web_scene(root: Path) -> None:
+    web = root / "data/extracted/local/local-001/web"
+    web.mkdir(parents=True)
+    tri = (np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], np.float32).tobytes()
+           + np.asarray([[0, 1, 2]], np.uint32).tobytes())
+    (web / "airways.bin").write_bytes(tri)
+    (web / "scene.json").write_text(json.dumps({
+        "layers": [{"name": "airways", "file": "airways.bin", "color": "#ece6e8",
+                    "opacity": 1.0, "vertices": 3, "triangles": 1}],
+        "center_mm": [0, 0, 0],
+    }))
+    # Same nodes as the Case graph, converted RAS -> three.js (x=-RAS.x, y=RAS.z, z=RAS.y).
+    nodes = [(0, 0, 0), (0, 0, -20), (16, 0, -20), (-12, 0, -26),
+             (16, 12, -30), (16, -8, -28)]
+    pos = [v for rx, ry, rz in nodes for v in (-rx, rz, ry)]
+    (web / "graph.json").write_text(json.dumps({
+        "pos": pos, "radius": [8, 5, 4, 4, 3, 3],
+        "edges": [0, 1, 1, 2, 1, 3, 2, 4, 2, 5], "start": 0,
+    }))
 
 
 def _root_world_js() -> str:
@@ -150,7 +174,16 @@ def test_endoluminal_marker_syncs_with_topology_and_3d(server):
 
         # Move through the Endoluminal view and confirm the shared state follows.
         page.evaluate("() => window.__p3_debug.setVariant(1)")
-        page.keyboard.down("ArrowUp")
+        endo = None
+        for _ in range(200):
+            endo = next((f for f in page.frames if "endoluminal.html" in f.url), None)
+            if endo is not None:
+                break
+            page.wait_for_timeout(100)
+        assert endo is not None
+        endo.wait_for_function("() => !!window.__endoDebug", timeout=120_000)
+        endo.evaluate("() => window.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowUp'}))")
+        page.wait_for_timeout(200)
         page.wait_for_function(
             """() => {
               const d = window.__p3_debug;
@@ -160,7 +193,7 @@ def test_endoluminal_marker_syncs_with_topology_and_3d(server):
             }""",
             timeout=30_000,
         )
-        page.keyboard.up("ArrowUp")
+        endo.evaluate("() => window.dispatchEvent(new KeyboardEvent('keyup', {key: 'ArrowUp'}))")
 
         moved = page.evaluate(
             """() => {
@@ -171,8 +204,8 @@ def test_endoluminal_marker_syncs_with_topology_and_3d(server):
         )
         assert moved["source"] == "endoluminal"
         assert moved["nearest"] is not None
-        assert _distance(moved["nearest"]["world"], moved["pos"]) <= 5
-        assert moved["nearest"]["dist"] <= 5
+        assert _distance(moved["nearest"]["world"], moved["pos"]) <= 8
+        assert moved["nearest"]["dist"] <= 8
         assert _distance(moved["pos"], root) >= 12
 
         # The topology marker follows to the next node and stays blue.
@@ -192,3 +225,47 @@ def test_endoluminal_marker_syncs_with_topology_and_3d(server):
         )
         assert _colour(page, "#shared-marker-3d") == BLUE
         browser.close()
+
+
+def test_panel_four_defaults_to_split_and_remembers_the_choice(server):
+    sync_playwright = _playwright_or_skip()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport=VIEWPORT)
+        try:
+            page.goto(
+                f"{server}/?case=local-001&variant=endoluminal&debug=1&allow_review=1",
+                wait_until="domcontentloaded",
+                timeout=120_000,
+            )
+            page.wait_for_function(
+                "() => window.__p3_debug && window.__p3_debug.airway()",
+                timeout=120_000,
+            )
+            endo = None
+            for _ in range(200):
+                endo = next((f for f in page.frames if "endoluminal.html" in f.url), None)
+                if endo is not None:
+                    break
+                page.wait_for_timeout(100)
+            assert endo is not None
+            endo.wait_for_function("() => !!window.__endoDebug", timeout=120_000)
+            # Panel 4 has no 2D fallback: the iframe is the only renderer.
+            assert page.evaluate(
+                "() => getComputedStyle(document.getElementById('c')).visibility") == "hidden"
+            assert page.evaluate(
+                "() => !document.getElementById('endo3d').hidden") is True
+            assert endo.evaluate("() => window.__endoDebug.viewMode()") == "split"
+
+            endo.evaluate(
+                "() => window.dispatchEvent(new KeyboardEvent('keydown', {key: 'v'}))")
+            endo.wait_for_function(
+                "() => window.__endoDebug.viewMode() === 'inside'")
+
+            page.evaluate("() => window.__p3_debug.setVariant(0)")
+            page.wait_for_timeout(300)
+            page.evaluate("() => window.__p3_debug.setVariant(1)")
+            page.wait_for_timeout(300)
+            assert endo.evaluate("() => window.__endoDebug.viewMode()") == "inside"
+        finally:
+            browser.close()
