@@ -243,7 +243,7 @@ kbd + kbd { margin-left: 4px; }
 
 /* Variant switcher ------------------------------------------------------ */
 .switcher {
-  position: fixed; bottom: 22px; left: calc(50% + 118px);
+  position: fixed; bottom: 27px; left: calc(50% + 118px);
   transform: translateX(-50%);
   display: flex; align-items: stretch; gap: 2px;
   background: var(--surface); border: 1px solid var(--edge);
@@ -460,7 +460,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 }
 .ct-pane-meta {
   /* Bottom-right: never collide with top orientation letters (A/S). */
-  position: absolute; bottom: 22px; right: 8px; top: auto; z-index: 2;
+  position: absolute; bottom: 8px; right: 8px; top: auto; z-index: 2;
   font: 500 10px/1 "IBM Plex Mono", monospace; color: rgba(255,255,255,.85);
   text-shadow: 0 1px 2px #000;
   pointer-events: none; max-width: 46%; text-align: right;
@@ -5101,7 +5101,12 @@ function drawTopology(pose) {
   ctx.font = '500 11px "IBM Plex Sans", sans-serif';
   ctx.textAlign = "left";
   drawTopologyLesion();
-  ctx.fillText("Radial map: angle and distance are not anatomy", railRight + 16, H - 18);
+  const radialMapText = "Radial map: angle and distance are not anatomy";
+  ctx.fillText(radialMapText, railRight + 16, H - 18);
+  // Rotation card rides the same line, just after the radial map note.
+  topoControls.style.right = "auto";
+  topoControls.style.left = `${railRight + 16 + ctx.measureText(radialMapText).width + 10}px`;
+  topoControls.style.bottom = "12px";
   updateTopologySharedMarker();
   setReadout({ gen: "—", rad: "—", togo: "—", turns: "—" });
   } finally {
