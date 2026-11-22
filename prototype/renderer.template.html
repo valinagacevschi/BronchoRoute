@@ -1,3 +1,4 @@
+<!-- Changes: RouteTarget is auto-picked; candidate cards, point picking, and realism controls removed. -->
 <!-- Changes: shared ? help button and help sheet on every screen (#71). -->
 <!-- Changes: route-target replace confirm, Generate realistic images checkbox, fork-still progress (#68). -->
 <!-- Changes: standalone viewer never POSTs realism/start (view-only, no writes). -->
@@ -221,8 +222,9 @@ body.endo3d-active .limitations-panel { display: none; }
 .readout dt { color: var(--muted); }
 .readout dd { margin: 0; text-align: right; }
 .readout dd.warm { color: var(--mucosa); }
-/* Case and Position rows sit closer than the default dl margin: 16px between rows, not 32. */
+/* Case, Position and RouteTarget rows sit closer than the default dl margin: 16px between rows, not 32. */
 .group-case .readout,
+.route-target-panel .readout,
 #g-nav .readout { margin: 1px 0; }
 
 
@@ -303,39 +305,12 @@ body.ct-panes-active .proto {
 .review-warnings.collapsed ul { display: none; }
 .reviewed-note { margin: 5px 0 0; font-size: 11px; color: var(--muted); }
 .route-target-panel[hidden] { display: none; }
-.route-target-cards { display: flex; flex-direction: column; gap: 6px; }
-.route-target-card {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  width: 100%; text-align: left;
-  font: 500 12px/1.35 "IBM Plex Sans", sans-serif;
-  color: var(--ink); background: var(--ground);
-  border: 1px solid var(--edge); border-radius: 6px;
-  padding: 7px 8px; cursor: pointer;
-}
-.route-target-card:hover,
-.route-target-card:focus-visible { border-color: var(--steel); }
-.route-target-card[aria-pressed="true"] {
-  border-color: var(--steel);
-  box-shadow: inset 0 0 0 1px var(--steel);
-}
-.route-target-gap {
+#route-target-gap {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
-#route-target-pick {
-  font: 500 12.5px/1 "IBM Plex Sans Condensed", sans-serif;
-  border: 1px solid var(--edge); border-radius: 6px;
-  padding: 7px 8px; background: var(--ground); color: var(--ink); cursor: pointer;
-}
-#route-target-pick[aria-pressed="true"] { border-color: var(--steel); color: var(--steel); }
-#route-target-pick:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
-#route-target-realism-option { font-size: 12px; color: var(--muted); }
-#route-target-realism-option[hidden] { display: none; }
-#route-realism-progress { display: flex; flex-direction: column; gap: 4px; }
-#route-realism-progress[hidden] { display: none; }
-#route-realism-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
-#route-realism-bar { width: 100%; height: 8px; }
 #route-target-status { margin: 0; min-height: 1.2em; font-size: 12px; color: var(--muted); }
+#route-target-status:empty { display: none; }
 #route-target-status.is-error { color: #a32b24; }
 #bridge-list { padding: 0; font-size: 12px; color: var(--muted); }
 .bridge-row { display: block; margin-top: 4px; line-height: 1.7;
@@ -578,13 +553,10 @@ body.walkthrough-active .walk-sim-label { display: block; }
 
   <section class="group route-target-panel" id="route-target-panel" hidden aria-label="RouteTarget">
     <h2>RouteTarget</h2>
-    <div class="route-target-cards" id="route-target-cards"></div>
-    <button type="button" id="route-target-pick" aria-pressed="false">Pick a point</button>
-    <label id="route-target-realism-option" hidden><input type="checkbox" id="route-target-realism" checked> Generate realistic images</label>
-    <div id="route-realism-progress" hidden>
-      <progress id="route-realism-bar" value="0" max="1"></progress>
-      <span id="route-realism-count"></span>
-    </div>
+    <dl class="readout"><dt>Target gap</dt><dd id="route-target-gap">—</dd></dl>
+    <dl class="readout"><dt>Generation</dt><dd id="route-target-generation">—</dd></dl>
+    <dl class="readout"><dt>Route length</dt><dd id="route-target-length">—</dd></dl>
+    <dl class="readout"><dt>Place</dt><dd id="route-target-place">—</dd></dl>
     <p id="route-target-status" role="status"></p>
   </section>
 
@@ -736,17 +708,11 @@ body.walkthrough-active .walk-sim-label { display: block; }
 
   <section class="help-section" aria-labelledby="help-routetarget">
     <h2 id="help-routetarget">RouteTarget</h2>
-    <ol>
-      <li>Confirm a lesion. The RouteTarget panel appears only after a lesion is confirmed.
-      <!-- prototype/renderer.template.html:5270-5277 --></li>
-      <li>Click a candidate card to confirm that target. Each card shows the target gap, generation,
-      route length and place.
-      <!-- prototype/renderer.template.html:5171-5195, 5298-5311 --></li>
-      <li>Or click Pick a point, then click a CT-seen centreline point. The status reads "Click CT-seen centreline".
-      <!-- prototype/renderer.template.html:5327-5334; prototype/ct_panes.js#onPointerDown --></li>
-    </ol>
-    <p>If a target already exists, the app asks you to replace it. A stored target that is no longer reachable
-    is shown as stale. Choose a new target.</p>
+    <p>Confirm a lesion. The app then picks the RouteTarget for you: the reachable CT-seen
+    centreline point with the smallest target gap. A tie goes to fewer generations, then a
+    shorter route. The panel shows the chosen target gap, generation, route length and place.</p>
+    <p>There are no candidate cards and no point picking. A target that is no longer reachable
+    after an airway change is replaced by the next best point on the next load.</p>
     <p>A bridge is a synthetic join that connects a small airway fragment to the tree. Panel 1 lists each
     unmatched bridge with its gap and its CT air coverage. Confirm or reject it there, or click Go to to
     move the shared position to the join. A bridge with air along at least 75% of its length is confirmed
@@ -2462,8 +2428,6 @@ window.__realism = {
 
 function syncRealismHook() {
   syncRouteRealismOption();
-  syncTargetRealismOption();
-  syncTargetRealismProgress();
   // window.__realism uses live getters; kept as a no-op call site marker.
 }
 
@@ -2480,35 +2444,6 @@ function realismProgressModel() {
 function realismProgressText(progress) {
   const suffix = progress.group == null ? "" : ` — group ${progress.group + 1} rendering`;
   return `${progress.done}/${progress.total} fork stills${suffix}`;
-}
-
-function syncTargetRealismOption() {
-  // Realistic images are off for now; keep the option out of the RouteTarget panel.
-  const option = document.getElementById("route-target-realism-option");
-  if (!option) return;
-  option.hidden = true;
-}
-
-function syncTargetRealismProgress() {
-  const wrap = document.getElementById("route-realism-progress");
-  if (!wrap) return;
-  const progress = realismProgressModel();
-  if (!progress) {
-    wrap.hidden = true;
-    return;
-  }
-  wrap.hidden = false;
-  const bar = document.getElementById("route-realism-bar");
-  if (bar) {
-    bar.max = progress.total;
-    bar.value = progress.done;
-  }
-  const count = document.getElementById("route-realism-count");
-  if (count) count.textContent = realismProgressText(progress);
-}
-
-function targetRealismWanted() {
-  return false;
 }
 
 function realismCircleGeom() {
@@ -5226,8 +5161,6 @@ cv.addEventListener("wheel", e => {
 
 let selectedEdgeOi = null;
 let highlightRouteOis = new Set();
-let routeTargetPickArmed = false;
-let chooseRouteTargetFromPick = async () => {};
 let refreshRouteTargetPanel = async () => {};
 let refreshCasePayload = async () => {};
 
@@ -5422,8 +5355,6 @@ function handleViewClick(clientX, clientY) {
     if (lesionHit && !exportFrame.active) {
       const reach = Math.max(4, lesionHit.radiusPx) + 5;
       if (Math.hypot(sx - lesionHit.x, sy - lesionHit.y) <= reach) {
-        const panel = document.getElementById("route-target-panel");
-        if (panel) panel.hidden = false;
         refreshRouteTargetPanel();
         if (!A.lesion) showViewerToast("Confirm a lesion first");
         return;
@@ -5541,17 +5472,6 @@ window.addEventListener("message", (ev) => {
     const target = SWITCHER_VARIANTS[+data.key - 1];
     const idx = target ? VARIANTS.findIndex(v => v.key === target.key) : -1;
     if (idx >= 0) setVariant(idx);
-    return;
-  }
-  if (data.type === "arm-route-target-pick") {
-    routeTargetPickArmed = VIEWER_MODE ? false : !!data.armed;
-    if (ctPanesApi && typeof ctPanesApi.setRouteTargetPickArmed === "function") {
-      ctPanesApi.setRouteTargetPickArmed(routeTargetPickArmed);
-    }
-    return;
-  }
-  if (data.type === "route-target-pick") {
-    chooseRouteTargetFromPick(data.ras_mm);
     return;
   }
   if (data.type === "set-variant" && data.variant) {
@@ -5910,7 +5830,9 @@ async function ensureCtPanes() {
       },
       onLesionChange: (lesion) => {
         A.lesion = lesion;
-        refreshRouteTargetPanel();
+        refreshCasePayload()
+          .then(() => refreshRouteTargetPanel())
+          .catch(() => refreshRouteTargetPanel());
         if (window.parent && window.parent !== window) {
           try {
             window.parent.postMessage(
@@ -5923,9 +5845,6 @@ async function ensureCtPanes() {
       isViewActive: () => ctStage.classList.contains("active"),
       debug: DEBUG,
     });
-    if (routeTargetPickArmed && typeof ctPanesApi.setRouteTargetPickArmed === "function") {
-      ctPanesApi.setRouteTargetPickArmed(true);
-    }
     return ctPanesApi;
   })();
   try {
@@ -6062,17 +5981,17 @@ function render() {
 
 function setupRouteTargetPanel() {
   const panel = document.getElementById("route-target-panel");
-  const cards = document.getElementById("route-target-cards");
-  const pickBtn = document.getElementById("route-target-pick");
-  if (!panel || !cards || !pickBtn) return;
-  let routeTargetBusy = false;
-  let routeTargetFetchGen = 0;
+  if (!panel) return;
+  const gapEl = document.getElementById("route-target-gap");
+  const genEl = document.getElementById("route-target-generation");
+  const lengthEl = document.getElementById("route-target-length");
+  const placeEl = document.getElementById("route-target-place");
+  const statusEl = document.getElementById("route-target-status");
 
   function setRouteTargetStatus(text, isError) {
-    const el = document.getElementById("route-target-status");
-    if (!el) return;
-    el.textContent = text || "";
-    el.classList.toggle("is-error", !!isError && !!text);
+    if (!statusEl) return;
+    statusEl.textContent = text || "";
+    statusEl.classList.toggle("is-error", !!isError && !!text);
   }
 
   function routeTargetErrorDetail(body, status) {
@@ -6084,77 +6003,14 @@ function setupRouteTargetPanel() {
 
   function routeTargetMm(value) {
     const n = Number(value);
-    if (!Number.isFinite(n)) return "—";
-    return n.toFixed(2);
+    return Number.isFinite(n) ? `${n.toFixed(2)} mm` : "\u2014";
   }
 
-  function routeTargetPlace(cand) {
-    const lobe = cand && cand.lobe ? String(cand.lobe) : "";
-    const name = cand && cand.airway_name ? String(cand.airway_name) : "";
+  function routeTargetPlace(rt) {
+    const lobe = rt && rt.lobe ? String(rt.lobe) : "";
+    const name = rt && rt.airway_name ? String(rt.airway_name) : "";
     if (lobe && name) return `${lobe} / ${name}`;
-    if (lobe) return lobe;
-    if (name) return name;
-    return "—";
-  }
-
-  function routeTargetSelected(cand) {
-    const rt = A.route_target;
-    if (!rt || rt.stale || !cand) return false;
-    return Number(rt.edge_id) === Number(cand.edge_id)
-      && Number(rt.sample_index) === Number(cand.sample_index);
-  }
-
-  function setRouteTargetPickArmed(on) {
-    routeTargetPickArmed = !VIEWER_MODE && !!on;
-    if (ctPanesApi && typeof ctPanesApi.setRouteTargetPickArmed === "function") {
-      ctPanesApi.setRouteTargetPickArmed(routeTargetPickArmed);
-    }
-    pickBtn.setAttribute("aria-pressed", String(routeTargetPickArmed));
-  }
-
-  function highlightRouteTarget(cand) {
-    const ids = Array.isArray(cand && cand.route_edge_ids) ? cand.route_edge_ids : [];
-    highlightRouteOis = new Set(ids.map(Number).filter(n => Number.isFinite(n)));
-    if (ctPanesApi && typeof ctPanesApi.setHighlightRoute === "function") {
-      ctPanesApi.setHighlightRoute([...highlightRouteOis]);
-    }
-    if (cand && Array.isArray(cand.ras_mm) && cand.ras_mm.length === 3) {
-      SharedPos.set(cand.ras_mm, "route-target-hover");
-    }
-  }
-
-  function clearRouteTargetHighlight() {
-    highlightRouteOis = new Set();
-    if (ctPanesApi && typeof ctPanesApi.setHighlightRoute === "function") {
-      ctPanesApi.setHighlightRoute([]);
-    }
-  }
-
-  function fillRouteTargetCard(button, cand) {
-    button.replaceChildren();
-    button.className = "route-target-card";
-    button.type = "button";
-    button.setAttribute("aria-pressed", routeTargetSelected(cand) ? "true" : "false");
-    const gap = document.createElement("span");
-    gap.className = "route-target-gap";
-    gap.textContent = `target gap ${routeTargetMm(cand.target_gap_mm)} mm`;
-    const gen = document.createElement("span");
-    gen.textContent = `generation ${cand.generation}`;
-    const length = document.createElement("span");
-    length.textContent = `route length ${routeTargetMm(cand.route_length_mm)} mm`;
-    const place = document.createElement("span");
-    place.textContent = routeTargetPlace(cand);
-    button.appendChild(gap);
-    button.appendChild(gen);
-    button.appendChild(length);
-    button.appendChild(place);
-    if (Number(cand.interpolated_mm_on_route) > 0) {
-      const bridge = document.createElement("span");
-      bridge.className = "route-target-bridge";
-      bridge.textContent =
-        `crosses ${routeTargetMm(cand.interpolated_mm_on_route)} mm interpolated (confirmed)`;
-      button.appendChild(bridge);
-    }
+    return lobe || name || "\u2014";
   }
 
   async function reloadCasePayload() {
@@ -6187,114 +6043,29 @@ function setupRouteTargetPanel() {
   }
   refreshCasePayload = reloadCasePayload;
 
-  function currentRouteTargetRas() {
-    const rt = A && A.route_target;
-    if (!rt || rt.stale || !Array.isArray(rt.ras_mm) || rt.ras_mm.length !== 3) {
-      return null;
-    }
-    return rt.ras_mm.map(value => Number(value).toFixed(2)).join(", ");
-  }
-
-  async function putRouteTarget(payload) {
-    if (VIEWER_MODE || routeTargetBusy || !CASE_ID) return;
-    const oldTarget = currentRouteTargetRas();
-    if (oldTarget != null) {
-      const replace = window.confirm(
-        "Replace the current route target? Its tissue images will be deleted."
-        + `\nCurrent target: ${oldTarget} mm`,
-      );
-      if (!replace) return;
-    }
-    const generateRealism = targetRealismWanted();
-    routeTargetBusy = true;
-    try {
-      const res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/route-target`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({...payload, generate_realism: generateRealism}),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setRouteTargetStatus(routeTargetErrorDetail(body, res.status), true);
-        return;
-      }
-      setRouteTargetPickArmed(false);
-      setRouteTargetStatus("", false);
-      await reloadCasePayload();
-      await refreshRouteTargetPanel();
-      if (generateRealism) startRealism().catch(() => {});
-    } catch (err) {
-      setRouteTargetStatus(String(err.message || err), true);
-    } finally {
-      routeTargetBusy = false;
-    }
-  }
-
+  // RouteTarget is picked on the server: smallest target gap wins. The panel
+  // only reads the chosen target back.
   refreshRouteTargetPanel = async function () {
-    const lesion = A.lesion;
-    if (!SERVER_MODE || !lesion || !lesion.ras_mm) {
-      panel.hidden = true;
-      cards.replaceChildren();
-      clearRouteTargetHighlight();
+    const rt = A.route_target;
+    const hasLesion = !!(A.lesion && A.lesion.ras_mm);
+    panel.hidden = !(SERVER_MODE && hasLesion && rt);
+    if (!rt) {
+      setRouteTargetStatus("", false);
       return;
     }
-    panel.hidden = false;
-    const gen = ++routeTargetFetchGen;
-    cards.replaceChildren();
-    let res;
-    try {
-      res = await fetch(`/api/cases/${encodeURIComponent(CASE_ID)}/route-candidates`);
-    } catch (err) {
-      if (gen !== routeTargetFetchGen) return;
-      setRouteTargetStatus(String(err.message || err), true);
+    if (rt.stale) {
+      setRouteTargetStatus(
+        String(rt.reason || "route target no longer valid"),
+        false,
+      );
       return;
     }
-    const body = await res.json().catch(() => ({}));
-    if (gen !== routeTargetFetchGen) return;
-    if (!res.ok) {
-      cards.replaceChildren();
-      setRouteTargetStatus(routeTargetErrorDetail(body, res.status), true);
-      return;
-    }
-    const list = Array.isArray(body.candidates) ? body.candidates : [];
-    cards.replaceChildren();
-    for (const cand of list) {
-      const button = document.createElement("button");
-      fillRouteTargetCard(button, cand);
-      button.addEventListener("pointerenter", () => highlightRouteTarget(cand));
-      button.addEventListener("pointerleave", () => clearRouteTargetHighlight());
-      button.addEventListener("focus", () => highlightRouteTarget(cand));
-      button.addEventListener("blur", () => clearRouteTargetHighlight());
-      button.addEventListener("click", () => {
-        putRouteTarget({
-          edge_id: cand.edge_id,
-          sample_index: cand.sample_index,
-        });
-      });
-      cards.appendChild(button);
-    }
-    if (A.route_target && A.route_target.stale) {
-      setRouteTargetStatus(A.route_target.reason, false);
-    } else if (!routeTargetPickArmed) {
-      const status = document.getElementById("route-target-status");
-      if (status && !status.classList.contains("is-error")) setRouteTargetStatus("", false);
-    }
+    setRouteTargetStatus("", false);
+    if (gapEl) gapEl.textContent = routeTargetMm(rt.target_gap_mm);
+    if (genEl) genEl.textContent = rt.generation == null ? "\u2014" : String(rt.generation);
+    if (lengthEl) lengthEl.textContent = routeTargetMm(rt.route_length_mm);
+    if (placeEl) placeEl.textContent = routeTargetPlace(rt);
   };
-
-  chooseRouteTargetFromPick = async function (ras) {
-    if (!routeTargetPickArmed) return;
-    if (!Array.isArray(ras) || ras.length !== 3) return;
-    await putRouteTarget({ ras_mm: ras.map(Number) });
-  };
-
-  pickBtn.disabled = !!VIEWER_MODE;
-  pickBtn.addEventListener("click", () => {
-    if (VIEWER_MODE) return;
-    const next = !routeTargetPickArmed;
-    setRouteTargetPickArmed(next);
-    if (next) setRouteTargetStatus("Click CT-seen centreline", false);
-    else setRouteTargetStatus("", false);
-  });
   refreshRouteTargetPanel();
 }
 
@@ -8160,7 +7931,6 @@ if (DEBUG) {
     routeTargetState: () => ({
       visible: !document.getElementById("route-target-panel").hidden,
       status: document.getElementById("route-target-status").textContent,
-      armed: routeTargetPickArmed,
       highlight: [...highlightRouteOis],
       anatomicalHighlightDraws,
       topologyHighlightDraws,

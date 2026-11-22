@@ -283,6 +283,27 @@ def test_api_gating_and_put(client, harness, fake_home):
     assert abs(float(top["route_length_mm"]) - float(chosen["route_length_mm"])) < 1e-6
 
 
+def test_lesion_put_auto_picks_best_route(client, harness, fake_home):
+    """A new Lesion stores the top-ranked candidate as the RouteTarget."""
+    _set_clinician(client)
+    _seed_through_step(client, harness, 2)
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"], dtype=float)
+    centre = [meta["shape"][0] / 2, meta["shape"][1] / 2, meta["shape"][2] / 2]
+    ras = (affine @ np.array([centre[0], centre[1], centre[2], 1.0]))[:3]
+    res = client.put("/api/cases/local-001/lesion", json={"ras_mm": [float(v) for v in ras]})
+    assert res.status_code == 200, res.text
+    auto = res.json()["route_target"]
+    top = client.get("/api/cases/local-001/route-candidates").json()["candidates"][0]
+    assert auto["rank"] == 1
+    assert auto["edge_id"] == top["edge_id"]
+    assert auto["sample_index"] == top["sample_index"]
+    assert auto["target_gap_mm"] == top["target_gap_mm"]
+    payload = client.get("/api/cases/local-001/payload?allow_review=1").json()
+    assert payload["route_target"]["edge_id"] == top["edge_id"]
+    assert payload["route_target"]["stale"] is False
+
+
 def test_route_target_generate_realism_flag(client, harness, fake_home, monkeypatch):
     """The client checkbox decides whether RouteTarget confirm starts realism."""
     _set_clinician(client)
@@ -745,8 +766,8 @@ def _edge_oi_for_test(graph: dict, i: int) -> int:
     return int(e.get("_original_index", i))
 
 
-def test_stale_target_when_edge_gone(client, harness, fake_home):
-    """Stored target edge no longer in graph → stale payload + step 6 available."""
+def test_lost_target_is_replaced_automatically(client, harness, fake_home):
+    """Stored target edge no longer in graph → next best point chosen on load."""
     _set_clinician(client)
     _seed_through_step(client, harness, 6)
     _place_lesion(harness["case"], [20.0, 0.0, -10.0])
@@ -765,13 +786,13 @@ def test_stale_target_when_edge_gone(client, harness, fake_home):
     harness["case"].write_text(json.dumps(case, indent=2) + "\n")
 
     payload = client.get("/api/cases/local-001/payload?allow_review=1").json()
-    assert payload["route_target"]["stale"] is True
-    assert "reason" in payload["route_target"]
-    assert payload["endpoint"] is None
+    assert payload["route_target"]["stale"] is False
+    assert payload["route_target"]["rank"] == 1
+    assert payload["route_target"]["edge_id"] != 9999
+    assert payload["endpoint"] is not None
     wf = client.get("/api/cases/local-001/workflow").json()
     assert wf["steps"][4]["status"] == "done", wf["steps"][4]
-    assert wf["steps"][5]["status"] == "available", wf["steps"][5]
-    assert wf["steps"][5]["reason"]
+    assert wf["steps"][5]["status"] == "done", wf["steps"][5]
 
 
 def test_fly_no_points_beyond_selectable_or_interp_on_target_edge(

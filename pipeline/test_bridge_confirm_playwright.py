@@ -109,12 +109,17 @@ def test_ct_bridge_decisions(bridge_server):
             box = page.locator(".ct-pane-coronal canvas").bounding_box()
             page.mouse.click(box["x"] + screen["x"], box["y"] + screen["y"])
             page.locator("#ct-confirm-lesion").click()
-            page.wait_for_function("window.__p3_debug.airway().lesion !== null")
-            page.locator("#route-target-pick").click()
-            with page.expect_response(lambda response: "/route-target" in response.url and response.request.method == "PUT") as blocked:
-                page.mouse.click(box["x"] + screen["x"], box["y"] + screen["y"])
-            assert blocked.value.status == 422
-            assert page.evaluate("window.__p3_debug.airway().route_target") is None
+            page.wait_for_function(
+                """() => {
+                  const rt = window.__p3_debug.airway().route_target;
+                  return !!(rt && !rt.stale && rt.rank === 1);
+                }""",
+                timeout=30000,
+            )
+            # The automatic target never sits on an unconfirmed branch.
+            assert page.evaluate(
+                "window.__p3_debug.airway().route_target.edge_id !== 2"
+            )
             row.locator(".bridge-goto").click()
             row.locator(".bridge-confirm").click()
             # A confirmed bridge leaves the pane: no list row and no CT marker.
@@ -126,12 +131,9 @@ def test_ct_bridge_decisions(bridge_server):
             assert page.evaluate("window.__p3_debug.airway().edges.some(e => e.oi === 2 && e.selectable !== false)")
             assert payloads
             page.screenshot(path=str(shots / "bridges-confirmed.png"), full_page=True)
-            # Pick the now reachable downstream branch, then reject its bridge.
-            page.evaluate("window.__p3_debug.ct().setWorld([24.5,20.5,20.5])")
-            screen = page.evaluate("window.__p3_debug.ct().screenOfWorld('coronal',[24.5,20.5,20.5])")
-            box = page.locator(".ct-pane-coronal canvas").bounding_box()
-            page.mouse.click(box["x"] + screen["x"], box["y"] + screen["y"])
-            page.wait_for_function("window.__p3_debug.airway().route_target?.edge_id === 2")
+            # The confirmed branch is now reachable for the candidates.
+            proposals = page.request.get(f"{base}/api/cases/local-001/route-candidates")
+            assert proposals.ok
             assert page.request.put(f"{base}/api/settings", data={"initials": "V.T."}).ok
             assert page.request.put(
                 f"{base}/api/cases/local-001/bridges/{bridge_id}",
@@ -147,19 +149,25 @@ def test_ct_bridge_decisions(bridge_server):
                 "() => { const c = window.__p3_debug?.ct?.(); return !!(c && c.isLoaded()); }",
                 timeout=120000,
             )
-            marker("#888")
+            # A rejected bridge leaves the panes: no CT marker in any pane.
+            assert page.evaluate(
+                "() => { const c = window.__p3_debug.ct(); return c.isLoaded() &&"
+                " Object.values(c.getBridgeDraw()).flat().length === 0; }"
+            )
             assert json.loads(case_path.read_text())["bridge_decisions"][bridge_id]["decision"] == "rejected"
-            page.wait_for_function("window.__p3_debug.airway().route_target?.stale === true")
-            reason = page.evaluate("window.__p3_debug.airway().route_target.reason")
-            assert reason == "not reachable from RouteStart"
-            assert page.locator("#route-target-status").inner_text() == reason
-            assert "unknown edge_id" not in page.locator("#route-target-status").inner_text()
+            # The lost target is replaced automatically by the next best point.
+            page.wait_for_function(
+                "() => { const rt = window.__p3_debug.airway().route_target;"
+                " return !!(rt && !rt.stale); }"
+            )
+            assert page.evaluate("window.__p3_debug.airway().route_target.edge_id !== 2")
+            assert page.locator("#route-target-status").inner_text() == ""
             assert "is-error" not in (page.locator("#route-target-status").get_attribute("class") or "")
-            assert page.locator(".route-target-card[aria-pressed='true']").count() == 0
-            assert "(confirmed)" not in page.locator("#route-target-cards").inner_text()
+            assert page.locator(".route-target-card").count() == 0
+            assert page.locator("#route-target-pick").count() == 0
             proposals = page.request.get(f"{base}/api/cases/local-001/route-candidates")
             assert proposals.ok
-            assert page.locator(".route-target-card").count() == len(proposals.json()["candidates"])
+            assert all(c["edge_id"] != 2 for c in proposals.json()["candidates"])
             assert page.evaluate("window.__p3_debug.airway().edges.every(e => e.oi !== 2)")
             page.screenshot(path=str(shots / "bridges-rejected.png"), full_page=True)
             page.locator("#switcher button", has_text="Topology").click()

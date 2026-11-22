@@ -1,9 +1,9 @@
-"""Demo viewer affordances: lesion click opens the RouteTarget panel.
+"""Demo viewer affordances: the RouteTarget is chosen automatically.
 
 Ported from examples/airway_nav: minimap, green distance rings, end-of-route
-reveal, and lesion click opening the RouteTarget panel. The RouteTarget itself
-changes only from the panel 1 flow, so a double-click on a branch must not
-overwrite it.
+reveal, and a lesion click that keeps the RouteTarget panel in view. The
+RouteTarget changes only by the automatic choice, so a double-click on a
+branch must not overwrite it.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ def _open(page, server: str, variant: str):
     )
 
 
-def test_lesion_click_opens_panel_and_double_click_keeps_target(server):
+def test_lesion_click_keeps_panel_and_double_click_keeps_target(server):
     base, _case = server
     sync_playwright = _playwright_or_skip()
     with sync_playwright() as playwright:
@@ -118,6 +118,11 @@ def test_lesion_click_opens_panel_and_double_click_keeps_target(server):
             page.wait_for_function(
                 "() => window.__p2_debug.lesionViews().anatomical != null"
             )
+            page.wait_for_function(
+                "() => { const rt = window.AIRWAY.route_target;"
+                " return !!(rt && !rt.stale); }"
+            )
+            before = page.evaluate("() => JSON.stringify(window.AIRWAY.route_target)")
             lesion = page.evaluate("() => window.__p2_debug.lesionViews().anatomical")
             rect = page.evaluate(
                 "() => { const r = document.getElementById('c').getBoundingClientRect();"
@@ -132,8 +137,9 @@ def test_lesion_click_opens_panel_and_double_click_keeps_target(server):
             assert hit is not None
             page.mouse.dblclick(rect["left"] + hit["x"], rect["top"] + hit["y"])
             page.wait_for_timeout(500)
-            # A branch double-click must not confirm a target outside panel 1.
-            assert page.evaluate("() => window.AIRWAY.route_target") is None
+            # A branch double-click must not overwrite the chosen target.
+            after = page.evaluate("() => JSON.stringify(window.AIRWAY.route_target)")
+            assert after == before
         finally:
             context.close()
             browser.close()

@@ -109,7 +109,12 @@ from app.review import (
     set_bridge_decision,
     undo_correction,
 )
-from app.route_target import route_target_candidates, set_route_target
+from app.route_target import (
+    auto_pick_route_target,
+    ensure_route_target,
+    route_target_candidates,
+    set_route_target,
+)
 from app.signoff import SignoffArtifactError, apply_signoff, version_report_html
 from app.versions import (
     REPORT_CSP,
@@ -894,6 +899,11 @@ def api_review_signoff(case_id: str, body: ReviewSignoffBody):
 
 @app.get("/api/cases/{case_id}/payload")
 def api_payload(case_id: str, allow_review: bool = Query(False)):
+    # RouteTarget is automatic: keep the best-ranked target filled in.
+    try:
+        ensure_route_target(case_id)
+    except (WorkflowBlocked, UnknownCase, FileNotFoundError, ValueError):
+        pass
     try:
         return case_payload(case_id, allow_review=allow_review)
     except ReviewBlocked as exc:
@@ -1001,11 +1011,19 @@ async def api_put_lesion(case_id: str, request: Request):
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
     try:
-        return set_lesion(
+        result = set_lesion(
             case_id, parsed.ras_mm, clinician["clinician"], parsed.diameter_mm
         )
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
+    # A new Lesion invalidates the previous choice; pick the new best route.
+    try:
+        result["route_target"] = auto_pick_route_target(
+            case_id, clinician["clinician"]
+        )
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    return result
 
 
 @app.delete("/api/cases/{case_id}/lesion")

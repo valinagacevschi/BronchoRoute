@@ -661,7 +661,11 @@ def test_payload_origin_and_lesion_roundtrip(client, harness):
 
     on_disk = json.loads(harness["case"].read_text())
     assert on_disk["lesion"]["ras_mm"] == pytest.approx(ras)
-    assert on_disk["records"][-1]["kind"] == "lesion_confirmed"
+    kinds = [rec["kind"] for rec in on_disk["records"]]
+    assert "lesion_confirmed" in kinds
+    # The lesion write also stores the best-ranked RouteTarget.
+    assert kinds[-1] == "route_target_chosen"
+    assert on_disk["route_target"]["rank"] == 1
 
     payload2 = client.get("/api/cases/local-001/payload?allow_review=true").json()
     assert payload2["lesion"]["ras_mm"] == pytest.approx(ras)

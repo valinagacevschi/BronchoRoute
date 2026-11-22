@@ -461,6 +461,10 @@ def plan_route_target_for_payload(
             "rank": route_target.get("rank"),
             "target_gap_mm": route_target.get("target_gap_mm"),
             "target_inside_airway": route_target.get("target_inside_airway"),
+            "generation": route_target.get("generation"),
+            "route_length_mm": route_target.get("route_length_mm"),
+            "lobe": route_target.get("lobe"),
+            "airway_name": route_target.get("airway_name"),
             "confirmed": True,
             "stale": False,
         },
@@ -569,6 +573,55 @@ def set_route_target(
         return {"route_target": record["route_target"], "record": entry}
 
 
+AUTO_CLINICIAN = "BronchoRoute auto"
+
+
+def auto_pick_route_target(case_id: str, clinician: str | None = None) -> dict | None:
+    """Confirm the best-ranked candidate as the RouteTarget.
+
+    Ranking is the product rule: smallest target gap, then fewer generations,
+    then shorter route. Returns None when the case has no Lesion or no
+    reachable candidate.
+    """
+    ref = CaseRef.parse(case_id)
+    record = load_case_record(ref)
+    lesion = record.get("lesion")
+    if not isinstance(lesion, dict) or lesion.get("ras_mm") is None:
+        return None
+    eff = effective_for_case(case_id, record)
+    candidates = rank_route_target_candidates(
+        eff["graph"], record, [float(v) for v in lesion["ras_mm"]]
+    )
+    if not candidates:
+        return None
+    top = candidates[0]
+    who = clinician or str(lesion.get("confirmed_by") or AUTO_CLINICIAN)
+    result = set_route_target(
+        case_id,
+        who,
+        edge_id=int(top["edge_id"]),
+        sample_index=int(top["sample_index"]),
+    )
+    return result["route_target"]
+
+
+def ensure_route_target(case_id: str) -> dict | None:
+    """Keep a valid stored RouteTarget, otherwise auto-pick the best candidate."""
+    ref = CaseRef.parse(case_id)
+    record = load_case_record(ref)
+    lesion = record.get("lesion")
+    if not isinstance(lesion, dict) or lesion.get("ras_mm") is None:
+        return None
+    eff = effective_for_case(case_id, record)
+    stored = record.get("route_target")
+    if (
+        isinstance(stored, dict)
+        and stale_reason_for_route_target(eff["graph"], record, stored) is None
+    ):
+        return stored
+    return auto_pick_route_target(case_id)
+
+
 def resolve_route_end_for_payload(
     effective_graph: dict, route_target: dict
 ) -> tuple[int, int] | None:
@@ -611,8 +664,10 @@ __all__ = [
     "NOT_REACHABLE",
     "SNAP_MM",
     "TOP_N",
+    "auto_pick_route_target",
     "candidate_metrics_for_sample",
     "centreline_index_for_sample",
+    "ensure_route_target",
     "last_original_index_at_or_before_arc",
     "list_selectable_ct_samples",
     "plan_route_target_for_payload",

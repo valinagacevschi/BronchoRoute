@@ -1,7 +1,7 @@
-# Changes: accept the RouteTarget replace confirm when picking a second target (#68).
+# Changes: RouteTarget is auto-picked; no cards, point picking, or replace dialog.
 # Changes: stamp the synthetic Case with the current pipeline version.
-# Changes: RouteTarget cards, hover highlight, selection, point pick, and target gap.
-"""Place a Lesion, then choose a RouteTarget from the rail and from the CT."""
+# Changes: RouteTarget gap, generation, route length and place in the rail readout.
+"""Place a Lesion, then check the auto-picked RouteTarget in the rail and the CT."""
 
 from __future__ import annotations
 
@@ -205,7 +205,7 @@ def _click_world(page, world, pane="coronal") -> None:
     page.mouse.click(box["x"] + scr["x"], box["y"] + scr["y"])
 
 
-def test_route_target_cards_select_and_pick(server):
+def test_route_target_is_chosen_automatically(server):
     sync_playwright = _playwright_or_skip()
     shots = Path(os.environ.get("TMPDIR", "/tmp")) / "bronchoroute-34"
     shots.mkdir(parents=True, exist_ok=True)
@@ -218,9 +218,6 @@ def test_route_target_cards_select_and_pick(server):
         page.on("pageerror", lambda error: errors.append(str(error)))
         def _console(message):
             if message.type != "error":
-                return
-            # The off-airway pick is a real 422; the page shows that reason inline.
-            if "422" in message.text:
                 return
             errors.append(message.text)
 
@@ -258,82 +255,49 @@ def test_route_target_cards_select_and_pick(server):
         page.mouse.click(box["x"] + placed["scr"]["x"], box["y"] + placed["scr"]["y"])
         page.locator("#ct-confirm-lesion").click()
         page.wait_for_function(
-            "() => document.querySelectorAll('.route-target-card').length === 3",
-            timeout=20_000,
+            """() => {
+              const rt = window.__p3_debug.airway().route_target;
+              return !!(rt && !rt.stale && rt.rank === 1 && rt.ras_mm);
+            }""",
+            timeout=30_000,
         )
         assert page.locator("#route-target-panel").is_visible()
+        # No route selection UI remains.
+        assert page.locator(".route-target-card").count() == 0
+        assert page.locator("#route-target-pick").count() == 0
+
         with urllib.request.urlopen(
             f"{server}/api/cases/local-001/route-candidates", timeout=10,
         ) as res:
             cands = json.load(res)["candidates"]
-        assert len(cands) == 3
-        gaps = [c["target_gap_mm"] for c in cands]
-        assert gaps == sorted(gaps)
-        assert cands[0]["target_gap_mm"] == min(gaps)
-        texts = page.locator(".route-target-card").all_inner_texts()
-        assert len(texts) == 3
-        for cand, text in zip(cands, texts):
-            assert f"target gap {cand['target_gap_mm']:.2f} mm" in text
-            assert f"generation {cand['generation']}" in text
-            assert f"route length {cand['route_length_mm']:.2f} mm" in text
-            place = str(cand["lobe"] or "")
-            if cand.get("airway_name"):
-                place = f"{place} / {cand['airway_name']}" if place else str(cand["airway_name"])
-            assert place in text
-            if cand["interpolated_mm_on_route"] > 0:
-                shown = f"crosses {cand['interpolated_mm_on_route']:.2f} mm interpolated (confirmed)"
-                assert shown in text
-        _shot(page, shots, "cards.png")
+        top = cands[0]
+        assert top["target_gap_mm"] == min(c["target_gap_mm"] for c in cands)
+        chosen = page.evaluate("() => window.__p3_debug.airway().route_target")
+        assert chosen["edge_id"] == top["edge_id"]
+        assert chosen["sample_index"] == top["sample_index"]
+        assert chosen["target_gap_mm"] == pytest.approx(top["target_gap_mm"], abs=0.01)
 
-        page.locator(".route-target-card").first.hover()
-        page.wait_for_function(
-            """(ids) => {
-              const want = new Set(ids);
-              const state = window.__p2_debug.routeTargetState();
-              const ct = window.__p3_debug.ct();
-              const same = (got) => got.length === want.size && got.every(id => want.has(id));
-              return same(state.highlight)
-                && same(ct.highlightRouteIds())
-                && ct.highlightStrokes() > 0;
-            }""",
-            arg=cands[0]["route_edge_ids"],
-            timeout=10_000,
+        readout = page.evaluate(
+            """() => ({
+              gap: document.getElementById("route-target-gap").textContent,
+              generation: document.getElementById("route-target-generation").textContent,
+              length: document.getElementById("route-target-length").textContent,
+              place: document.getElementById("route-target-place").textContent,
+            })"""
         )
-        _shot(page, shots, "hover-ct.png")
-        page.keyboard.press("2")
-        page.wait_for_function(
-            "() => window.__p2_debug.getVariant() === 'anatomical'"
-            " && window.__p2_debug.routeTargetState().anatomicalHighlightDraws > 0",
-            timeout=10_000,
-        )
-        _shot(page, shots, "hover-anatomical.png")
-        page.keyboard.press("3")
-        page.wait_for_function(
-            "() => window.__p2_debug.getVariant() === 'topology'"
-            " && window.__p2_debug.routeTargetState().topologyHighlightDraws > 0",
-            timeout=10_000,
-        )
-        page.keyboard.press("1")
-        page.wait_for_function(
-            "() => window.__p2_debug.getVariant() === 'ct-panes'",
-            timeout=10_000,
-        )
+        assert readout["gap"] == f"{top['target_gap_mm']:.2f} mm"
+        assert readout["generation"] == str(top["generation"])
+        assert readout["length"] == f"{top['route_length_mm']:.2f} mm"
+        place = str(top["lobe"] or "")
+        if top.get("airway_name"):
+            place = f"{place} / {top['airway_name']}" if place else str(top["airway_name"])
+        assert readout["place"] == place
+        _shot(page, shots, "auto-target.png")
 
-        page.locator(".route-target-card").first.click()
-        page.wait_for_function(
-            """() => {
-              const rt = window.__p3_debug.airway().route_target;
-              const card = document.querySelector(".route-target-card");
-              return !!(rt && !rt.stale && rt.ras_mm
-                && card && card.getAttribute("aria-pressed") === "true");
-            }""",
-            timeout=20_000,
-        )
         draws = page.evaluate("() => window.__p3_debug.ct().routeTargetDraws()")
         for pane in ("axial", "coronal", "sagittal"):
             assert draws[pane]["marker"] is True, draws
         assert draws["coronal"]["gapDashed"] is True, draws
-        _shot(page, shots, "ct-selected.png")
 
         page.keyboard.press("2")
         page.wait_for_function(
@@ -365,38 +329,9 @@ def test_route_target_cards_select_and_pick(server):
         )
         anchor = page.evaluate("() => window.__p2_debug.routeTargetLesionAnchor()")
         assert anchor and anchor["onRouteTarget"] is True
-        assert anchor["distMm"] == pytest.approx(cands[0]["target_gap_mm"], abs=0.05)
+        assert anchor["distMm"] == pytest.approx(top["target_gap_mm"], abs=0.05)
         _shot(page, shots, "topology.png")
 
-        page.keyboard.press("1")
-        page.wait_for_function(
-            "() => window.__p2_debug.getVariant() === 'ct-panes'",
-            timeout=10_000,
-        )
-        page.locator("#route-target-pick").click()
-        assert page.locator("#route-target-pick").get_attribute("aria-pressed") == "true"
-        _click_world(page, [3.5, 3.5, 3.5])
-        page.wait_for_function(
-            """() => document.getElementById("route-target-status").textContent
-              .includes("not on CT-seen airway")""",
-            timeout=15_000,
-        )
-        _shot(page, shots, "pick-off-airway.png")
-        _click_world(page, [24.5, 20.5, 36.5])
-        page.wait_for_function(
-            """() => {
-              const rt = window.__p3_debug.airway().route_target;
-              if (!rt || !rt.ras_mm || rt.rank !== "custom") return false;
-              const status = document.getElementById("route-target-status").textContent;
-              if (status.includes("not on CT-seen")) return false;
-              const d = Math.hypot(
-                rt.ras_mm[0] - 24.5, rt.ras_mm[1] - 20.5, rt.ras_mm[2] - 36.5);
-              return d < 2;
-            }""",
-            timeout=15_000,
-        )
-        _shot(page, shots, "pick-on-centreline.png")
         _assert_no_start_ui(page)
-        assert page.locator("#route-target-panel").is_visible()
         assert not errors, errors
         browser.close()

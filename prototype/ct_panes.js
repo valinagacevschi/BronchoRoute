@@ -302,7 +302,6 @@ window.CtPanes = (function () {
     let marking = false;
     let provisionalDiameter = LESION_DIAMETER_DEFAULT;
     let lesionDrag = null;
-    let routeTargetPickArmed = false;
     let highlightRouteOis = new Set();
     let provisional = null;
     let lesion = airway.lesion ? { ...airway.lesion, ras_mm: [...airway.lesion.ras_mm] } : null;
@@ -1243,23 +1242,18 @@ window.CtPanes = (function () {
       });
       bridgeDraw[key] = [];
       for (const bridge of bridges) {
-        if (bridge.decision === "confirmed") continue;
+        if (bridge.decision) continue;
         const ijk = worldToVoxelCont(bridge.midpoint_ras_mm);
         if (Math.abs(ijk[map.fixedAxis] - fixed) > 0.5) continue;
         const uv = map.uvFromIjk(...ijk);
         const x = fit.ox + uv.u * fit.drawW;
         const y = fit.oy + uv.v * fit.drawH;
-        const color = bridge.decision === "confirmed" ? "#3a3"
-          : bridge.decision === "rejected" ? "#888" : "#d99520";
+        const color = "#d99520";
         ctx.save();
         ctx.strokeStyle = color;
         ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.arc(x, y, 9, 0, 2 * Math.PI);
-        if (bridge.decision === "rejected") {
-          ctx.moveTo(x - 7, y + 7);
-          ctx.lineTo(x + 7, y - 7);
-        }
         ctx.stroke();
         ctx.restore();
         bridgeDraw[key].push({ id: bridge.id, color, x, y });
@@ -1409,14 +1403,6 @@ window.CtPanes = (function () {
         return;
       }
       setCrosshairWorld(world, "ct");
-      if (routeTargetPickArmed && !readOnly) {
-        // Server is the only snap — post the raw click RAS.
-        window.parent.postMessage(
-          { type: "route-target-pick", ras_mm: world },
-          location.origin,
-        );
-        return;
-      }
       // Clicking an airway voxel selects the nearest graph edge for removal.
       if (!readOnly && maskData) {
         const ijk = worldToVoxelCont(world);
@@ -1736,9 +1722,6 @@ window.CtPanes = (function () {
       getLesion: () => (lesion ? { ...lesion, ras_mm: [...lesion.ras_mm] } : null),
       getProvisional: () => (provisional ? [...provisional] : null),
       isMarking: () => marking,
-      setRouteTargetPickArmed(on) {
-        routeTargetPickArmed = readOnly ? false : !!on;
-      },
       armMarkLesion() {
         if (readOnly) return;
         marking = true;

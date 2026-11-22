@@ -1030,7 +1030,10 @@ def test_estimated_airway_in_topology_and_ct(real_server):
         page.locator("#ct-confirm-lesion").click()
         try:
             page.wait_for_function(
-                "() => document.querySelectorAll('.route-target-card').length > 0",
+                """() => {
+                  const rt = window.__p3_debug.airway().route_target;
+                  return !!(rt && !rt.stale && rt.rank === 1);
+                }""",
                 timeout=60_000,
             )
         except Exception:
@@ -1104,30 +1107,18 @@ def test_estimated_airway_in_topology_and_ct(real_server):
         )
         assert far and far["clearance"] > 4, far
         cprint(f"far estimated point clearance {far['clearance']:.1f} mm", "cyan")
-        page.locator("#route-target-pick").scroll_into_view_if_needed()
-        page.locator("#route-target-pick").click()
-        assert page.locator("#route-target-pick").get_attribute("aria-pressed") == "true"
-        _click_ct_world(page, far["world"])
-        page.wait_for_function(
-            """() => document.getElementById("route-target-status").textContent
-              .includes("not on CT-seen airway")""",
-            timeout=20_000,
-        )
-        snapped = page.evaluate(
-            """(world) => {
+        # The automatic target stays on the CT-seen centreline, never on the
+        # estimated airway that sits away from it.
+        chosen = page.evaluate(
+            """async () => {
+              const body = await (await fetch('/api/cases/local-001/route-candidates')).json();
               const target = window.__p3_debug.airway().route_target;
-              if (!target || !target.ras_mm) return { stored: false };
-              const d = Math.hypot(
-                target.ras_mm[0] - world[0],
-                target.ras_mm[1] - world[1],
-                target.ras_mm[2] - world[2],
-              );
-              return { stored: true, distance: d, ras: target.ras_mm };
-            }""",
-            far["world"],
+              return { top: body.candidates[0], target };
+            }"""
         )
-        assert snapped["stored"] is False or snapped["distance"] > 2, snapped
-        cprint(f"route target did not snap {snapped}", "cyan")
+        assert chosen["target"]["edge_id"] == chosen["top"]["edge_id"], chosen
+        assert chosen["target"]["target_gap_mm"] == chosen["top"]["target_gap_mm"], chosen
+        cprint(f"auto route target {chosen['target']['edge_id']}", "cyan")
 
         page.keyboard.press("e")
         page.wait_for_function(
