@@ -358,7 +358,7 @@ def test_route_target_cards_select_and_pick(server):
               return state.visible
                 && !state.topologyTarget
                 && lesion && lesion.label === "Nodule"
-                && lesion.color === "#f2b632"
+                && lesion.color === "#ffd400"
                 && lesion.onRouteTarget === true;
             }""",
             timeout=10_000,

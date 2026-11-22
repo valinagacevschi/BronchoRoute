@@ -541,3 +541,30 @@ def test_position_rows_follow_the_panel(server):
         assert shown() == {"group": True, "title": "Position",
                            "position": True, "ct": False}
         browser.close()
+
+
+def test_anatomical_v_cycles_view_presets(server):
+    sync_playwright = _playwright_or_skip()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport=VIEWPORT)
+        page.goto(
+            f"{server}/renderer.template.html?case=local-001&allow_review=1"
+            "&debug=1&variant=anatomical",
+            wait_until="domcontentloaded",
+            timeout=120_000,
+        )
+        page.wait_for_function(
+            "() => window.__p2_debug && window.AIRWAY",
+            timeout=120_000,
+        )
+        assert page.evaluate("() => window.__p2_debug.getPreset()") == "radiologist"
+        seen = []
+        for _ in range(4):
+            page.keyboard.press("v")
+            seen.append(page.evaluate("() => window.__p2_debug.getPreset()"))
+        assert seen == ["head45", "operator0", "topdown90", "radiologist"]
+        hint = page.locator("#hint").inner_text()
+        assert "view preset" in hint
+        assert "aids" not in hint
+        browser.close()
