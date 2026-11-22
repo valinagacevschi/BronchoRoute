@@ -51,6 +51,7 @@
       "three/addons/": "./vendor/"
     } }
   </script>
+  <script src="./endo_route.js"></script>
   <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -154,6 +155,17 @@
         end: route.end.toArray(),
         target: route.target.toArray(),
       },
+      // The shared trail and destination, in scene coords, for the Anatomical
+      // panel to draw the same route.
+      trail: () => route && {
+        path: route.path.slice(),
+        points: route.curve.getPoints(route.segments).map(v => [v.x, v.y, v.z]),
+        end: route.end.toArray(),
+        target: route.target.toArray(),
+        gap: route.gap,
+        nodule: sceneTarget ? (sceneTarget.userData.noduleId ?? null) : null,
+        center: sceneInfo.center_mm || [0, 0, 0],
+      },
       targetPickAllowed: () => !BASE,
       viewMode: () => viewMode,
       reveal: () => reveal,
@@ -188,67 +200,15 @@
     mini.add(miniDot);
 
     // ---------- airway graph + shortest path ----------
-    const N = graph.radius.length;
+    // The trail is computed by prototype/endo_route.js, the same code the
+    // Anatomical panel uses, so both panels show one trail and destination.
     const P = Float32Array.from(graph.pos);
-    const deg = new Int32Array(N);
-    for (const v of graph.edges) deg[v]++;
-    const off = new Int32Array(N + 1);
-    for (let i = 0; i < N; i++) off[i + 1] = off[i] + deg[i];
-    const nbr = new Int32Array(off[N]), wgt = new Float32Array(off[N]), fill = off.slice(0, N);
-    const dist3 = (a, b) => Math.hypot(P[3 * a] - P[3 * b], P[3 * a + 1] - P[3 * b + 1], P[3 * a + 2] - P[3 * b + 2]);
-    for (let k = 0; k < graph.edges.length; k += 2) {
-      const a = graph.edges[k], b = graph.edges[k + 1], w = dist3(a, b);
-      nbr[fill[a]] = b; wgt[fill[a]++] = w;
-      nbr[fill[b]] = a; wgt[fill[b]++] = w;
-    }
-    function dijkstra(src) {
-      const dist = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
-      const hn = [], hd = [];
-      const push = (n, d) => {
-        let i = hn.length; hn.push(n); hd.push(d);
-        while (i > 0) { const p = (i - 1) >> 1; if (hd[p] <= d) break; hn[i] = hn[p]; hd[i] = hd[p]; i = p; }
-        hn[i] = n; hd[i] = d;
-      };
-      const pop = () => {
-        const top = hn[0], td = hd[0], ln = hn.pop(), ld = hd.pop();
-        if (hn.length) {
-          let i = 0;
-          for (;;) {
-            let c = 2 * i + 1; if (c >= hn.length) break;
-            if (c + 1 < hn.length && hd[c + 1] < hd[c]) c++;
-            if (hd[c] >= ld) break;
-            hn[i] = hn[c]; hd[i] = hd[c]; i = c;
-          }
-          hn[i] = ln; hd[i] = ld;
-        }
-        return [top, td];
-      };
-      dist[src] = 0; push(src, 0);
-      while (hn.length) {
-        const [u, d] = pop();
-        if (d > dist[u]) continue;
-        for (let k = off[u]; k < off[u + 1]; k++) {
-          const nd = d + wgt[k];
-          if (nd < dist[nbr[k]]) { dist[nbr[k]] = nd; prev[nbr[k]] = u; push(nbr[k], nd); }
-        }
-      }
-      return prev;
-    }
-    // graph node closest to any of the target points (nodule surface or a clicked point)
-    function closestNode(targets) {
-      const step = Math.max(1, Math.floor(targets.length / 600));
-      let best = -1, bestD = Infinity, bestT = null;
-      for (let n = 0; n < N; n++) {
-        for (let t = 0; t < targets.length; t += step) {
-          const q = targets[t], d = Math.hypot(P[3 * n] - q.x, P[3 * n + 1] - q.y, P[3 * n + 2] - q.z);
-          if (d < bestD) { bestD = d; best = n; bestT = q; }
-        }
-      }
-      return { node: best, gap: bestD, point: bestT };
-    }
+    const graphAdj = EndoRoute.adjacency(graph);
+    const deg = graphAdj.deg;
 
     // ---------- route state ----------
     let route = null; // { curve, length, s[], radius[], branches[], frames, gap, end, target }
+    let sceneTarget = null; // nodule mesh the route was planned to
     let progress = 0; // mm along the route
     let inside = false; // single inside view
     let split = false; // inside and outside side by side
@@ -264,21 +224,12 @@
     }
     function buildRoute(targets) {
       const t0 = performance.now();
-      const prev = dijkstra(graph.start);
-      const hit = closestNode(targets);
-      const path = [];
-      for (let n = hit.node; n !== -1; n = prev[n]) path.push(n);
-      path.reverse();
+      const r = EndoRoute.routeToTarget(graph, targets);
       const ms = performance.now() - t0;
-      if (path.length < 3) return null;
-      // smooth the voxel staircase of the skeleton, then fit a curve
-      const W = 4, raw = path.map(n => new THREE.Vector3(P[3 * n], P[3 * n + 1], P[3 * n + 2]));
-      const pts = raw.map((_, i) => {
-        const a = Math.max(0, i - W), b = Math.min(raw.length - 1, i + W), v = new THREE.Vector3();
-        for (let j = a; j <= b; j++) v.add(raw[j]);
-        return v.divideScalar(b - a + 1);
-      });
-      pts[0].copy(raw[0]); pts[pts.length - 1].copy(raw[raw.length - 1]);
+      if (!r) return null;
+      const path = r.path;
+      // fit a curve through the shared, smoothed polyline
+      const pts = r.points.map(p => new THREE.Vector3(p[0], p[1], p[2]));
       const s = [0];
       for (let i = 1; i < pts.length; i++) s.push(s[i - 1] + pts[i].distanceTo(pts[i - 1]));
       const curve = new THREE.CatmullRomCurve3(pts.filter((_, i) => i % 2 === 0 || i === pts.length - 1), false, 'centripetal');
@@ -291,9 +242,11 @@
         branches.push(count);
       });
       const segments = Math.max(16, Math.round(length));
-      return { curve, length, s, radius: path.map(n => graph.radius[n]), branches, ms,
+      return { curve, length, s, path, radius: path.map(n => graph.radius[n]), branches, ms,
         frames: curve.computeFrenetFrames(segments, false), segments,
-        gap: hit.gap, end: raw[raw.length - 1], target: hit.point };
+        gap: r.gap,
+        end: new THREE.Vector3(r.end[0], r.end[1], r.end[2]),
+        target: new THREE.Vector3(r.target.x, r.target.y, r.target.z) };
     }
     const lookup = (arr, sv) => { // value of arr at arc length sv
       const S = route.s; let lo = 0, hi = S.length - 1;
@@ -832,9 +785,10 @@ airway ${w.toFixed(1)} mm wide`;
         return;
       }
       if (data.type === "endo3d-goto-world" && Array.isArray(data.world)) {
+        if (!route) return;
         const center = sceneInfo.center_mm || [0, 0, 0];
-        const ras = data.world;
-        const target = new THREE.Vector3(-ras[0] - center[0], ras[2] - center[2], ras[1] - center[1]);
+        const scene = EndoRoute.rasToScene(data.world, center);
+        const target = new THREE.Vector3(scene[0], scene[1], scene[2]);
         let bestU = 0, bestD = Infinity;
         for (let i = 0; i <= 200; i++) {
           const u = i / 200;
@@ -884,8 +838,9 @@ airway ${w.toFixed(1)} mm wide`;
     // start with the whole chest in view, outside layers applied
     setInside(false);
     if (noduleMeshes.length) {
-      const target = noduleMeshes[0], id = target.userData.noduleId;
-      setTarget(noduleTargets(target), id == null ? 'the nodule' : `nodule ${id}`, false);
+      sceneTarget = noduleMeshes[0];
+      const id = sceneTarget.userData.noduleId;
+      setTarget(noduleTargets(sceneTarget), id == null ? 'the nodule' : `nodule ${id}`, false);
     }
     if (A1 && !route) {
       // No nodule mask: fly to the farthest airway leaf so the inside view has a route.
@@ -905,6 +860,11 @@ airway ${w.toFixed(1)} mm wide`;
     // Panel 4 opens in split view; V then keeps the last chosen state.
     if (BASE && route) setViewMode('split');
     else if (A1 && route) setInside(true);
+    // Tell the parent the route is ready, so it can hand over the shared
+    // position that was set while the Anatomical panel was on screen.
+    if (window.parent !== window) {
+      try { parent.postMessage({ type: "endo3d-ready" }, location.origin); } catch (err) { /* detached */ }
+    }
     frame();
   </script>
 </body>

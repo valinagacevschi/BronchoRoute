@@ -395,21 +395,6 @@ body.ct-panes-active .limitations-panel.collapsed h2::after { content: " ▸"; }
   color: var(--muted); font-size: 9.5px; line-height: 1.3; }
 .prov-legend[hidden] { display: none; }
 
-.presets { display: flex; flex-direction: column; gap: 4px; }
-.presets button {
-  font: 500 12px/1.2 "IBM Plex Sans Condensed", sans-serif;
-  letter-spacing: .03em; text-align: left;
-  border: 1px solid var(--edge); border-radius: 6px;
-  padding: 7px 9px; background: var(--ground); color: var(--ink); cursor: pointer;
-}
-.presets button:hover { border-color: var(--steel); }
-.presets button[aria-pressed="true"] {
-  background: var(--steel); color: #fff; border-color: var(--steel);
-}
-.presets button .key {
-  font-family: "IBM Plex Mono", monospace; font-size: 10px;
-  opacity: .7; margin-right: 6px;
-}
 
 @media (max-width: 720px) {
   .rail { width: 100%; height: auto; bottom: auto; flex-direction: row;
@@ -661,20 +646,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <div class="ramp-labels"><span>trachea</span><span>distal</span></div>
   </div>
 
-  <div class="group" id="g-cam">
-    <h2>Camera</h2>
-    <div class="presets" id="presets" role="group" aria-label="3D camera presets">
-      <button type="button" data-preset="radiologist" aria-pressed="true">
-        <span class="key">F</span>Radiologist (front)</button>
-      <button type="button" data-preset="head45" aria-pressed="false">
-        <span class="key">H</span>Head 45°</button>
-      <button type="button" data-preset="operator0" aria-pressed="false">
-        <span class="key">O</span>Operator 0°</button>
-      <button type="button" data-preset="topdown90" aria-pressed="false">
-        <span class="key">T</span>Top-down 90°</button>
-    </div>
-  </div>
-
   <div class="group group-controls">
     <h2>Controls</h2>
     <p class="hint" id="hint"></p>
@@ -901,6 +872,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
 <link rel="stylesheet" href="/import.css">
 <script src="/import.js"></script>
 <script src="fisheye-reproject.js"></script>
+<script src="endo_route.js"></script>
 <script id="airway-data">
 /*__AIRWAY_EMBED__*/
 </script>
@@ -1213,9 +1185,9 @@ const tok = n => css.getPropertyValue(n).trim();
 
 const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
-    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front) · <kbd>A</kbd> Endoluminal · <kbd>M</kbd> aids · click Lesion opens RouteTarget" },
+    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front) · <kbd>M</kbd> aids" },
   { key: "endoluminal", name: "Endoluminal",
-    hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>T</kbd> reset route · <kbd>A</kbd> Anatomical · <kbd>M</kbd> aids · <kbd>Enter</kbd> back inside" },
+    hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>T</kbd> reset route · <kbd>M</kbd> aids · <kbd>Enter</kbd> back inside" },
   { key: "topology", name: "Topology map",
     hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>[</kbd> / <kbd>]</kbd> rotate 15° · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
   { key: "ct-panes", name: "CT panes",
@@ -1263,6 +1235,187 @@ let lastSharedPosSource = "ct-init";
 /** Put the shared marker at the top of the trachea (the root node). */
 function resetSharedPositionToRoot() {
   SharedPos.set(rootWorld, "ct-init");
+}
+
+/* ------------------------------------------- shared trail with panel 4 */
+// The Endoluminal outside view draws a route through the case-web scene
+// graph (prototype/endo_route.js). The Anatomical view reads the same graph
+// and the same destination nodule, so both panels show one trail and one
+// target. Three.js coords -> RAS -> payload-relative for this projection.
+let sceneTrail = null; // { points, end, target, gap, nodule, arc }
+let sceneTrailPromise = null;
+let lastSceneNodule = null;
+
+function pickSceneNodule(layers) {
+  const nodules = (layers || []).filter(layer => layer.name === "nodule");
+  const withIds = nodules.filter(layer => layer.id != null)
+    .sort((a, b) => a.id - b.id);
+  return withIds[0] || nodules[0] || null;
+}
+
+// Panel 4 targets every nodule mesh vertex, so use the same vertices here.
+async function sceneNoduleTargets(base, layer) {
+  try {
+    const buf = await (await fetch(`${base}/${layer.file}`, { cache: "no-cache" })).arrayBuffer();
+    const n = layer.vertices;
+    const f = new Float32Array(buf, 0, n * 3);
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      out.push({ x: f[3 * i], y: f[3 * i + 1], z: f[3 * i + 2] });
+    }
+    if (out.length) return out;
+  } catch (err) { /* fall back to the stored centre */ }
+  if (Array.isArray(layer.center_mm)) {
+    return [{ x: layer.center_mm[0], y: layer.center_mm[1], z: layer.center_mm[2] }];
+  }
+  return [];
+}
+
+// Panel 4's fallback when the scene has no nodule mesh: the farthest leaf
+// from the graph start, so the Anatomical trail matches there too.
+function farthestSceneLeaf(graph) {
+  const deg = EndoRoute.adjacency(graph).deg;
+  const P = graph.pos;
+  let best = -1, bestD = -1;
+  for (let n = 0; n < deg.length; n++) {
+    if (deg[n] !== 1 || n === graph.start) continue;
+    const d = (P[3 * n] - P[3 * graph.start]) ** 2
+      + (P[3 * n + 1] - P[3 * graph.start + 1]) ** 2
+      + (P[3 * n + 2] - P[3 * graph.start + 2]) ** 2;
+    if (d > bestD) { bestD = d; best = n; }
+  }
+  if (best < 0) return null;
+  return { x: P[3 * best], y: P[3 * best + 1], z: P[3 * best + 2] };
+}
+
+async function ensureSceneTrail() {
+  if (!SERVER_MODE || !window.EndoRoute) return null;
+  if (sceneTrailPromise) return sceneTrailPromise;
+  const base = `/case-web/${encodeURIComponent(CASE_ID)}`;
+  sceneTrailPromise = (async () => {
+    try {
+      const [scene, graph] = await Promise.all([
+        fetch(`${base}/scene.json`, { cache: "no-cache" }).then(r => r.ok ? r.json() : null),
+        fetch(`${base}/graph.json`, { cache: "no-cache" }).then(r => r.ok ? r.json() : null),
+      ]);
+      if (!scene || !graph) return null;
+      const layer = pickSceneNodule(scene.layers);
+      const targets = layer
+        ? await sceneNoduleTargets(base, layer)
+        : [farthestSceneLeaf(graph)].filter(Boolean);
+      if (!targets.length) return null;
+      const r = EndoRoute.routeToTarget(graph, targets);
+      if (!r) return null;
+      const center = scene.center_mm || [0, 0, 0];
+      const toRel = p => {
+        const ras = EndoRoute.sceneToRas(p, center);
+        return [
+          ras[0] - originMm[0],
+          ras[1] - originMm[1],
+          ras[2] - originMm[2],
+        ];
+      };
+      const sum = targets.reduce(
+        (acc, p) => [acc[0] + p.x, acc[1] + p.y, acc[2] + p.z], [0, 0, 0]);
+      const centroid = sum.map(v => v / targets.length);
+      const points = r.points.map(toRel);
+      const arc = [0];
+      let total = 0;
+      for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1], b = points[i];
+        total += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+        arc.push(total);
+      }
+      sceneTrail = {
+        path: r.path.slice(),
+        points,
+        end: toRel(r.end),
+        target: toRel([r.target.x, r.target.y, r.target.z]),
+        gap: r.gap,
+        arc,
+        nodule: layer ? {
+          id: layer.id ?? null,
+          rel: toRel(centroid),
+          diameterMm: Number(layer.diameter_mm) || null,
+        } : null,
+      };
+      return sceneTrail;
+    } catch (err) {
+      return null;
+    }
+  })();
+  return sceneTrailPromise;
+}
+
+function postEndoGoto(world) {
+  const frame = document.getElementById("endo3d-frame");
+  if (frame && frame.contentWindow) {
+    try { frame.contentWindow.postMessage({ type: "endo3d-goto-world", world }, location.origin); } catch (err) { /* not loaded */ }
+  }
+}
+
+function drawSceneTrail(c) {
+  lastSceneNodule = null;
+  if (!sceneTrail) return;
+  const projected = sceneTrail.points.map(p => project(p, c));
+  let started = false;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  for (const p of projected) {
+    if (!p) { started = false; continue; }
+    if (!started) { ctx.moveTo(p.x, p.y); started = true; }
+    else ctx.lineTo(p.x, p.y);
+  }
+  // Halo then core: the same mint trail the 3D panel draws.
+  ctx.strokeStyle = "rgba(46, 196, 160, 0.28)";
+  ctx.lineWidth = 9;
+  ctx.stroke();
+  ctx.strokeStyle = "#2ec4a0";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+
+  const ep = project(sceneTrail.end, c);
+  const tp = project(sceneTrail.target, c);
+  const np = sceneTrail.nodule ? project(sceneTrail.nodule.rel, c) : null;
+  if (ep && tp && sceneTrail.gap > 0.5) {
+    ctx.save();
+    ctx.strokeStyle = "#727d84";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(ep.x, ep.y);
+    ctx.lineTo(tp.x, tp.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#59656c";
+    ctx.font = "11px system-ui";
+    ctx.fillText(`${sceneTrail.gap.toFixed(0)} mm`, tp.x + 8, tp.y - 6);
+    ctx.restore();
+  }
+  if (np) {
+    const diameter = sceneTrail.nodule.diameterMm;
+    const radiusPx = diameter ? Math.max(3, (diameter / 2) * np.f) : 6;
+    const label = sceneTrail.nodule.id == null
+      ? "target nodule" : `target nodule ${sceneTrail.nodule.id}`;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(np.x, np.y, radiusPx, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(242, 182, 50, 0.30)";
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(242, 182, 50, 0.95)";
+    ctx.stroke();
+    ctx.fillStyle = "#a8791a";
+    ctx.font = "10px IBM Plex Mono, monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, np.x + radiusPx + 6, np.y);
+    ctx.restore();
+    lastSceneNodule = { x: np.x, y: np.y, radiusPx, label };
+  }
 }
 let ctPanesApi = null;
 let ctPanesPromise = null;
@@ -1702,14 +1855,7 @@ function drawAnatomical(pose) {
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
   }
-  // Target marker (deepest node only when no RouteTarget/lesion poi)
-  const t = (A.poi || A.endpoint) ? null : A.nodes[String(A.target)];
-  const tp = t && project(t.p, c);
-  if (tp) {
-    ctx.strokeStyle = tok("--mucosa"); ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(tp.x, tp.y, 9, 0, 7); ctx.stroke();
-    ctx.beginPath(); ctx.arc(tp.x, tp.y, 2.5, 0, 7); ctx.fillStyle = tok("--mucosa"); ctx.fill();
-  }
+  drawSceneTrail(c);
   // RouteStart (absolute RAS → payload-relative)
   if (A.route_start && A.route_start.ras_mm && A.origin_mm) {
     const rs = A.route_start.ras_mm;
@@ -5237,20 +5383,43 @@ function endo3dMessageToWorld(data) {
   if (!pos || pos.length !== 3) return null;
   const center = Array.isArray(data.center) && data.center.length === 3 ? data.center : [0, 0, 0];
   // three.js coords: x = patient left, y = superior, z = anterior, tree-centred.
-  const rasWorld = [
-    -pos[0] - center[0],
-    pos[2] + center[2],
-    pos[1] + center[1],
-  ];
-  return rasWorld;
+  return window.EndoRoute
+    ? EndoRoute.sceneToRas(pos, center)
+    : [-pos[0] - center[0], pos[2] + center[2], pos[1] + center[1]];
 }
 
 function moveSharedAlongRoute(deltaMm) {
-  if (!A || !A.fly || !Array.isArray(A.fly.p) || A.fly.p.length < 2) return;
+  if (!A) return;
   const current = SharedPos.get();
   if (!current) return;
   const origin = A.origin_mm || [0, 0, 0];
   const rel = [current[0] - origin[0], current[1] - origin[1], current[2] - origin[2]];
+  // Prefer the shared scene trail, so arrow keys in both panels move along
+  // the same path and land on the same destination.
+  if (sceneTrail && sceneTrail.points.length > 1) {
+    let best = 0, bestD = Infinity;
+    sceneTrail.points.forEach((p, i) => {
+      const d = (p[0] - rel[0]) ** 2 + (p[1] - rel[1]) ** 2 + (p[2] - rel[2]) ** 2;
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    const total = sceneTrail.arc[sceneTrail.arc.length - 1];
+    const next = Math.max(0, Math.min(total, sceneTrail.arc[best] + deltaMm));
+    let i = 1;
+    while (i < sceneTrail.arc.length - 1 && sceneTrail.arc[i] < next) i++;
+    const a = sceneTrail.points[i - 1], b = sceneTrail.points[i];
+    const span = sceneTrail.arc[i] - sceneTrail.arc[i - 1] || 1;
+    const t = Math.max(0, Math.min(1, (next - sceneTrail.arc[i - 1]) / span));
+    const p = [
+      a[0] + (b[0] - a[0]) * t,
+      a[1] + (b[1] - a[1]) * t,
+      a[2] + (b[2] - a[2]) * t,
+    ];
+    const world = toWorld(p);
+    SharedPos.set(world, "keyboard");
+    postEndoGoto(world);
+    return;
+  }
+  if (!A.fly || !Array.isArray(A.fly.p) || A.fly.p.length < 2) return;
   let best = 0, bestD = Infinity;
   A.fly.p.forEach((p, i) => {
     const d = (p[0] - rel[0]) ** 2 + (p[1] - rel[1]) ** 2 + (p[2] - rel[2]) ** 2;
@@ -5260,10 +5429,7 @@ function moveSharedAlongRoute(deltaMm) {
   const next = Math.max(0, Math.min(end, A.fly.s[best] + deltaMm));
   const world = toWorld(flyAt(next).p);
   SharedPos.set(world, "keyboard");
-  const frame = document.getElementById("endo3d-frame");
-  if (frame && frame.contentWindow) {
-    try { frame.contentWindow.postMessage({ type: "endo3d-goto-world", world }, location.origin); } catch (err) { /* not loaded */ }
-  }
+  postEndoGoto(world);
 }
 
 function handleViewClick(clientX, clientY) {
@@ -5284,12 +5450,13 @@ function handleViewClick(clientX, clientY) {
     const live = nearestProjectedEdge(sx, sy, A.edges || [], 8);
     const ghost = nearestProjectedEdge(sx, sy, A.removed || [], 8);
     if (ghost.edge && (!live.edge || ghost.dist <= live.dist)) {
-      if (ghost.point) SharedPos.set(ghost.point, "anatomical");
+      if (ghost.point) { SharedPos.set(ghost.point, "anatomical"); postEndoGoto(ghost.point); }
       showUndoGhostPanel(ghost.edge);
       return;
     }
     if (live.point) {
       SharedPos.set(live.point, "anatomical");
+      postEndoGoto(live.point);
       if (!VIEWER_MODE && live.edge && live.edge.oi != null && live.edge.selectable !== false) {
         selectedEdgeOi = live.edge.oi;
         showRemovePanel(live.edge);
@@ -5360,6 +5527,17 @@ window.addEventListener("message", (ev) => {
     if (variant !== 1) return;
     const world = endo3dMessageToWorld(data);
     if (world) SharedPos.set(world, "endoluminal");
+    return;
+  }
+  if (data.type === "endo3d-ready") {
+    // Hand the Anatomical position to a freshly loaded Endoluminal panel so
+    // both open on the same point. Leave the default start (and split) alone.
+    const pos = SharedPos.get();
+    if (pos && rootWorld) {
+      const away = Math.hypot(
+        pos[0] - rootWorld[0], pos[1] - rootWorld[1], pos[2] - rootWorld[2]);
+      if (away > 1) postEndoGoto(pos);
+    }
     return;
   }
   if (data.type === "endo3d-shortcut" && data.key >= "1" && data.key <= "4") {
@@ -5441,10 +5619,6 @@ SharedPos.subscribe((pos, source) => {
 });
 resetSharedPositionToRoot();
 
-document.getElementById("presets").addEventListener("click", e => {
-  const btn = e.target.closest("[data-preset]");
-  if (btn) applyPreset(btn.dataset.preset);
-});
 
 const held = new Set();
 addEventListener("keydown", e => {
@@ -5453,11 +5627,6 @@ addEventListener("keydown", e => {
   if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
   if (!e.metaKey && !e.ctrlKey && !e.altKey) {
     const key = e.key.toLowerCase();
-    if (key === "a" && (variant === 0 || variant === 1 || variant === 4)) {
-      setVariant(variant === 0 ? 1 : 0);
-      e.preventDefault();
-      return;
-    }
     if (key === "m") {
       aidsOn = !aidsOn;
       showViewerToast(aidsOn ? "Aids on" : "Aids off");
@@ -5804,7 +5973,6 @@ function render() {
   const walkActive = variant === 4;
   const endoActive = variant === 1 || walkActive;
   document.getElementById("g-nav").style.opacity = endoActive ? "1" : ".45";
-  document.getElementById("g-cam").hidden = variant !== 0;
   const estimatedLayers = document.getElementById("g-layers");
   if (estimatedLayers) estimatedLayers.hidden = variant !== 0 && variant !== 2 && variant !== 3;
   syncPresetButtons();
@@ -7913,6 +8081,17 @@ if (DEBUG) {
       topology: lastTopologyLesion,
       endoluminal: lastEndoluminalLesion,
     }),
+    sceneTrail: () => sceneTrail && ({
+      path: sceneTrail.path.slice(),
+      points: sceneTrail.points.map(p => [...p]),
+      end: [...sceneTrail.end],
+      target: [...sceneTrail.target],
+      gap: sceneTrail.gap,
+      nodule: sceneTrail.nodule
+        ? { id: sceneTrail.nodule.id, rel: [...sceneTrail.nodule.rel] }
+        : null,
+      lastNodule: lastSceneNodule && { ...lastSceneNodule },
+    }),
     endoCamera: () => lastEndoCamera && ({
       pos: [...lastEndoCamera.pos],
       right: [...lastEndoCamera.right],
@@ -8279,6 +8458,7 @@ async function setupCasePicker() {
 
 setupCasePicker().catch(err => console.warn(err));
 setupRouteTargetPanel();
+ensureSceneTrail().catch(() => null);
 // Realistic image generation is disabled for now.
 resize(); render(); frame();
 }).catch((err) => console.error(err));

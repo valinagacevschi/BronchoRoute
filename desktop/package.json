@@ -119,6 +119,7 @@
           "ct_panes.js",
           "ct_candidates.js",
           "fisheye-reproject.js",
+          "endo_route.js",
           "import.js",
           "import.css",
           "fonts/*.woff2",
