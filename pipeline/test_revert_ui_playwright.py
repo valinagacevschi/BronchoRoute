@@ -136,7 +136,10 @@ def test_viewer_mode_no_writes_and_topology_layout(server, tmp_path):
         )
         page.wait_for_selector("#case-picker", state="visible", timeout=60_000)
         assert page.locator("#remove-branch-panel").count() == 0
-        assert page.locator("#ct-mark-lesion").count() == 0
+        # The Lesion strip stays visible as a readout, with its actions disabled.
+        page.locator("#ct-mark-lesion").wait_for(state="visible", timeout=60_000)
+        assert page.locator("#ct-mark-lesion").is_disabled()
+        assert page.locator("#ct-clear-lesion").is_disabled()
 
         # Default view is CT panes (switcher order 1).
         page.wait_for_function(

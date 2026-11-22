@@ -596,6 +596,7 @@ window.CtPanes = (function () {
       cancelBtn.onclick = () => cancelMark();
       const clearBtn = document.createElement("button");
       clearBtn.type = "button";
+      clearBtn.id = "ct-clear-lesion";
       clearBtn.className = "secondary";
       clearBtn.textContent = "Clear";
       clearBtn.onclick = () => {
@@ -610,10 +611,14 @@ window.CtPanes = (function () {
       lesionBox.appendChild(clearBtn);
       lesionBox.appendChild(statusEl);
 
-      if (!readOnly) {
-        toolbar.appendChild(lesionBox);
-        candidates.mount(toolbar);
+      // The Lesion strip stays visible in the read-only viewer: it shows the
+      // confirmed Lesion and its diameter, with the edit actions disabled.
+      if (readOnly) {
+        markBtn.disabled = true;
+        clearBtn.disabled = true;
       }
+      toolbar.appendChild(lesionBox);
+      candidates.mount(toolbar);
       syncOverlayEnablement();
       syncConfirmEnabled();
       updateLesionStatus();
