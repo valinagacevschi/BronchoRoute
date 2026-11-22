@@ -329,10 +329,8 @@ kbd {
 #archive-open {
   position: fixed; top: 14px; right: 18px; z-index: 8500; font-size: 12px; height: auto; padding: 8px 12px;
 }
-#import-screen .intake-topbar-actions #archive-open,
-#library-screen .intake-topbar-actions #archive-open,
-#weights-screen .intake-topbar-actions #archive-open {
-  position: static; top: auto; right: auto; z-index: auto;
+#rail-open-scan #archive-open {
+  position: static; width: 100%; top: auto; right: auto; z-index: auto;
 }
 
 #import-message { margin-top: 20px; min-height: 0; }

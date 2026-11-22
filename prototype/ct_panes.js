@@ -274,8 +274,8 @@ window.CtPanes = (function () {
       debug,
       isViewActive,
       readOnly = false,
+      allowBridgeDecisions = !readOnly,
       showEstimatedAirway: readEstimated = () => false,
-      setShowEstimatedAirway: writeEstimated = null,
     } = opts;
 
     const originMm = airway.origin_mm || [0, 0, 0];
@@ -292,7 +292,7 @@ window.CtPanes = (function () {
     let windowL = -600;
     let ctView = getCtView() === "head" ? "head" : "feet";
     let overlays = {
-      airway: false,
+      airway: true,
       route: false,
       lesion: true,
       target: true,
@@ -360,37 +360,42 @@ window.CtPanes = (function () {
       },
     });
 
-    const bridgeList = document.createElement("div");
-    bridgeList.id = "bridge-list";
-    bridgeList.hidden = true;
-    rootEl.appendChild(bridgeList);
-
     function renderBridges() {
+      const bridgeList = document.getElementById("bridge-list");
+      const group = document.getElementById("g-bridges");
+      if (!bridgeList) return;
       bridgeList.replaceChildren();
-      bridgeList.hidden = !bridges.some(b => b.matched);
-      if (bridgeList.hidden) return;
-      const title = document.createElement("strong");
-      title.textContent = "Bridges";
-      bridgeList.appendChild(title);
-      bridges.forEach((bridge, i) => {
+      const pending = bridges.filter(b => b.matched && !b.decision);
+      if (group) group.hidden = pending.length === 0;
+      if (pending.length === 0) return;
+      pending.forEach((bridge) => {
+        const i = bridges.indexOf(bridge);
         const row = document.createElement("div");
         row.className = "bridge-row";
         row.dataset.bridgeId = bridge.id;
         const label = document.createElement("span");
-        label.textContent = `Bridge ${i + 1} · gap ${Number(bridge.gap_mm).toFixed(1)} mm · `;
+        const air = bridge.evidence && Number.isFinite(bridge.evidence.air_fraction)
+          ? ` · CT air ${Math.round(bridge.evidence.air_fraction * 100)}%` : "";
+        label.textContent = `Bridge ${i + 1} · `;
         const state = document.createElement("span");
         state.className = "bridge-state";
-        state.textContent = bridge.decision === "confirmed" ? "Confirmed"
-          : bridge.decision === "rejected" ? "Rejected" : "Unconfirmed";
+        state.textContent = "Unconfirmed";
         label.appendChild(state);
+        label.appendChild(document.createTextNode(
+          ` · gap ${Number(bridge.gap_mm).toFixed(1)} mm${air}`,
+        ));
         row.appendChild(label);
-        for (const [action, text] of [["goto", "Go to"], ["confirm", "Confirm"], ["reject", "Reject"]]) {
+        for (const [action, text, label] of [
+          ["goto", "→", "Go to"], ["confirm", "✓", "Confirm"], ["reject", "✕", "Reject"],
+        ]) {
           if (!bridge.matched) continue;
-          if (readOnly && action !== "goto") continue;
+          if (!allowBridgeDecisions && action !== "goto") continue;
           const button = document.createElement("button");
           button.type = "button";
           button.className = `bridge-${action}`;
           button.textContent = text;
+          button.title = label;
+          button.setAttribute("aria-label", label);
           const decision = action === "confirm" ? "confirmed" : "rejected";
           button.disabled = action !== "goto" && (bridgeBusy || bridge.decision === decision);
           button.onclick = () => {
@@ -466,11 +471,24 @@ window.CtPanes = (function () {
       return !!(lesion && lesion.ras_mm);
     }
 
+    function overlayAvailable(key) {
+      if (key === "airway") return !!maskData;
+      if (key === "route") return !!(airway.route && airway.route.length);
+      if (key === "lesion") return lesionConfirmed();
+      if (key === "candidates") return !!(airway.candidates && airway.candidates.length);
+      if (key === "target") return !!(airway.endpoint || airway.route_target);
+      return true;
+    }
+
     function syncOverlayEnablement() {
-      // The Lesion is optional: airway and route overlays stay usable without one.
-      for (const el of toolbar.querySelectorAll("[data-overlay]")) {
-        el.disabled = false;
+      // Hide a toggle that has no data on this case instead of offering a dead control.
+      for (const el of document.querySelectorAll("#ct-overlay-keys [data-overlay-key]")) {
+        const available = overlayAvailable(el.dataset.overlayKey);
+        const item = el.closest(".ct-key-item") || el;
+        item.hidden = !available;
+        el.disabled = !available;
       }
+      syncOverlaySeparators();
     }
 
     function syncConfirmEnabled() {
@@ -480,78 +498,72 @@ window.CtPanes = (function () {
       if (cancel) cancel.disabled = !marking;
     }
 
-    function buildToolbar() {
-      toolbar.innerHTML = "";
-      const presets = document.createElement("div");
-      presets.className = "ct-presets";
-      for (const [name, W, L] of [
-        ["Lung", 1500, -600],
-        ["Mediastinal", 400, 40],
-      ]) {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.textContent = name;
-        b.onclick = () => {
-          windowW = W;
-          windowL = L;
-          drawAll();
-        };
-        presets.appendChild(b);
+    const OVERLAY_KEYS = {
+      airway: "A",
+      route: "R",
+      candidates: "C",
+      lesion: "L",
+      target: "T",
+    };
+
+    function syncOverlaySeparators() {
+      const items = [...document.querySelectorAll("#ct-overlay-keys .ct-key-item")]
+        .filter(item => !item.hidden);
+      items.forEach((item, index) => {
+        const sep = item.querySelector(".ct-key-sep");
+        if (sep) sep.hidden = index === items.length - 1;
+      });
+    }
+
+    function syncOverlayKeys() {
+      for (const el of document.querySelectorAll("#ct-overlay-keys [data-overlay-key]")) {
+        const on = !!overlays[el.dataset.overlayKey];
+        el.classList.toggle("on", on);
+        el.setAttribute("aria-pressed", on ? "true" : "false");
       }
-      const wl = document.createElement("span");
-      wl.className = "ct-wl";
-      wl.id = "ct-wl-readout";
-      presets.appendChild(wl);
+    }
 
-      const view = document.createElement("label");
-      view.className = "ct-view-toggle";
-      const sel = document.createElement("select");
-      sel.innerHTML =
-        '<option value="feet">View from feet (radiological)</option>' +
-        '<option value="head">View from head (bronchoscopist)</option>';
-      sel.value = ctView;
-      sel.onchange = async () => {
-        ctView = sel.value === "head" ? "head" : "feet";
-        try {
-          await setCtView(ctView);
-        } catch (err) {
-          statusMessage(String(err.message || err));
-        }
-        drawAll();
-      };
-      view.appendChild(sel);
-
-      const ov = document.createElement("div");
-      ov.className = "ct-overlays";
-      for (const [key, label] of [
+    function buildOverlayControls() {
+      const host = document.getElementById("ct-overlay-keys");
+      if (!host) return;
+      host.replaceChildren();
+      const entries = [
         ["airway", "Airway mask"],
         ["route", "Route"],
-        ["lesion", "Lesion"],
         ["candidates", "Candidates"],
+        ["lesion", "Lesion"],
         ["target", "RouteTarget"],
-        ["estimated", "Estimated airway"],
-      ]) {
-        const lab = document.createElement("label");
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.dataset.overlay = key;
-        if (key === "estimated") {
-          cb.checked = !!readEstimated();
-          cb.onchange = () => {
-            if (writeEstimated) writeEstimated(cb.checked);
-            else drawAll();
-          };
-        } else {
-          cb.checked = overlays[key];
-          cb.onchange = () => {
-            overlays[key] = cb.checked;
-            drawAll();
-          };
-        }
-        lab.appendChild(cb);
-        lab.appendChild(document.createTextNode(" " + label));
-        ov.appendChild(lab);
-      }
+      ];
+      entries.forEach(([key, label]) => {
+        const item = document.createElement("span");
+        item.className = "ct-key-item";
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "ct-key";
+        b.dataset.overlayKey = key;
+        b.textContent = OVERLAY_KEYS[key];
+        b.title = label;
+        b.setAttribute("aria-label", label);
+        b.onclick = () => {
+          overlays[key] = !overlays[key];
+          syncOverlayKeys();
+          drawAll();
+        };
+        item.appendChild(b);
+        item.appendChild(document.createTextNode(" " + label));
+        const sep = document.createElement("span");
+        sep.className = "ct-key-sep";
+        sep.textContent = " · ";
+        item.appendChild(sep);
+        host.appendChild(item);
+      });
+      syncOverlayKeys();
+      syncOverlaySeparators();
+    }
+
+    function buildToolbar() {
+      toolbar.innerHTML = "";
+      buildOverlayControls();
 
       const lesionBox = document.createElement("div");
       lesionBox.className = "ct-lesion-box";
@@ -599,9 +611,6 @@ window.CtPanes = (function () {
       lesionBox.appendChild(clearBtn);
       lesionBox.appendChild(statusEl);
 
-      toolbar.appendChild(presets);
-      toolbar.appendChild(view);
-      toolbar.appendChild(ov);
       if (!readOnly) {
         toolbar.appendChild(lesionBox);
         candidates.mount(toolbar);
@@ -610,12 +619,19 @@ window.CtPanes = (function () {
       syncConfirmEnabled();
       updateLesionStatus();
       updateWlReadout();
+      updateCtViewReadout();
       candidates.setItems(airway.candidates);
+      toolbar.hidden = toolbar.childElementCount === 0;
     }
 
     function updateWlReadout() {
-      const el = toolbar.querySelector("#ct-wl-readout");
+      const el = document.getElementById("ct-wl-readout");
       if (el) el.textContent = `W ${Math.round(windowW)} / L ${Math.round(windowL)}`;
+    }
+
+    function updateCtViewReadout() {
+      const el = document.getElementById("ct-view-readout");
+      if (el) el.textContent = ctView === "head" ? "Bronchoscopist" : "Radiologist";
     }
 
     function updateLesionStatus() {
@@ -1227,6 +1243,7 @@ window.CtPanes = (function () {
       });
       bridgeDraw[key] = [];
       for (const bridge of bridges) {
+        if (bridge.decision === "confirmed") continue;
         const ijk = worldToVoxelCont(bridge.midpoint_ras_mm);
         if (Math.abs(ijk[map.fixedAxis] - fixed) > 0.5) continue;
         const uv = map.uvFromIjk(...ijk);
@@ -1446,6 +1463,7 @@ window.CtPanes = (function () {
         const dy = e.clientY - wlDrag.y;
         windowW = clamp(wlDrag.W + dx * 2, 50, 4000);
         windowL = clamp(wlDrag.L - dy * 2, -1200, 1000);
+        updateWlReadout();
         drawAll();
         return;
       }
@@ -1638,6 +1656,7 @@ window.CtPanes = (function () {
           );
         }
         loaded = true;
+        syncOverlayEnablement();
         setCrosshairWorld(start, "ct-init");
         await loadBridges();
       } catch (err) {
@@ -1679,8 +1698,6 @@ window.CtPanes = (function () {
     }
 
     function syncEstimatedAirway() {
-      const el = toolbar.querySelector('[data-overlay="estimated"]');
-      if (el) el.checked = !!readEstimated();
       drawAll();
     }
 
@@ -1695,9 +1712,15 @@ window.CtPanes = (function () {
       getCtView: () => ctView,
       setCtViewLocal(v) {
         ctView = v === "head" ? "head" : "feet";
-        const sel = toolbar.querySelector("select");
-        if (sel) sel.value = ctView;
+        updateCtViewReadout();
         drawAll();
+      },
+      setCtViewByName(v) {
+        // Key presses are a view toggle, not a saved clinician preference.
+        ctView = v === "head" ? "head" : "feet";
+        updateCtViewReadout();
+        drawAll();
+        return ctView;
       },
       getLetters(pane) {
         return planeMap(pane).letters;
@@ -1747,25 +1770,27 @@ window.CtPanes = (function () {
         drawAll();
       },
       overlaysEnabled() {
-        const airwayEl = toolbar.querySelector('[data-overlay="airway"]');
-        const routeEl = toolbar.querySelector('[data-overlay="route"]');
         return {
-          airwayDisabled: !!(airwayEl && airwayEl.disabled),
-          routeDisabled: !!(routeEl && routeEl.disabled),
+          airwayDisabled: !overlayAvailable("airway"),
+          routeDisabled: !overlayAvailable("route"),
           airway: overlays.airway,
           route: overlays.route,
           lesionConfirmed: lesionConfirmed(),
         };
       },
+      overlayAvailable,
+      toggleOverlay(key) {
+        if (!overlayAvailable(key)) return null;
+        overlays[key] = !overlays[key];
+        syncOverlayKeys();
+        drawAll();
+        return overlays[key];
+      },
+      mountOverlayKeys: buildOverlayControls,
+      renderBridges,
       setOverlay(key, on) {
-        if (key === "estimated") {
-          if (writeEstimated) writeEstimated(!!on);
-          else syncEstimatedAirway();
-          return;
-        }
         overlays[key] = !!on;
-        const el = toolbar.querySelector(`[data-overlay="${key}"]`);
-        if (el) el.checked = overlays[key];
+        syncOverlayKeys();
         drawAll();
       },
       syncEstimatedAirway,
@@ -1834,8 +1859,7 @@ window.CtPanes = (function () {
       nearestRoute: world => nearestCentrelineWorld(airway, originMm, world),
       setAirwayOverlay(on) {
         overlays.airway = !!on;
-        const cb = rootEl.querySelector('input[data-overlay="airway"]');
-        if (cb) cb.checked = overlays.airway;
+        syncOverlayKeys();
         drawAll();
       },
       paneCanvasRect(paneKey) {

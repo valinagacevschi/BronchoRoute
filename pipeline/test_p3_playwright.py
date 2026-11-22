@@ -304,6 +304,40 @@ def test_p3_ct_panes(server, case_id):
                   && Math.abs(coronalPos.left.y - (coronalPos.fit.oy + coronalPos.fit.drawH/2)) < 1,
               };
 
+              // (c2) V toggles the view; A/R/C toggle overlays and light the key
+              const press = k => dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+              const lungWl = document.getElementById('ct-wl-readout').textContent;
+              press('v');
+              const headView = ct.getCtView();
+              const headLabel = document.getElementById('ct-view-readout').textContent;
+              press('v');
+              const feetView = ct.getCtView();
+              const feetLabel = document.getElementById('ct-view-readout').textContent;
+              const airwayStart = ct.overlaysEnabled().airway;
+              press('a');
+              const airwayOff = ct.overlaysEnabled().airway;
+              press('a');
+              const airwayOn = ct.overlaysEnabled().airway;
+              press('r');
+              const states = ct.overlaysEnabled();
+              const airwayKey = document.querySelector('[data-overlay-key="airway"]');
+              const airwayStyle = getComputedStyle(airwayKey);
+              out.checks.keys = {
+                lungWl, headView, headLabel, feetView, feetLabel,
+                airway: { start: airwayStart, off: airwayOff, on: airwayOn },
+                overlays: { airway: states.airway, route: states.route },
+                keyOn: airwayKey.classList.contains('on'),
+                keyWeight: airwayStyle.fontWeight, keyColor: airwayStyle.color,
+                ok: lungWl === 'W 1500 / L -600'
+                  && headView === 'head' && headLabel === 'Bronchoscopist'
+                  && feetView === 'feet' && feetLabel === 'Radiologist'
+                  && airwayStart === true && airwayOff === false && airwayOn === true
+                  && states.route === true
+                  && airwayKey.classList.contains('on')
+                  && airwayStyle.fontWeight === '700'
+                  && airwayStyle.color === 'rgb(255, 255, 255)',
+              };
+
               // (d) ALL 10 sampled route points within 1 voxel of label 1 or 2
               let routeOk = 0, routeN = 0;
               const routeEdges = A.route || [];

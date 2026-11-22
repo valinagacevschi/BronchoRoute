@@ -183,12 +183,6 @@ body.endo3d-active .limitations-panel { display: none; }
   scrollbar-width: none;
 }
 .rail-body::-webkit-scrollbar { display: none; }
-#g-layers {
-  flex: 0 0 auto;
-  background: var(--surface);
-  border-top: 1px solid var(--edge);
-  padding-top: 10px;
-}
 /* Sits in the rail so it never covers the switcher or the right-hand panels. */
 .research-footer {
   position: fixed;
@@ -220,11 +214,6 @@ body.endo3d-active .limitations-panel { display: none; }
   text-transform: uppercase; color: var(--muted);
   font-family: "IBM Plex Sans Condensed", sans-serif;
 }
-.layer-toggle {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px; color: var(--ink); cursor: pointer;
-}
-.layer-toggle input { margin: 0; accent-color: var(--estimated); }
 .readout { display: flex; justify-content: space-between; gap: 10px;
   font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px;
   font-variant-numeric: tabular-nums; }
@@ -235,21 +224,6 @@ body.endo3d-active .limitations-panel { display: none; }
 .group-case .readout,
 #g-nav .readout { margin: 1px 0; }
 
-.case-picker-label {
-  display: flex; flex-direction: column; gap: 4px;
-  font-size: 12px; color: var(--muted);
-}
-.case-picker-label[hidden] { display: none; }
-.case-picker-caption {
-  font-size: 10px; font-weight: 500; letter-spacing: .14em;
-  text-transform: uppercase;
-  font-family: "IBM Plex Sans Condensed", sans-serif;
-}
-#case-picker {
-  font: inherit; color: var(--ink);
-  border: 1px solid var(--edge); border-radius: 4px;
-  padding: 5px 6px; background: var(--ground); width: 100%;
-}
 
 .hint { font-size: 12px; color: var(--muted); line-height: 1.55; margin: 0; }
 kbd {
@@ -362,35 +336,35 @@ body.ct-panes-active .proto {
 #route-realism-bar { width: 100%; height: 8px; }
 #route-target-status { margin: 0; min-height: 1.2em; font-size: 12px; color: var(--muted); }
 #route-target-status.is-error { color: #a32b24; }
-#bridge-list { padding: 6px 10px; font-size: 12px; border-bottom: 1px solid var(--muted); }
-.bridge-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.bridge-row > span { margin-right: auto; }
+#bridge-list { padding: 0; font-size: 12px; color: var(--muted); }
+.bridge-row { display: block; margin-top: 4px; line-height: 1.7;
+  font-size: 12px; color: var(--muted); }
+.bridge-row > span { display: inline; }
+.bridge-row button { display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: middle; margin-left: 4px; font: 500 11px/1 "IBM Plex Sans Condensed", sans-serif;
+  border: 1px solid var(--edge); border-radius: 4px; padding: 2px 6px; cursor: pointer; }
+.bridge-row .bridge-goto { background: var(--steel); color: #fff; margin-left: 10px; }
+.bridge-confirm { background: var(--steel); color: #fff; }
+.bridge-reject { background: transparent; color: var(--steel); }
 .limitations-panel {
-  position: fixed; top: 14px; right: 16px; z-index: 6;
-  width: min(320px, calc(100vw - 272px)); padding: 10px 12px;
+  position: fixed; top: 14px; right: 16px; z-index: 5;
+  width: auto; max-width: 200px; padding: 6px 10px;
   color: var(--ink); font-size: 10px; line-height: 1.3;
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   border: 1px solid var(--edge); border-radius: 8px; box-shadow: var(--shadow);
 }
-.limitations-panel h2 { margin: 0 0 5px; color: var(--muted); font-size: 9px;
+.limitations-panel h2 { margin: 0; cursor: pointer; user-select: none;
+  color: var(--muted); font-size: 9px;
   font-weight: 500; letter-spacing: .13em; text-transform: uppercase; }
 .limitations { margin: 0; padding: 0; list-style: none; display: grid;
   grid-template-columns: 1fr 1fr; gap: 3px 10px; color: var(--muted); }
 .limitations li::before { content: "• "; color: var(--steel); }
-/* CT panes: collapse Limitations so it never covers toolbar / pane readouts. */
-body.ct-panes-active .limitations-panel {
-  width: auto; max-width: 200px; padding: 6px 10px; z-index: 5;
-  top: auto; bottom: 16px; right: 16px;
-}
-body.ct-panes-active .limitations-panel.collapsed .limitations,
-body.ct-panes-active .limitations-panel.collapsed .prov-legend { display: none; }
-body.ct-panes-active .limitations-panel h2 {
-  margin: 0; cursor: pointer; user-select: none;
-}
-body.ct-panes-active .limitations-panel h2::after {
+.limitations-panel.collapsed .limitations,
+.limitations-panel.collapsed .prov-legend { display: none; }
+.limitations-panel h2::after {
   content: " ▾"; font-size: 9px; opacity: .7;
 }
-body.ct-panes-active .limitations-panel.collapsed h2::after { content: " ▸"; }
+.limitations-panel.collapsed h2::after { content: " ▸"; }
 .prov-legend { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--edge);
   color: var(--muted); font-size: 9.5px; line-height: 1.3; }
 .prov-legend[hidden] { display: none; }
@@ -446,6 +420,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   font-size: 12px;
 }
+.ct-toolbar[hidden] { display: none; }
 .ct-toolbar button {
   font: 500 12px/1 "IBM Plex Sans Condensed", sans-serif;
   border: 1px solid var(--edge); border-radius: 4px; padding: 5px 9px;
@@ -453,11 +428,17 @@ body.walkthrough-active .walk-sim-label { display: block; }
 }
 .ct-toolbar button.secondary { background: transparent; color: var(--steel); }
 .ct-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
-.ct-presets, .ct-overlays, .ct-lesion-box { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ct-lesion-box { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .ct-candidate-row { display: flex; align-items: center; gap: 6px; }
-.ct-wl { font-family: "IBM Plex Mono", monospace; color: var(--muted); }
-.ct-view-toggle select { font: inherit; border: 1px solid var(--edge); border-radius: 4px; padding: 4px 6px; background: var(--surface); color: var(--ink); }
-.ct-overlays label { display: inline-flex; gap: 4px; align-items: center; color: var(--ink); }
+#ct-overlay-keys { display: contents; }
+.ct-key-item { display: inline; }
+.ct-key-item[hidden] { display: none; }
+.ct-key {
+  font: inherit; padding: 1px 5px; border: 1px solid var(--edge); border-radius: 4px;
+  background: none; color: var(--muted); cursor: pointer;
+}
+.ct-key.on { color: #fff; font-weight: 700; }
+.ct-key[hidden] { display: none; }
 .ct-overlay-hint { color: var(--mucosa); font-size: 11px; }
 .ct-lesion-status { color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
 .ct-grid {
@@ -600,6 +581,7 @@ body.walkthrough-active .walk-sim-label { display: block; }
   <div class="brand-row">
     <div class="brand"><span>BronchoRoute</span>Airway route viewer</div>
   </div>
+  <div id="rail-open-scan"></div>
 
   <section class="review-warnings" id="review-warnings" hidden aria-label="Review warnings">
     <button type="button" id="review-warnings-toggle" aria-expanded="true"
@@ -621,10 +603,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
 
   <div class="group group-case">
     <h2>Case</h2>
-    <label class="case-picker-label" id="case-picker-label" hidden>
-      <span class="case-picker-caption">Open</span>
-      <select id="case-picker" aria-label="Case picker"></select>
-    </label>
     <dl class="readout"><dt>Source</dt><dd id="r-source">unknown</dd></dl>
     <dl class="readout"><dt>Branches</dt><dd id="r-branches">—</dd></dl>
     <dl class="readout"><dt>Generations</dt><dd id="r-gens">—</dd></dl>
@@ -638,12 +616,19 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <dl class="readout"><dt>Lumen radius</dt><dd id="r-rad">—</dd></dl>
     <dl class="readout"><dt>To target</dt><dd id="r-togo">—</dd></dl>
     <dl class="readout"><dt>Turns ahead</dt><dd id="r-turns">—</dd></dl>
+    <dl class="readout"><dt>CT window</dt><dd id="ct-wl-readout">W 1500 / L -600</dd></dl>
+    <dl class="readout"><dt>CT view</dt><dd id="ct-view-readout">Radiologist</dd></dl>
   </div>
 
   <div class="group group-depth">
     <h2>Depth</h2>
     <div class="ramp" id="ramp"></div>
     <div class="ramp-labels"><span>trachea</span><span>distal</span></div>
+  </div>
+
+  <div class="group" id="g-bridges" hidden>
+    <h2>Bridges</h2>
+    <div id="bridge-list"></div>
   </div>
 
   <div class="group group-controls">
@@ -684,13 +669,6 @@ body.walkthrough-active .walk-sim-label { display: block; }
       </label>
     </div>
   </div>
-  </div>
-  <div class="group" id="g-layers">
-    <h2>Layers</h2>
-    <label class="layer-toggle">
-      <input type="checkbox" id="estimated-airway-toggle" checked>
-      Estimated airway
-    </label>
   </div>
 </aside>
 
@@ -799,7 +777,8 @@ body.walkthrough-active .walk-sim-label { display: block; }
 
   <section class="help-section" aria-labelledby="help-layers">
     <h2 id="help-layers">Layers and panels</h2>
-    <p>The CT panes toolbar has these checkboxes: Airway mask, Route, Lesion, Candidates, RouteTarget and Estimated airway.
+    <p>The Controls section has these keys: <kbd>A</kbd> Airway mask, <kbd>R</kbd> Route,
+    <kbd>C</kbd> Candidates, <kbd>L</kbd> Lesion, <kbd>T</kbd> RouteTarget. A lit key is on. <kbd>E</kbd> toggles Estimated airway on panels 2 and 3.
     <!-- prototype/ct_panes.js#buildToolbar --></p>
     <p>The bottom switcher has four panels:</p>
     <ol>
@@ -814,7 +793,8 @@ body.walkthrough-active .walk-sim-label { display: block; }
     other panels with it. The blue marker shows that position on Anatomical 3D and on Topology map.
     <!-- prototype/ct_panes.js#mount; prototype/renderer.template.html:3811, 5342, 5819-5820 --></p>
     <p>In Anatomical 3D or Topology map, press Up or Down to move the shared position 3 mm along the
-    route. In Topology map, press [ or ] to rotate the map 15 degrees.
+    route. In Topology map, press ← or → to rotate the map 15 degrees, A to start or stop auto-spin,
+    and R to reset the rotation.
     <!-- prototype/renderer.template.html:5570-5579 --></p>
     <p>Point at a RouteTarget card to highlight that route in the CT panes and move the shared
     position to the card's target.
@@ -1185,15 +1165,15 @@ const tok = n => css.getPropertyValue(n).trim();
 
 const VARIANTS = [
   { key: "anatomical", name: "Anatomical 3D",
-    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front) · <kbd>M</kbd> aids" },
+    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> orbit · <kbd>scroll</kbd> zoom · <kbd>F</kbd><kbd>H</kbd><kbd>O</kbd><kbd>T</kbd> presets · <kbd>R</kbd> Radiologist (front) · <button type='button' class='ct-key' id='view-e-key' title='Estimated airway'>E</button> Estimated airway · <kbd>M</kbd> aids" },
   { key: "endoluminal", name: "Endoluminal",
     hint: "<kbd>←</kbd><kbd>→</kbd> roll 5° · drag the scope clock · <kbd>↑</kbd><kbd>↓</kbd> fly · <kbd>Space</kbd> auto-play (pauses at forks) · <kbd>T</kbd> reset route · <kbd>M</kbd> aids · <kbd>Enter</kbd> back inside" },
   { key: "topology", name: "Topology map",
-    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>[</kbd> / <kbd>]</kbd> rotate 15° · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy" },
+    hint: "<kbd>drag</kbd> pan · <kbd>Shift-drag</kbd> rotate · <kbd>←</kbd> / <kbd>→</kbd> rotate 15° · <kbd>A</kbd> auto-spin · <kbd>R</kbd> reset rotation · <kbd>scroll</kbd> zoom · radial map: angle and distance are not anatomy · <button type='button' class='ct-key' id='view-e-key' title='Estimated airway'>E</button> Estimated airway" },
   { key: "ct-panes", name: "CT panes",
     hint: VIEWER_MODE
-      ? "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L"
-      : "<kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L · Mark Lesion in any pane" },
+      ? "<span id=\"ct-overlay-keys\"></span> · <kbd>V</kbd> view · <kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L"
+      : "<span id=\"ct-overlay-keys\"></span> · <kbd>V</kbd> view · <kbd>click</kbd> crosshair · <kbd>wheel</kbd> scroll slice · <kbd>shift-drag</kbd> W/L · Mark Lesion in any pane" },
   { key: "walkthrough", name: "Walk-through",
     hint: "Endoluminal + CT panes linked · <kbd>←</kbd><kbd>→</kbd> roll · <kbd>↑</kbd><kbd>↓</kbd> fly · pauses at forks" },
 ];
@@ -1294,9 +1274,12 @@ async function ensureSceneTrail() {
   const base = `/case-web/${encodeURIComponent(CASE_ID)}`;
   sceneTrailPromise = (async () => {
     try {
+      // 204 means the Case has no built scene: the server sends it instead of
+      // 404 so viewers that probe for the assets do not log an error.
+      const getJson = r => (r.ok && r.status !== 204) ? r.json() : null;
       const [scene, graph] = await Promise.all([
-        fetch(`${base}/scene.json`, { cache: "no-cache" }).then(r => r.ok ? r.json() : null),
-        fetch(`${base}/graph.json`, { cache: "no-cache" }).then(r => r.ok ? r.json() : null),
+        fetch(`${base}/scene.json`, { cache: "no-cache" }).then(getJson),
+        fetch(`${base}/graph.json`, { cache: "no-cache" }).then(getJson),
       ]);
       if (!scene || !graph) return null;
       const layer = pickSceneNodule(scene.layers);
@@ -1425,7 +1408,6 @@ const limitationsPanel = document.getElementById("limitations-panel");
 const limitationsToggle = document.getElementById("limitations-toggle");
 if (limitationsToggle && limitationsPanel) {
   limitationsToggle.addEventListener("click", () => {
-    if (!document.body.classList.contains("ct-panes-active")) return;
     limitationsPanel.classList.toggle("collapsed");
   });
 }
@@ -1682,25 +1664,21 @@ let lastAnatomicalLesion = null;
 let lastAnatomicalRouteTarget = null;
 let lastAnatomicalGap = null;
 let anatomicalHighlightDraws = 0;
-let showEstimatedAirway = true;
+let showEstimatedAirway = false;
 let estimatedDrawnPoints = 0;
 let topologyEstimatedDrawn = 0;
 let topologyEstimatedLabels = 0;
-const estimatedAirwayToggle = document.getElementById("estimated-airway-toggle");
+let estimatedDefaultVariant = null;
 function setShowEstimatedAirway(on) {
   showEstimatedAirway = !!on;
-  if (estimatedAirwayToggle && estimatedAirwayToggle.checked !== showEstimatedAirway) {
-    estimatedAirwayToggle.checked = showEstimatedAirway;
+  const key = document.getElementById("view-e-key");
+  if (key) {
+    key.classList.toggle("on", showEstimatedAirway);
+    key.setAttribute("aria-pressed", showEstimatedAirway ? "true" : "false");
   }
   if (ctPanesApi && typeof ctPanesApi.syncEstimatedAirway === "function") {
     ctPanesApi.syncEstimatedAirway();
   }
-}
-if (estimatedAirwayToggle) {
-  showEstimatedAirway = estimatedAirwayToggle.checked;
-  estimatedAirwayToggle.addEventListener("change", () => {
-    setShowEstimatedAirway(estimatedAirwayToggle.checked);
-  });
 }
 
 function lesionRadiusMm(lesion) {
@@ -4778,10 +4756,17 @@ function routeTargetLesionAnchor(lesionRas) {
 
 function drawTopologyLesion() {
   lastTopologyLesion = null;
-  if (!A.lesion || !A.lesion.ras_mm || !topoLayout) return;
+  // Panels 2 and 4 draw the case-web scene nodule. Use the same point here so
+  // every panel marks one destination; fall back to the payload lesion.
+  const origin = A.origin_mm || [0, 0, 0];
+  const sceneRas = sceneTrail && sceneTrail.nodule
+    ? sceneTrail.nodule.rel.map((v, i) => v + origin[i])
+    : null;
+  const lesionRas = sceneRas || (A.lesion && A.lesion.ras_mm);
+  if (!lesionRas || !topoLayout) return;
   if (!window.CtPanes || typeof window.CtPanes.nearestCtSeenSample !== "function") return;
-  const anchored = routeTargetLesionAnchor(A.lesion.ras_mm)
-    || window.CtPanes.nearestCtSeenSample(A.edges, A.origin_mm, A.lesion.ras_mm);
+  const anchored = routeTargetLesionAnchor(lesionRas)
+    || window.CtPanes.nearestCtSeenSample(A.edges, A.origin_mm, lesionRas);
   if (!anchored || !anchored.edge) return;
   const edge = anchored.edge;
   const a = topoLayout.get(edge.f);
@@ -4795,7 +4780,7 @@ function drawTopologyLesion() {
   const pt = topoToScreen(local);
   if (exportSkipsLesion()) return;
   ctx.save();
-  ctx.fillStyle = "#f2b632";
+  ctx.fillStyle = "#ffd400";
   ctx.beginPath();
   ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
   ctx.fill();
@@ -4803,14 +4788,14 @@ function drawTopologyLesion() {
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.font = '600 10px "IBM Plex Sans", sans-serif';
-  ctx.fillStyle = "#f2b632";
+  ctx.fillStyle = "#ffd400";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillText("Nodule", pt.x + 8, pt.y);
   ctx.restore();
   lastTopologyLesion = {
     x: pt.x, y: pt.y, label: "Nodule", distMm: anchored.distMm,
-    from: edge.f, to: edge.t, frac, color: "#f2b632",
+    from: edge.f, to: edge.t, frac, color: "#ffd400",
     onRouteTarget: !!anchored.onRouteTarget,
   };
 }
@@ -4820,10 +4805,8 @@ let topoSpin = false;
 let topoSpinTime = null;
 const topoControls = document.createElement("div");
 topoControls.id = "topo-controls";
-topoControls.style.cssText = "position:fixed;right:20px;bottom:80px;z-index:20;background:var(--surface);padding:8px;border:1px solid var(--edge);border-radius:6px";
-topoControls.innerHTML = `<span id="topo-angle">Rotation 0°</span>
-  <button id="topo-reset">Reset rotation</button>
-  <button id="topo-spin" aria-pressed="false">Auto-spin</button>`;
+topoControls.style.cssText = "position:fixed;right:20px;bottom:80px;z-index:20;background:var(--surface);padding:3px 6px;border:1px solid var(--edge);border-radius:6px;font-size:11px";
+topoControls.innerHTML = `<span id="topo-angle">0°</span>`;
 document.body.appendChild(topoControls);
 function setTopoRotation(degrees, manual = true) {
   topoRot = ((degrees % 360) + 540) % 360 - 180;
@@ -4833,15 +4816,17 @@ function setTopoRotation(degrees, manual = true) {
     topoSpinTime = null;
   }
   const rounded = Math.round(topoRot);
-  document.getElementById("topo-angle").textContent = `Rotation ${rounded === -180 ? 180 : rounded}°`;
-  document.getElementById("topo-spin").setAttribute("aria-pressed", String(topoSpin));
+  document.getElementById("topo-angle").textContent = `${rounded === -180 ? 180 : rounded}°`;
 }
-document.getElementById("topo-reset").onclick = () => setTopoRotation(0);
-document.getElementById("topo-spin").onclick = () => {
+function toggleTopoSpin() {
   topoSpin = !topoSpin;
   topoSpinTime = null;
-  setTopoRotation(topoRot, false);
-};
+  showViewerToast(topoSpin ? "Auto-spin on" : "Auto-spin off");
+}
+function resetTopoRotation() {
+  setTopoRotation(0);
+  showViewerToast("Rotation reset");
+}
 function buildTopology() {
   // Radial tree: angle by subtree leaf share, radius by generation. Trachea
   // at centre; trachea edge points straight down (head→feet). Sibling order
@@ -5625,6 +5610,35 @@ addEventListener("keydown", e => {
   if (document.querySelector("dialog[open]")) return;
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
+  if ((variant === 0 || variant === 2)
+    && !e.metaKey && !e.ctrlKey && !e.altKey
+    && (e.key === "e" || e.key === "E")) {
+    setShowEstimatedAirway(!showEstimatedAirway);
+    showViewerToast(showEstimatedAirway ? "Estimated airway on" : "Estimated airway off");
+    e.preventDefault();
+    return;
+  }
+  if (variant === 3 && ctPanesApi && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const key = e.key.toLowerCase();
+    if (key === "v") {
+      const view = ctPanesApi.getCtView() === "head" ? "feet" : "head";
+      ctPanesApi.setCtViewByName(view);
+      showViewerToast(view === "feet" ? "Radiologist" : "Bronchoscopist");
+      e.preventDefault();
+      return;
+    }
+    const overlay = {
+      a: ["airway", "Airway mask"], r: ["route", "Route"],
+      c: ["candidates", "Candidates"],
+      l: ["lesion", "Lesion"], t: ["target", "RouteTarget"],
+    }[key];
+    if (overlay) {
+      const on = ctPanesApi.toggleOverlay(overlay[0]);
+      if (on !== null) showViewerToast(`${overlay[1]} ${on ? "on" : "off"}`);
+      e.preventDefault();
+      return;
+    }
+  }
   if (!e.metaKey && !e.ctrlKey && !e.altKey) {
     const key = e.key.toLowerCase();
     if (key === "m") {
@@ -5649,8 +5663,18 @@ addEventListener("keydown", e => {
     if (idx >= 0) setVariant(idx);
     return;
   }
-  if (variant === 2 && (e.key === "[" || e.key === "]")) {
-    setTopoRotation(topoRot + (e.key === "]" ? 15 : -15));
+  if (variant === 2 && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+    setTopoRotation(topoRot + (e.key === "ArrowRight" ? 15 : -15));
+    e.preventDefault();
+    return;
+  }
+  if (variant === 2 && (e.key === "a" || e.key === "A")) {
+    toggleTopoSpin();
+    e.preventDefault();
+    return;
+  }
+  if (variant === 2 && (e.key === "r" || e.key === "R")) {
+    resetTopoRotation();
     e.preventDefault();
     return;
   }
@@ -5828,6 +5852,7 @@ async function ensureCtPanes() {
       airway: A,
       sharedPos: SharedPos,
       readOnly: VIEWER_MODE || features.viewer_only,
+      allowBridgeDecisions: !features.viewer_only,
       showEstimatedAirway: () => showEstimatedAirway,
       setShowEstimatedAirway,
       onBridgeChange: async () => {
@@ -5929,7 +5954,7 @@ async function syncEndo3d() {
   }
   if (endo3dAssets === null) {
     endo3dAssets = fetch(`/case-web/${encodeURIComponent(CASE_ID)}/scene.json`)
-      .then(r => r.ok)
+      .then(r => r.ok && r.status !== 204)
       .catch(() => false);
   }
   const ok = await endo3dAssets;
@@ -5970,11 +5995,28 @@ function render() {
   const keyHints = SWITCHER_VARIANTS.map((_, i) => `<kbd>${i + 1}</kbd>`).join("");
   document.getElementById("hint").innerHTML = VARIANTS[variant].hint +
     `<br><br>Switch renderer with ${keyHints}.`;
+  if (variant === 3 && ctPanesApi && ctPanesApi.mountOverlayKeys) {
+    ctPanesApi.mountOverlayKeys();
+  }
+  const viewEKey = document.getElementById("view-e-key");
+  if (viewEKey) {
+    viewEKey.addEventListener("click", () => setShowEstimatedAirway(!showEstimatedAirway));
+  }
+  const bridgeGroup = document.getElementById("g-bridges");
+  if (bridgeGroup && variant !== 3) bridgeGroup.hidden = true;
+  if (variant === 3 && ctPanesApi && ctPanesApi.renderBridges) {
+    ctPanesApi.renderBridges();
+  }
   const walkActive = variant === 4;
   const endoActive = variant === 1 || walkActive;
   document.getElementById("g-nav").style.opacity = endoActive ? "1" : ".45";
-  const estimatedLayers = document.getElementById("g-layers");
-  if (estimatedLayers) estimatedLayers.hidden = variant !== 0 && variant !== 2 && variant !== 3;
+  if (estimatedDefaultVariant !== variant) {
+    estimatedDefaultVariant = variant;
+    setShowEstimatedAirway(variant === 0 || variant === 2);
+  }
+  // Depth is the legend for the airway depth colour, used only in 3D and topology.
+  const depthGroup = document.querySelector(".group-depth");
+  if (depthGroup) depthGroup.hidden = variant !== 0 && variant !== 2;
   syncPresetButtons();
   syncEndo3d();
   const ctOnly = variant === 3;
@@ -5983,10 +6025,7 @@ function render() {
   document.body.classList.toggle("ct-panes-active", ctOnly);
   document.body.classList.toggle("walkthrough-active", walkActive);
   mainStage.style.visibility = ctOnly ? "hidden" : "visible";
-  if (limitationsPanel) {
-    if (ctOnly) limitationsPanel.classList.add("collapsed");
-    else limitationsPanel.classList.remove("collapsed");
-  }
+  if (limitationsPanel) limitationsPanel.classList.add("collapsed");
   if (ctActive) ensureCtPanes();
   // A toggle made while the panes were hidden drew into a 0×0 canvas.
   if (ctActive && ctPanesApi && typeof ctPanesApi.drawAll === "function") {
@@ -8424,39 +8463,6 @@ document.getElementById("r-branches").textContent = A.edges.length;
 document.getElementById("r-gens").textContent = maxGen;
 document.getElementById("r-length").textContent = (totalLen / 10).toFixed(0) + " cm";
 
-async function setupCasePicker() {
-  if (!VIEWER_MODE) return;
-  const label = document.getElementById("case-picker-label");
-  const select = document.getElementById("case-picker");
-  if (!label || !select) return;
-  label.hidden = false;
-  let cases = [];
-  try {
-    cases = await fetch("/api/cases").then(r => r.json());
-  } catch (err) {
-    console.warn(err);
-    return;
-  }
-  if (!Array.isArray(cases)) return;
-  select.innerHTML = "";
-  for (const c of cases) {
-    const opt = document.createElement("option");
-    opt.value = c.id;
-    opt.textContent = c.source || c.id;
-    if (c.id === CASE_ID) opt.selected = true;
-    select.appendChild(opt);
-  }
-  select.addEventListener("change", () => {
-    const u = new URL(location.href);
-    u.searchParams.set("case", select.value);
-    const v = params.get("variant");
-    if (v) u.searchParams.set("variant", v);
-    else u.searchParams.delete("variant");
-    location.assign(u.pathname + u.search);
-  });
-}
-
-setupCasePicker().catch(err => console.warn(err));
 setupRouteTargetPanel();
 ensureSceneTrail().catch(() => null);
 // Realistic image generation is disabled for now.

@@ -322,77 +322,28 @@
   syncHelpMount();
   const open = document.createElement("button");
   open.id = "archive-open";
-  open.textContent = "Open Archive…";
+  open.textContent = "Open CT Scan";
   open.hidden = true;
   document.body.appendChild(open);
 
   if (window.bronchoroute) get("archive-hotkey").hidden = false;
 
-  function overlayOpen() {
-    return !screen.hidden || !libraryScreen.hidden || !weightsScreen.hidden;
-  }
-
-  function mountArchiveOpenInTopbar(host) {
-    const actions = host.querySelector(".intake-topbar-actions");
-    if (!actions) return;
-    open.classList.add("btn-ghost", "btn-sm");
+  function mountArchiveOpenInRail() {
+    const host = document.getElementById("rail-open-scan");
+    open.classList.remove("btn-ghost", "btn-sm");
     open.style.top = "";
     open.style.right = "";
-    if (open.parentElement !== actions) actions.insertBefore(open, actions.firstChild);
-  }
-
-  function restoreArchiveOpenToBody() {
-    open.classList.remove("btn-ghost", "btn-sm");
-    if (open.parentElement !== document.body) document.body.appendChild(open);
+    if (host) {
+      if (open.parentElement !== host) host.appendChild(open);
+    } else if (open.parentElement !== document.body) {
+      document.body.appendChild(open);
+    }
   }
 
   function syncArchiveOpen() {
-    if (viewerOnly) {
-      open.hidden = true;
-      restoreArchiveOpenToBody();
-      return;
-    }
-    const onImportForm = !screen.hidden && get("processing").hidden && libraryScreen.hidden;
-    open.hidden = onImportForm || !weightsScreen.hidden;
-    if (open.hidden) {
-      if (!overlayOpen()) restoreArchiveOpenToBody();
-      return;
-    }
-    if (!libraryScreen.hidden) {
-      mountArchiveOpenInTopbar(libraryScreen);
-      return;
-    }
-    if (!screen.hidden && !get("processing").hidden) {
-      mountArchiveOpenInTopbar(screen);
-      return;
-    }
-    restoreArchiveOpenToBody();
-    placeArchiveOpen();
-  }
-
-  function placeArchiveOpen() {
+    open.hidden = viewerOnly;
     if (open.hidden) return;
-    if (open.parentElement !== document.body) return;
-    let top = 14;
-    let right = 18;
-    const panel = document.getElementById("limitations-panel");
-    if (panel) {
-      const box = panel.getBoundingClientRect();
-      if (box.width > 0 && box.height > 0) {
-        const gap = 8;
-        right = Math.max(18, Math.round(window.innerWidth - box.right));
-        const btnH = open.offsetHeight || 40;
-        if (box.top < window.innerHeight * 0.5) {
-          top = Math.ceil(box.bottom + gap);
-        } else {
-          top = Math.max(14, Math.floor(box.top - gap - btnH));
-        }
-        const maxTop = Math.max(14, window.innerHeight - btnH - gap);
-        if (top > maxTop) top = maxTop;
-      }
-    }
-    open.style.top = `${top}px`;
-    open.style.right = `${right}px`;
+    mountArchiveOpenInRail();
   }
 
   function setCrumb(host, parts) {
@@ -1292,31 +1243,11 @@
   if (window.bronchoroute) {
     window.bronchoroute.onOpenArchive(path => scan(path).catch(error => message(error.message)));
   }
-  window.addEventListener("resize", placeArchiveOpen);
-  const placeWhenChromeMoves = new MutationObserver(placeArchiveOpen);
-  placeWhenChromeMoves.observe(document.body, {
-    attributes: true, attributeFilter: ["class"],
-  });
-  for (const el of [screen, libraryScreen, weightsScreen]) {
-    placeWhenChromeMoves.observe(el, {
-      attributes: true, attributeFilter: ["hidden"],
-    });
-  }
-  const limitations = document.getElementById("limitations-panel");
-  if (limitations) {
-    placeWhenChromeMoves.observe(limitations, {
-      attributes: true, attributeFilter: ["class"],
-    });
-    if (typeof ResizeObserver === "function") {
-      new ResizeObserver(placeArchiveOpen).observe(limitations);
-    }
-  }
   api("/api/features").then(async features => {
     viewerOnly = Boolean(features.viewer_only);
     get("outdated-reprocess").hidden = viewerOnly;
     if (features.viewer_only) return;
     open.hidden = false;
-    placeArchiveOpen();
     const cases = await api("/api/cases");
     if (!cases.length) await prepare();
     syncArchiveOpen();

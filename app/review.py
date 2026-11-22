@@ -594,6 +594,9 @@ def bridge_state(case_id: str) -> dict[str, Any]:
     bridges = load_bridges_annotated(ref)
     mapping = map_all_bridges(graph, bridges, ref) if bridges else {}
     decisions = case.get("bridge_decisions") or {}
+    evidence = case.get("bridge_evidence") or {}
+    if not isinstance(evidence, dict):
+        evidence = {}
     rows = []
     for bridge in bridges:
         entry = decisions.get(bridge["id"]) or {}
@@ -604,6 +607,7 @@ def bridge_state(case_id: str) -> dict[str, Any]:
             "decision": entry.get("decision"),
             "decided_by": entry.get("clinician"),
             "decided_at": entry.get("at"),
+            "evidence": evidence.get(bridge["id"]),
             "matched": bool(mapping.get(bridge["id"])),
         })
     return {
@@ -621,6 +625,7 @@ def review_state(case_id: str) -> dict[str, Any]:
     decisions = case.get("bridge_decisions") or {}
     if not isinstance(decisions, dict):
         decisions = {}
+    evidence = case.get("bridge_evidence") or {}
     bridge_map = map_all_bridges(graph, bridges, ref) if bridges else {}
     bridge_rows = []
     for bridge in bridges:
@@ -629,6 +634,7 @@ def review_state(case_id: str) -> dict[str, Any]:
         bridge_rows.append({
             **bridge,
             "decision": decision if isinstance(decision, dict) else None,
+            "evidence": evidence.get(bridge["id"]) if isinstance(evidence, dict) else None,
             "matched": bool(spans),
             "spans": spans,
         })

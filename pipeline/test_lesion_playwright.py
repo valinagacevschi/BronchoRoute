@@ -221,10 +221,9 @@ def test_lesion_place_diameter_and_views(server):
         toolbar = page.locator(".ct-toolbar").inner_text()
         assert "confirm the Lesion" not in toolbar
         assert "Mark and confirm" not in toolbar
-        airway = page.locator('[data-overlay="airway"]')
+        airway = page.locator('[data-overlay-key="airway"]')
         assert airway.is_enabled()
-        airway.click()
-        assert airway.is_checked()
+        assert airway.get_attribute("aria-pressed") == "true"
         _shot(page, shots, "overlays-before.png")
 
         page.locator("#ct-mark-lesion").click()
@@ -346,13 +345,12 @@ def test_lesion_place_diameter_and_views(server):
         page.wait_for_function(
             """() => {
               const v = window.__p2_debug.lesionViews().topology;
-              return v && v.label && v.label.includes("from airway");
+              return v && v.label === "Nodule";
             }""",
             timeout=10_000,
         )
         topology = page.evaluate("() => window.__p2_debug.lesionViews().topology")
-        assert topology["label"].startswith("Lesion · ")
-        assert topology["label"].endswith(" mm from airway")
+        assert topology["label"] == "Nodule"
         assert 5 < topology["distMm"] < 14, topology
         assert topology["from"] == 0 and topology["to"] == 1
         _shot(page, shots, "topology.png")

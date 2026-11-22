@@ -185,6 +185,16 @@ class _DeployGuards(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class _PrototypeNoCache(BaseHTTPMiddleware):
+    """Local prototype files change in place; never let the browser cache them."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.endswith((".js", ".css", ".html")):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     log_handler = initialize_sidecar()
@@ -197,6 +207,7 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(title="BronchoRoute", docs_url=None, redoc_url=None, lifespan=_lifespan)
 app.add_middleware(_DeployGuards)
+app.add_middleware(_PrototypeNoCache)
 app.include_router(models_router)
 
 
@@ -627,7 +638,14 @@ def api_segment_register_existing(case_id: str):
         entry = register_segment_artifacts(
             case_id, clinician["clinician"], registered_existing=True
         )
-        return {"record": entry, "registered_existing": True}
+        auto = None
+        try:
+            from app.bridge_evidence import auto_decide_bridges
+
+            auto = auto_decide_bridges(case_id)
+        except Exception as exc:  # noqa: BLE001
+            auto = {"error": str(exc)}
+        return {"record": entry, "registered_existing": True, "bridges_auto": auto}
     except WorkflowBlocked as exc:
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
@@ -1221,7 +1239,9 @@ def case_web(case_id: str, name: str):
     if base not in target.parents and target != base:
         return JSONResponse({"error": "invalid path"}, status_code=404)
     if not target.is_file():
-        return JSONResponse({"error": "not built"}, status_code=404)
+        # Optional assets: a Case without a built scene must not log a 404 in
+        # every viewer that probes for it.
+        return Response(status_code=204)
     media = "application/octet-stream"
     if name.endswith(".json"):
         media = "application/json"

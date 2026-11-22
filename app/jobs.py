@@ -514,6 +514,12 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
         if job._cancelled.is_set():
             raise RuntimeError("cancelled")
         register_segment_artifacts(job.case_id, clinician)
+        try:
+            from app.bridge_evidence import auto_decide_bridges
+
+            auto_decide_bridges(job.case_id)
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("bridge evidence failed")
         job.status = "succeeded"
         job.pid = None
         job.append_log("segmentation_done")
