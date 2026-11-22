@@ -399,24 +399,39 @@ def test_record_frames_follow_the_visible_view(server):
                 "() => window.__endoDebug && window.__endoDebug.meshes.arteries",
                 timeout=120_000,
             )
-            assert page.evaluate("() => window.__endoDebug.viewMode()") == "split"
             page.evaluate(
                 """() => {
-                  window.__recordFrames = [];
+                  window.__recordFrame = null;
                   addEventListener('message', (ev) => {
                     if (ev.data && ev.data.type === 'endo3d-video-frame' && ev.data.dataUrl) {
-                      window.__recordFrames.push(ev.data.dataUrl);
+                      window.__recordFrame = ev.data.dataUrl;
                     }
                   });
-                  window.postMessage({ type: 'endo3d-record-start', fps: 30,
-                    width: 400, height: 300 }, location.origin);
                 }""")
-            page.wait_for_function("() => window.__recordFrames.length > 0", timeout=15_000)
-            page.evaluate(
-                "() => window.postMessage({ type: 'endo3d-record-stop' }, location.origin)")
-            left, right = _corners(page.evaluate("() => window.__recordFrames[0]"))
-            assert left[0] > left[2], (left, right)
-            assert right[2] > right[0], (left, right)
+
+            def grab(mode):
+                assert page.evaluate("() => window.__endoDebug.viewMode()") == mode
+                page.evaluate("() => { window.__recordFrame = null; }")
+                page.evaluate(
+                    """() => window.postMessage({ type: 'endo3d-record-start', fps: 30,
+                      width: 400, height: 300 }, location.origin)""")
+                page.wait_for_function("() => window.__recordFrame != null", timeout=15_000)
+                page.evaluate(
+                    "() => window.postMessage({ type: 'endo3d-record-stop' }, location.origin)")
+                return _corners(page.evaluate("() => window.__recordFrame"))
+
+            left, right = grab("split")
+            assert left[0] > left[2] and right[2] > right[0], (left, right)
+
+            page.keyboard.press("v")   # split -> inside
+            page.wait_for_function("() => window.__endoDebug.viewMode() === 'inside'")
+            left, right = grab("inside")
+            assert left[0] > left[2] and right[0] > right[2], (left, right)
+
+            page.keyboard.press("v")   # inside -> outside
+            page.wait_for_function("() => window.__endoDebug.viewMode() === 'outside'")
+            left, right = grab("outside")
+            assert left[2] > left[0] and right[2] > right[0], (left, right)
         finally:
             browser.close()
 

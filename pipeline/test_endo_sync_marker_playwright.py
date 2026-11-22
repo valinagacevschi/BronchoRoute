@@ -269,3 +269,49 @@ def test_panel_four_defaults_to_split_and_remembers_the_choice(server):
             assert endo.evaluate("() => window.__endoDebug.viewMode()") == "inside"
         finally:
             browser.close()
+
+
+def test_desktop_record_sends_wall_clock_frames(server):
+    sync_playwright = _playwright_or_skip()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        context = browser.new_context(viewport=VIEWPORT)
+        page = context.new_page()
+        page.add_init_script(
+            """
+            window.__rec = {count: 0};
+            window.bronchoroute = {
+              recordStart: async () => ({recordingId: 'r1'}),
+              recordFrame: async () => { window.__rec.count += 1; },
+              recordStop: async () => {},
+              recordCancel: async () => {},
+            };
+            """)
+        try:
+            page.goto(
+                f"{server}/?case=local-001&variant=endoluminal&debug=1&allow_review=1",
+                wait_until="domcontentloaded",
+                timeout=120_000,
+            )
+            page.wait_for_function(
+                "() => document.getElementById('endo3d')"
+                " && !document.getElementById('endo3d').hidden",
+                timeout=120_000,
+            )
+            endo = None
+            for _ in range(150):
+                endo = next((f for f in page.frames if "endoluminal.html" in f.url), None)
+                if endo is not None:
+                    break
+                page.wait_for_timeout(100)
+            assert endo is not None
+            endo.wait_for_function("() => !!window.__endoDebug", timeout=120_000)
+            page.locator("#record-btn").click()
+            page.wait_for_timeout(1000)
+            page.locator("#record-stop").click()
+            page.wait_for_timeout(600)
+            count = page.evaluate("() => window.__rec.count")
+            # About 1.2 s at 30 fps. The old loop sent only as fast as readPixels.
+            assert count >= 24, count
+        finally:
+            browser.close()

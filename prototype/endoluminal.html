@@ -627,14 +627,23 @@ airway ${w.toFixed(1)} mm wide`;
       }
       if (rec3d && rec3d.source) {
         const nowMs = performance.now();
-        if (nowMs - rec3d.last >= 1000 / rec3d.fps - 1) {
-          rec3d.last = nowMs;
+        const step = 1000 / rec3d.fps;
+        const expected = Math.floor((nowMs - rec3d.startMs) / step);
+        if (expected > rec3d.sent) {
+          // Composing through readPixels is slower than the target fps. Send the
+          // same frame for every missed slot so the video keeps its wall-clock
+          // length instead of playing back short.
+          const slots = Math.min(6, expected - rec3d.sent);
+          rec3d.sent += slots;
           try {
             const out = composeEndoFrame(rec3d.width, rec3d.height);
-            rec3d.source.postMessage({
-              type: "endo3d-video-frame",
-              dataUrl: out.toDataURL("image/jpeg", 0.92),
-            }, rec3d.origin);
+            const dataUrl = out.toDataURL("image/jpeg", 0.92);
+            for (let i = 0; i < slots; i += 1) {
+              rec3d.source.postMessage({
+                type: "endo3d-video-frame",
+                dataUrl,
+              }, rec3d.origin);
+            }
           } catch (err) {
             rec3d = null;
           }
@@ -865,7 +874,8 @@ airway ${w.toFixed(1)} mm wide`;
       }
       if (data.type === "endo3d-record-start") {
         rec3d = { fps: Number(data.fps) || 30, width: Number(data.width) || 0,
-          height: Number(data.height) || 0, last: 0, origin: ev.origin, source: ev.source };
+          height: Number(data.height) || 0, startMs: performance.now(), sent: 0,
+          origin: ev.origin, source: ev.source };
         return;
       }
       if (data.type === "endo3d-record-stop") rec3d = null;

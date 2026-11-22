@@ -6943,13 +6943,14 @@ function startBrowserRecording(name) {
   canvas.width = size.width;
   canvas.height = size.height;
   const paint = canvas.getContext("2d");
-  const recorder = new MediaRecorder(canvas.captureStream(RECORD_FPS), {
+  const stream = canvas.captureStream(0);
+  const recorder = new MediaRecorder(stream, {
     mimeType: mime,
     videoBitsPerSecond: 8_000_000,
   });
   const chunks = [];
   const session = { view: "endoluminal", sent: 0, recorder, mime, chunks, name,
-    stopping: false, onMessage: null };
+    stopping: false, onMessage: null, track: stream.getVideoTracks()[0] };
   recorder.ondataavailable = (ev) => {
     if (ev.data && ev.data.size) chunks.push(ev.data);
   };
@@ -6975,6 +6976,9 @@ function startBrowserRecording(name) {
     img.onload = () => {
       if (session.stopping) return;
       paint.drawImage(img, 0, 0, size.width, size.height);
+      // captureStream(0) + requestFrame stamps each frame at real time, so the
+      // video keeps its wall-clock length even when decode is below 30 fps.
+      if (session.track && session.track.requestFrame) session.track.requestFrame();
       session.sent += 1;
       const live = document.getElementById("record-indicator");
       if (live) live.textContent = `● REC ${formatRecordClock(session.sent)}`;
@@ -6995,6 +6999,7 @@ function startBrowserRecording(name) {
 }
 
 function finishBrowserRecording(session) {
+  session.stopping = true;
   setRecordUi("stopping");
   const frame = document.getElementById("endo3d-frame");
   try {
