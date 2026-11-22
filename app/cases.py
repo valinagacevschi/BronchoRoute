@@ -45,6 +45,37 @@ FORBIDDEN_KEY_SUBSTR = ("patient", "name", "birth", "mrn", "accession", "uid")
 MAX_DATA_BYTES = 8192
 MAX_STRING_CHARS = 500
 ROUTE_START_RADIUS_FRAC = 0.8
+MANUAL_LESION_SOURCE = "manual"
+NODULE_LESION_SOURCE = "nodule"
+NODULE_MATCH_MM = 0.5
+
+
+def lesion_source(record: dict) -> str:
+    """Where the stored Lesion came from: a person or a detected Nodule.
+
+    Records written before the source field existed are matched against the
+    stored candidates by position. A match means a detected Nodule.
+    """
+    lesion = record.get("lesion")
+    if not isinstance(lesion, dict):
+        return MANUAL_LESION_SOURCE
+    stored = lesion.get("source")
+    if stored in {MANUAL_LESION_SOURCE, NODULE_LESION_SOURCE}:
+        return str(stored)
+    block = record.get("candidates")
+    items = block.get("items") if isinstance(block, dict) else None
+    ras = lesion.get("ras_mm")
+    if isinstance(ras, list) and len(ras) == 3 and isinstance(items, list):
+        for item in items:
+            other = item.get("ras_mm") if isinstance(item, dict) else None
+            if not isinstance(other, list) or len(other) != 3:
+                continue
+            if all(
+                abs(float(ras[axis]) - float(other[axis])) <= NODULE_MATCH_MM
+                for axis in range(3)
+            ):
+                return NODULE_LESION_SOURCE
+    return MANUAL_LESION_SOURCE
 
 
 def load_case_record(ref: CaseRef) -> dict:
@@ -195,6 +226,8 @@ def case_payload(case_id: str, allow_review: bool = False) -> dict:
     for rem in payload["removed"]:
         rem["selectable"] = False
         rem["selectable_until_mm"] = None
+    if isinstance(payload.get("lesion"), dict):
+        payload["lesion"]["source"] = lesion_source(record)
     return payload
 
 
@@ -665,6 +698,7 @@ def confirm_candidate(case_id: str, index: object, clinician: str) -> dict:
             "diameter_mm": diameter,
             "confirmed_by": clinician,
             "at": at,
+            "source": NODULE_LESION_SOURCE,
         }
         entry = {
             "step": int(WorkflowStep.LESION),
@@ -700,6 +734,7 @@ def set_lesion(
             "diameter_mm": diameter,
             "confirmed_by": clinician,
             "at": at,
+            "source": MANUAL_LESION_SOURCE,
         }
         entry = {
             "step": int(WorkflowStep.LESION),
@@ -716,10 +751,19 @@ def set_lesion(
 
 
 def clear_lesion(case_id: str, clinician: str) -> dict:
-    """Clear lesion and append lesion_cleared under one case lock."""
+    """Clear a manually placed Lesion and append lesion_cleared.
+
+    A Lesion confirmed from a detected Nodule is never deleted. It can only be
+    replaced by a new Lesion, which rewrites the record.
+    """
     from app.workflow import WorkflowStep
 
     def apply(record: dict) -> dict:
+        if lesion_source(record) == NODULE_LESION_SOURCE:
+            raise ValueError(
+                "This Lesion came from a detected nodule and cannot be cleared. "
+                "Place a new Lesion to replace it."
+            )
         record.pop("lesion", None)
         entry = {
             "step": int(WorkflowStep.LESION),

@@ -638,9 +638,15 @@ window.CtPanes = (function () {
       if (el) el.textContent = ctView === "head" ? "Bronchoscopist" : "Radiologist";
     }
 
+    function lesionFromNodule() {
+      return !!(lesion && lesion.source === "nodule");
+    }
+
     function updateLesionStatus() {
       const el = toolbar.querySelector("#ct-lesion-status");
       if (!el) return;
+      const clearBtn = toolbar.querySelector("#ct-clear-lesion");
+      if (clearBtn) clearBtn.disabled = readOnly || lesionFromNodule();
       if (marking && provisional) {
         el.textContent = `Ø ${provisionalDiameter.toFixed(1)} mm`;
       } else if (lesion && lesion.ras_mm) {
@@ -711,6 +717,10 @@ window.CtPanes = (function () {
 
     async function clearLesion() {
       if (readOnly) return;
+      if (lesionFromNodule()) {
+        statusMessage("Detected nodule cannot be cleared");
+        return;
+      }
       let ok;
       try {
         ok = await ensureClinician();

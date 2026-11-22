@@ -670,6 +670,7 @@ def test_payload_origin_and_lesion_roundtrip(client, harness):
     payload2 = client.get("/api/cases/local-001/payload?allow_review=true").json()
     assert payload2["lesion"]["ras_mm"] == pytest.approx(ras)
     assert payload2["lesion"]["confirmed_by"] == "Radiologist, A.B."
+    assert payload2["lesion"]["source"] == "manual"
 
     cleared = client.delete("/api/cases/local-001/lesion")
     assert cleared.status_code == 200
@@ -739,7 +740,17 @@ def test_candidates_roundtrip_and_confirm(client, harness):
     assert "candidates" not in on_disk
     payload2 = client.get("/api/cases/local-001/payload?allow_review=true").json()
     assert payload2["lesion"]["ras_mm"] == pytest.approx(far)
+    assert payload2["lesion"]["source"] == "nodule"
     assert payload2["candidates"] == []
+
+    # A Lesion confirmed from a detected Nodule is never cleared.
+    refused = client.delete("/api/cases/local-001/lesion")
+    assert refused.status_code == 422
+    assert "cannot be cleared" in refused.json()["detail"]
+    assert json.loads(harness["case"].read_text())["lesion"]["ras_mm"] == pytest.approx(far)
+    assert "lesion_cleared" not in [
+        rec["kind"] for rec in json.loads(harness["case"].read_text())["records"]
+    ]
 
     client.delete("/api/cases/local-001/candidates")
 
