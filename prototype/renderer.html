@@ -1194,6 +1194,12 @@ async function applyResetSelection() {
   if (!first || !Array.isArray(first.ras_mm)) return;
   SharedPos.set(first.ras_mm, "candidate");
   await ensureCtPanes().catch(() => {});
+  // The CT buffers load after mount; scroll every pane to the nodule once
+  // they are ready, so panel 1 opens on the detected nodule, not the root.
+  for (let i = 0; i < 120; i++) {
+    if (ctPanesApi && ctPanesApi.isLoaded && ctPanesApi.isLoaded()) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   if (ctPanesApi && typeof ctPanesApi.setWorld === "function") {
     ctPanesApi.setWorld(first.ras_mm);
   }
