@@ -348,7 +348,6 @@ window.CtPanes = (function () {
         lesionDrag = null;
         provisionalDiameter = lesionDiameterOf(next);
         airway.lesion = next;
-        airway.candidates = [];
         if (onLesionChange) onLesionChange(next);
         updateLesionStatus();
         drawAll();

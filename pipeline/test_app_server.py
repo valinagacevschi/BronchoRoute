@@ -793,12 +793,14 @@ def test_candidates_roundtrip_and_confirm(client, harness):
     assert body["lesion"]["ras_mm"] == pytest.approx(far)
     assert body["lesion"]["diameter_mm"] == pytest.approx(9.0)
 
+    # The detector list stays: the Nodules sidebar shows every detected nodule
+    # for the life of the Case, even after one becomes the Lesion.
     on_disk = json.loads(harness["case"].read_text())
-    assert "candidates" not in on_disk
+    assert len(on_disk["candidates"]["items"]) == 2
     payload2 = client.get("/api/cases/local-001/payload?allow_review=true").json()
     assert payload2["lesion"]["ras_mm"] == pytest.approx(far)
     assert payload2["lesion"]["source"] == "nodule"
-    assert payload2["candidates"] == []
+    assert len(payload2["candidates"]) == 2
 
     # A Lesion confirmed from a detected Nodule is never cleared.
     refused = client.delete("/api/cases/local-001/lesion")
@@ -844,7 +846,8 @@ def test_confirm_overdiameter_candidate_clamps_lesion(client, harness):
     on_disk = json.loads(harness["case"].read_text())
     assert on_disk["lesion"]["diameter_mm"] == pytest.approx(60.0)
     assert on_disk["records"][-1]["data"]["diameter_mm"] == pytest.approx(60.0)
-    assert "candidates" not in on_disk
+    # The detector list survives confirmation so the Nodules sidebar keeps it.
+    assert on_disk["candidates"]["items"][0]["diameter_mm"] == pytest.approx(64.5)
 
 
 def test_candidates_carry_nodule_measurements(client, harness):

@@ -219,7 +219,8 @@ window.CtCandidates = (function () {
 
     function confirm(index) {
       run(`/candidates/${index}/confirm`, "POST", (body) => {
-        setItems([]);
+        // Keep the detector list: the Nodules sidebar shows every detected
+        // nodule for the life of the Case, even after one becomes the Lesion.
         onConfirmed(body.lesion);
       }).catch((err) => statusMessage(String(err.message || err)));
     }

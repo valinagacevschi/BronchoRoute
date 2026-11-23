@@ -481,14 +481,16 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
             }""",
             timeout=15_000,
         )
-        page.wait_for_selector("#ct-candidates", state="hidden")
+        # The detector list stays after a nodule becomes the Lesion.
+        assert box.is_visible()
+        assert box.locator(".ct-candidate-confirm").count() == 2
         with urllib.request.urlopen(
             f"{server}/api/cases/local-001/payload?allow_review=1", timeout=10,
         ) as res:
             payload = json.load(res)
         assert payload["lesion"]["ras_mm"] == pytest.approx(far, abs=1e-3)
         assert payload["lesion"]["diameter_mm"] == pytest.approx(9.0)
-        assert payload["candidates"] == []
+        assert len(payload["candidates"]) == 2
 
         assert not errors, errors
         browser.close()

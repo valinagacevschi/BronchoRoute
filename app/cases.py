@@ -673,7 +673,11 @@ def clear_candidates(case_id: str, clinician: str) -> dict:
 
 
 def confirm_candidate(case_id: str, index: object, clinician: str) -> dict:
-    """Promote one candidate to the confirmed lesion and drop the rest, atomically."""
+    """Promote one candidate to the confirmed lesion, keeping the detector list.
+
+    The Nodules sidebar shows every detected nodule for the life of the Case, so
+    a confirmation must not delete the candidate block.
+    """
     from app.workflow import WorkflowStep
 
     try:
@@ -710,8 +714,7 @@ def confirm_candidate(case_id: str, index: object, clinician: str) -> dict:
         }
         record["lesion"] = lesion
         record.setdefault("records", []).append(entry)
-        record.pop("candidates", None)
-        return {"lesion": lesion, "record": entry}
+        return {"lesion": lesion, "record": entry, "candidates": block}
 
     return _update_record(case_id, "lesion", apply)
 
