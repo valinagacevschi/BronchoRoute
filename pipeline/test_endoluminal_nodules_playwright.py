@@ -512,6 +512,10 @@ def test_position_rows_follow_the_panel(server):
             "() => window.__p3_debug && window.__p3_debug.airway()",
             timeout=120_000,
         )
+        page.wait_for_function(
+            "() => !document.getElementById('g-manual-lesion').hidden",
+            timeout=120_000,
+        )
 
         def shown():
             return page.evaluate(
@@ -524,13 +528,13 @@ def test_position_rows_follow_the_panel(server):
                     group: drawn("g-nav"),
                     title: document.getElementById("g-nav-title").textContent,
                     position: drawn("row-gen"),
-                    ct: drawn("row-ct-wl"),
+                    lesion: drawn("g-manual-lesion"),
                   };
                 }""")
 
-        # Panel 1 (CT panes) shows the CT rows only.
-        assert shown() == {"group": True, "title": "CT",
-                           "position": False, "ct": True}
+        # Panel 1 (CT panes) shows the Manual Lesion section, not the position rows.
+        assert shown() == {"group": False, "title": "Position",
+                           "position": False, "lesion": True}
         # Panels 2 and 3 show neither group.
         page.evaluate("() => window.__p3_debug.setVariant(0)")
         assert shown()["group"] is False
@@ -539,7 +543,7 @@ def test_position_rows_follow_the_panel(server):
         # Panel 4 (Endoluminal) shows the Position rows only.
         page.evaluate("() => window.__p3_debug.setVariant(1)")
         assert shown() == {"group": True, "title": "Position",
-                           "position": True, "ct": False}
+                           "position": True, "lesion": True}
         browser.close()
 
 

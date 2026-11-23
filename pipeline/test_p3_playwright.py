@@ -306,13 +306,10 @@ def test_p3_ct_panes(server, case_id):
 
               // (c2) V toggles the view; A/R/C toggle overlays and light the key
               const press = k => dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
-              const lungWl = document.getElementById('ct-wl-readout').textContent;
               press('v');
               const headView = ct.getCtView();
-              const headLabel = document.getElementById('ct-view-readout').textContent;
               press('v');
               const feetView = ct.getCtView();
-              const feetLabel = document.getElementById('ct-view-readout').textContent;
               const airwayStart = ct.overlaysEnabled().airway;
               press('a');
               const airwayOff = ct.overlaysEnabled().airway;
@@ -323,14 +320,13 @@ def test_p3_ct_panes(server, case_id):
               const airwayKey = document.querySelector('[data-overlay-key="airway"]');
               const airwayStyle = getComputedStyle(airwayKey);
               out.checks.keys = {
-                lungWl, headView, headLabel, feetView, feetLabel,
+                headView, feetView,
                 airway: { start: airwayStart, off: airwayOff, on: airwayOn },
                 overlays: { airway: states.airway, route: states.route },
                 keyOn: airwayKey.classList.contains('on'),
                 keyWeight: airwayStyle.fontWeight, keyColor: airwayStyle.color,
-                ok: lungWl === 'W 1500 / L -600'
-                  && headView === 'head' && headLabel === 'Bronchoscopist'
-                  && feetView === 'feet' && feetLabel === 'Radiologist'
+                ok: headView === 'head'
+                  && feetView === 'feet'
                   && airwayStart === true && airwayOff === false && airwayOn === true
                   && states.route === true
                   && airwayKey.classList.contains('on')

@@ -225,6 +225,66 @@ def test_endoluminal_opens_at_the_anatomical_position(server):
             browser.close()
 
 
+@pytest.fixture(scope="module")
+def lesion_server(tmp_path_factory):
+    """Scene centre chosen so a CT-valid Lesion lands on scene node 4."""
+    root = tmp_path_factory.mktemp("lesion_shared_trail")
+    paths = _write_case_tree(root)
+    _scene_assets(root)
+    scene_path = root / "data/extracted/local/local-001/web/scene.json"
+    scene = json.loads(scene_path.read_text())
+    scene["center_mm"] = [4, 141, 198]
+    scene_path.write_text(json.dumps(scene))
+    case = json.loads(paths["case"].read_text())
+    case["lesion"] = {
+        "ras_mm": [12.0, 10.0, 11.0], "diameter_mm": 8.0,
+        "confirmed_by": "Radiologist, A.B.", "at": "2026-11-23T00:00:00Z",
+        "source": "manual",
+    }
+    paths["case"].write_text(json.dumps(case, indent=2) + "\n")
+    home = root / "fake_home"
+    home.mkdir()
+    env = {**os.environ, "HOME": str(home), "LUNGNAV_PIPELINE_ROOT": str(root)}
+    env.pop("PYTHONPATH", None)
+    with _server(env) as base:
+        yield base
+
+
+def test_confirmed_lesion_moves_the_shared_trail(lesion_server):
+    """A manual Lesion replaces the nodule as the trail destination everywhere."""
+    sync_playwright = _playwright_or_skip()
+    server = lesion_server
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport=VIEWPORT)
+        try:
+            page.goto(
+                f"{server}/renderer.template.html?case=local-001&allow_review=1"
+                "&debug=1&variant=anatomical",
+                wait_until="domcontentloaded",
+                timeout=120_000,
+            )
+            page.wait_for_function(
+                "() => window.__p2_debug && window.__p2_debug.sceneTrail()",
+                timeout=120_000,
+            )
+            panel_two = page.evaluate("() => window.__p2_debug.sceneTrail()")
+            assert panel_two["nodule"]["id"] is None, panel_two["nodule"]
+            assert panel_two["path"] == [0, 1, 2, 4], panel_two
+            assert panel_two["gap"] < 1.0, panel_two
+
+            page.evaluate("() => window.__p2_debug.setVariant(1)")
+            endo = _endo_frame(page)
+            endo.wait_for_function(
+                "() => !!window.__endoDebug.trail()", timeout=120_000)
+            outside = endo.evaluate("() => window.__endoDebug.trail()")
+            assert outside["path"] == panel_two["path"], (outside["path"], panel_two["path"])
+            assert outside["nodule"] is None, outside
+            assert outside["gap"] == pytest.approx(panel_two["gap"], abs=0.5)
+        finally:
+            browser.close()
+
+
 def test_sidebar_camera_section_and_a_shortcut_are_gone(server):
     sync_playwright = _playwright_or_skip()
     with sync_playwright() as playwright:

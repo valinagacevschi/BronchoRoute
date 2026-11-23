@@ -807,6 +807,36 @@ airway ${w.toFixed(1)} mm wide`;
         active3d = !!data.active;
         return;
       }
+      if (data.type === "endo3d-set-lesion") {
+        // Re-plan to the confirmed Lesion, or back to the scene nodule.
+        const ras = Array.isArray(data.ras_mm) && data.ras_mm.length === 3
+          ? data.ras_mm : null;
+        if (ras) {
+          const center = sceneInfo.center_mm || [0, 0, 0];
+          const s = EndoRoute.rasToScene(ras, center);
+          sceneTarget = null;
+          setTarget([new THREE.Vector3(s[0], s[1], s[2])], "the Lesion", false);
+        } else if (noduleMeshes.length) {
+          sceneTarget = noduleMeshes[0];
+          const id = sceneTarget.userData.noduleId;
+          setTarget(noduleTargets(sceneTarget), id == null ? "the nodule" : `nodule ${id}`, false);
+        } else {
+          sceneTarget = null;
+          let best = -1, bestD = -1;
+          for (let n = 0; n < deg.length; n++) {
+            if (deg[n] !== 1 || n === graph.start) continue;
+            const dx = P[3 * n] - P[3 * graph.start];
+            const dy = P[3 * n + 1] - P[3 * graph.start + 1];
+            const dz = P[3 * n + 2] - P[3 * graph.start + 2];
+            const d = dx * dx + dy * dy + dz * dz;
+            if (d > bestD) { bestD = d; best = n; }
+          }
+          if (best >= 0) {
+            setTarget([new THREE.Vector3(P[3 * best], P[3 * best + 1], P[3 * best + 2])], "auto", false);
+          }
+        }
+        return;
+      }
       if (data.type === "endo3d-goto-world" && Array.isArray(data.world)) {
         if (!route) return;
         const center = sceneInfo.center_mm || [0, 0, 0];

@@ -108,7 +108,6 @@ def test_ct_bridge_decisions(bridge_server):
             screen = page.evaluate("window.__p3_debug.ct().screenOfWorld('coronal',[24.5,20.5,20.5])")
             box = page.locator(".ct-pane-coronal canvas").bounding_box()
             page.mouse.click(box["x"] + screen["x"], box["y"] + screen["y"])
-            page.locator("#ct-confirm-lesion").click()
             page.wait_for_function(
                 """() => {
                   const rt = window.__p3_debug.airway().route_target;

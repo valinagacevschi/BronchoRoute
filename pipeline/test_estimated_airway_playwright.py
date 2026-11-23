@@ -1027,7 +1027,6 @@ def test_estimated_airway_in_topology_and_ct(real_server):
             pytest.fail(exc.read().decode("utf-8", "replace"))
         page.locator("#ct-mark-lesion").click()
         _click_ct_world(page, lesion)
-        page.locator("#ct-confirm-lesion").click()
         try:
             page.wait_for_function(
                 """() => {

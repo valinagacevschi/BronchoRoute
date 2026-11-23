@@ -218,7 +218,7 @@ def test_lesion_place_diameter_and_views(server):
             timeout=180_000,
         )
         assert "Could not load" not in page.locator("body").inner_text()
-        toolbar = page.locator(".ct-toolbar").inner_text()
+        toolbar = page.locator("#g-manual-lesion").inner_text()
         assert "confirm the Lesion" not in toolbar
         assert "Mark and confirm" not in toolbar
         airway = page.locator('[data-overlay-key="airway"]')
@@ -251,20 +251,17 @@ def test_lesion_place_diameter_and_views(server):
         box = page.locator(".ct-pane-coronal canvas").bounding_box()
         x = box["x"] + placed["scr"]["x"]
         y = box["y"] + placed["scr"]["y"]
-        page.mouse.move(x, y)
-        page.mouse.down()
-        page.mouse.up()
         page.keyboard.press("Escape")
         assert page.evaluate("() => window.__p3_debug.ct().getProvisional()") is None
 
         page.locator("#ct-mark-lesion").click()
+        assert page.locator("#ct-mark-lesion").is_disabled()
+        assert page.locator("#ct-lesion-status").inner_text() == "Click a point on any CT pane"
+        assert page.locator("#ct-clear-lesion").is_hidden()
         page.mouse.move(x, y)
         page.mouse.down()
         page.mouse.move(x + placed["drag"][0], y + placed["drag"][1], steps=8)
         page.mouse.up()
-        status = page.locator("#ct-lesion-status").inner_text()
-        assert "Ø" in status
-        page.locator("#ct-confirm-lesion").click()
         page.wait_for_function(
             """() => {
               const lesion = window.__p3_debug.ct().getLesion();
@@ -272,6 +269,10 @@ def test_lesion_place_diameter_and_views(server):
             }""",
             timeout=15_000,
         )
+        status = page.locator("#ct-lesion-status").inner_text()
+        assert "Lesion confirmed · Ø" in status
+        assert page.locator("#ct-clear-lesion").is_visible()
+        assert page.locator("#ct-mark-lesion").is_enabled()
         with urllib.request.urlopen(
             f"{server}/api/cases/local-001/payload?allow_review=1", timeout=10,
         ) as res:
@@ -354,6 +355,15 @@ def test_lesion_place_diameter_and_views(server):
         assert 5 < topology["distMm"] < 14, topology
         assert topology["from"] == 0 and topology["to"] == 1
         _shot(page, shots, "topology.png")
+
+        page.locator("#ct-clear-lesion").click()
+        page.wait_for_function(
+            "() => window.__p3_debug.ct().getLesion() === null",
+            timeout=15_000,
+        )
+        assert page.locator("#ct-clear-lesion").is_hidden()
+        assert page.locator("#ct-mark-lesion").is_enabled()
+        assert page.locator("#ct-lesion-status").inner_text() == ""
         assert not errors, errors
         browser.close()
 
@@ -407,7 +417,7 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         )
         box = page.locator("#ct-candidates")
         assert box.is_visible()
-        assert "Model output" in box.inner_text()
+        assert "NODULES" in page.locator("#g-nodules").inner_text()
         labels = box.locator(".ct-candidate-confirm").all_inner_texts()
         assert len(labels) == 2, labels
         assert labels[0].startswith("Candidate 1")
@@ -425,10 +435,10 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         assert "mm³" not in labels[1]
         assert "to airway" not in labels[1]
         assert box.locator(".ct-candidate-confirm").nth(1).get_attribute("data-nodule-id") is None
-        assert box.locator(".ct-candidate-goto").all_inner_texts() == ["Go to", "Go to"]
+        assert box.locator(".ct-candidate-goto").all_inner_texts() == ["→", "→"]
         assert box.get_by_role("button", name="Go to candidate 1").is_visible()
         assert box.get_by_role("button", name="Go to candidate 2").is_visible()
-        assert box.locator("button", has_text="Clear candidates").count() == 1
+        assert box.locator("button", has_text="Clear candidates").count() == 0
 
         page.evaluate("() => window.__p3_debug.ct().setWorld([32, 20, 32])")
         page.wait_for_timeout(300)
@@ -480,26 +490,6 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
         assert payload["lesion"]["diameter_mm"] == pytest.approx(9.0)
         assert payload["candidates"] == []
 
-        _api_call(server, "PUT", "/api/cases/local-001/candidates", {
-            "candidates": [{"ras_mm": near, "diameter_mm": 6.0, "score": 0.5}],
-        })
-        page.reload(wait_until="domcontentloaded", timeout=120_000)
-        page.wait_for_function(
-            """() => {
-              const ct = window.__p3_debug && window.__p3_debug.ct && window.__p3_debug.ct();
-              return !!(ct && ct.isLoaded && ct.isLoaded());
-            }""",
-            timeout=180_000,
-        )
-        box = page.locator("#ct-candidates")
-        assert box.is_visible()
-        box.locator("button", has_text="Clear candidates").click()
-        page.wait_for_selector("#ct-candidates", state="hidden")
-        with urllib.request.urlopen(
-            f"{server}/api/cases/local-001/payload?allow_review=1", timeout=10,
-        ) as res:
-            payload = json.load(res)
-        assert payload["candidates"] == []
         assert not errors, errors
         browser.close()
 
@@ -507,7 +497,7 @@ def test_candidates_toolbar_glyphs_and_confirm(server):
 def test_candidate_goto_moves_ct_without_confirm(server):
     """Go to moves the shared CT position without confirming or clearing."""
     sync_playwright = _playwright_or_skip()
-    _api_call(server, "DELETE", "/api/cases/local-001/lesion")
+    _api_call(server, "POST", "/api/cases/local-001/reset")
     _api_call(server, "DELETE", "/api/cases/local-001/candidates")
     near = [32.0, 20.0, 32.0]
     far = [28.0, 20.0, 28.0]
@@ -566,7 +556,7 @@ def test_candidate_list_shows_measured_diameter(server):
     """A mask measurement outside the Lesion range stays visible in the list."""
     sync_playwright = _playwright_or_skip()
     assert _CASE_ROOT is not None
-    _api_call(server, "DELETE", "/api/cases/local-001/lesion")
+    _api_call(server, "POST", "/api/cases/local-001/reset")
     _api_call(server, "DELETE", "/api/cases/local-001/candidates")
     case_path = _CASE_ROOT / "data/extracted/local/local-001/case.json"
     case = json.loads(case_path.read_text())
@@ -617,7 +607,7 @@ def test_axial_contour_replaces_dashed_circle_for_mask_candidate(server):
     """A contour follows the candidate's stable id, not its list position."""
     sync_playwright = _playwright_or_skip()
     assert _CASE_ROOT is not None
-    _api_call(server, "DELETE", "/api/cases/local-001/lesion")
+    _api_call(server, "POST", "/api/cases/local-001/reset")
     _api_call(server, "DELETE", "/api/cases/local-001/candidates")
 
     meta = _api_call(server, "GET", "/api/cases/local-001/ct/meta")

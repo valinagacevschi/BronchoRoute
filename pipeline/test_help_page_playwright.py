@@ -154,7 +154,7 @@ def test_help_sheet_sections_and_escape(server):
             assert wanted in headings
         text = overlay.inner_text()
         assert "Mark Lesion" in text
-        assert "Confirm Lesion" in text
+        assert "The lesion is saved when you release the pointer" in text
         page.keyboard.press("Escape")
         overlay.wait_for(state="hidden", timeout=10_000)
         browser.close()

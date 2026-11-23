@@ -253,7 +253,6 @@ def test_route_target_is_chosen_automatically(server):
         )
         box = page.locator(".ct-pane-coronal canvas").bounding_box()
         page.mouse.click(box["x"] + placed["scr"]["x"], box["y"] + placed["scr"]["y"])
-        page.locator("#ct-confirm-lesion").click()
         page.wait_for_function(
             """() => {
               const rt = window.__p3_debug.airway().route_target;

@@ -146,17 +146,10 @@ window.CtCandidates = (function () {
     function render() {
       if (!box) return;
       box.replaceChildren();
-      if (!items.length) {
-        box.hidden = true;
-        return;
-      }
-      box.hidden = false;
-      // The geometry and scores come from the detector and nodule model, not a
-      // radiologist annotation, so the list must say so.
-      const source = document.createElement("div");
-      source.className = "ct-candidates-source";
-      source.textContent = "Model output";
-      box.appendChild(source);
+      box.hidden = !items.length;
+      const group = box.closest(".group");
+      if (group) group.hidden = box.hidden;
+      if (!items.length) return;
       items.forEach((item, index) => {
         const row = document.createElement("div");
         row.className = "ct-candidate-row";
@@ -193,18 +186,13 @@ window.CtCandidates = (function () {
         const goBtn = document.createElement("button");
         goBtn.type = "button";
         goBtn.className = "secondary ct-candidate-goto";
-        goBtn.textContent = "Go to";
+        goBtn.textContent = "→";
+        goBtn.title = `Go to candidate ${index + 1}`;
         goBtn.setAttribute("aria-label", `Go to candidate ${index + 1}`);
         goBtn.onclick = () => goTo(item);
         row.appendChild(goBtn);
         box.appendChild(row);
       });
-      const clearBtn = document.createElement("button");
-      clearBtn.type = "button";
-      clearBtn.className = "secondary";
-      clearBtn.textContent = "Clear candidates";
-      clearBtn.onclick = clearAll;
-      box.appendChild(clearBtn);
     }
 
     function setItems(next) {
@@ -213,12 +201,14 @@ window.CtCandidates = (function () {
     }
 
     function mount(parent) {
-      if (readOnly) return;
-      box = document.createElement("div");
-      box.className = "ct-lesion-box";
-      box.id = "ct-candidates";
-      box.hidden = true;
-      parent.appendChild(box);
+      if (readOnly || !parent) return;
+      if (!box) {
+        box = document.createElement("div");
+        box.className = "ct-lesion-box";
+        box.id = "ct-candidates";
+        box.hidden = true;
+        parent.appendChild(box);
+      }
       render();
     }
 
@@ -232,11 +222,6 @@ window.CtCandidates = (function () {
         setItems([]);
         onConfirmed(body.lesion);
       }).catch((err) => statusMessage(String(err.message || err)));
-    }
-
-    function clearAll() {
-      run("/candidates", "DELETE", () => setItems([]))
-        .catch((err) => statusMessage(String(err.message || err)));
     }
 
     function draw(ctx, view) {

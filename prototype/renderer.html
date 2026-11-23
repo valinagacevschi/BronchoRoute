@@ -181,7 +181,7 @@ body.endo3d-active .limitations-panel { display: none; }
 }
 .rail-body {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 22px;
+  display: flex; flex-direction: column; gap: 12px;
   scrollbar-width: none;
 }
 .rail-body::-webkit-scrollbar { display: none; }
@@ -209,24 +209,31 @@ body.endo3d-active .limitations-panel { display: none; }
   text-transform: uppercase; color: var(--mucosa); font-weight: 500;
   margin-bottom: 5px; }
 
-.group { display: flex; flex-direction: column; gap: 7px; }
+.group { display: flex; flex-direction: column; gap: 6px; }
 .group[hidden] { display: none; }
 .group h2 {
   margin: 0; font-size: 10px; font-weight: 500; letter-spacing: .14em;
   text-transform: uppercase; color: var(--muted);
   font-family: "IBM Plex Sans Condensed", sans-serif;
 }
+.group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.group-head h2 { margin: 0; }
+.rail-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0;
+  border: 1px solid var(--edge); border-radius: 4px;
+  background: var(--ground); color: var(--steel);
+  font-size: 13px; line-height: 1; cursor: pointer;
+}
+.rail-icon-btn[hidden] { display: none; }
+.rail-icon-btn:disabled { opacity: .45; cursor: not-allowed; }
 .readout { display: flex; justify-content: space-between; gap: 10px;
   font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px;
-  font-variant-numeric: tabular-nums; }
+  font-variant-numeric: tabular-nums; margin: 0; }
 .readout[hidden] { display: none; }
 .readout dt { color: var(--muted); }
 .readout dd { margin: 0; text-align: right; }
 .readout dd.warm { color: var(--mucosa); }
-/* Case, Position and RouteTarget rows sit closer than the default dl margin: 16px between rows, not 32. */
-.group-case .readout,
-.route-target-panel .readout,
-#g-nav .readout { margin: 1px 0; }
 
 
 .hint { font-size: 12px; color: var(--muted); line-height: 1.55; margin: 0; }
@@ -391,21 +398,14 @@ body.walkthrough-active .walk-sim-label { display: block; }
   font-size: 15px; line-height: 1.5;
 }
 .ct-panes-root { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.ct-toolbar {
-  display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center;
-  padding: 8px 12px; border-bottom: 1px solid var(--edge);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  font-size: 12px;
-}
-.ct-toolbar[hidden] { display: none; }
-.ct-toolbar button {
+.ct-lesion-box { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ct-lesion-box button {
   font: 500 12px/1 "IBM Plex Sans Condensed", sans-serif;
   border: 1px solid var(--edge); border-radius: 4px; padding: 5px 9px;
   background: var(--steel); color: #fff; cursor: pointer;
 }
-.ct-toolbar button.secondary { background: transparent; color: var(--steel); }
-.ct-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
-.ct-lesion-box { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ct-lesion-box button.secondary { background: transparent; color: var(--steel); }
+.ct-lesion-box button:disabled { opacity: .45; cursor: not-allowed; }
 .ct-candidate-row { display: flex; align-items: center; gap: 6px; }
 #ct-overlay-keys { display: contents; }
 .ct-key-item { display: inline; }
@@ -417,7 +417,12 @@ body.walkthrough-active .walk-sim-label { display: block; }
 .ct-key.on { color: #fff; font-weight: 700; }
 .ct-key[hidden] { display: none; }
 .ct-overlay-hint { color: var(--mucosa); font-size: 11px; }
-.ct-lesion-status { color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
+.ct-lesion-row { display: flex; align-items: center; gap: 4px; }
+.ct-lesion-row .ct-lesion-status {
+  flex: 1 1 auto; min-width: 0; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.ct-lesion-status { margin: 0; color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 10.5px; }
 .ct-grid {
   flex: 1; min-height: 0; display: grid;
   grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr; gap: 6px; padding: 6px;
@@ -552,6 +557,52 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <ul id="review-warnings-list"></ul>
   </section>
 
+  <div class="group group-case">
+    <div class="group-head">
+      <h2>Case</h2>
+      <button type="button" id="ct-reset-case" class="rail-icon-btn"
+        title="Reset case" aria-label="Reset case" hidden>↻</button>
+    </div>
+    <dl class="readout"><dt>Source</dt><dd id="r-source">unknown</dd></dl>
+    <dl class="readout"><dt>Branches</dt><dd id="r-branches">—</dd></dl>
+    <dl class="readout"><dt>Generations</dt><dd id="r-gens">—</dd></dl>
+    <dl class="readout"><dt>Centreline</dt><dd id="r-length">—</dd></dl>
+    <p class="reviewed-note" id="reviewed-note" hidden></p>
+  </div>
+
+  <div class="group" id="g-bridges" hidden>
+    <h2>Bridges</h2>
+    <div id="bridge-list"></div>
+  </div>
+
+  <div class="group" id="g-nodules" hidden>
+    <h2>Nodules</h2>
+  </div>
+
+  <div class="group" id="g-manual-lesion" hidden>
+    <div class="group-head">
+      <h2>Manual Lesion</h2>
+      <button type="button" id="ct-mark-lesion" class="rail-icon-btn"
+        title="Mark Lesion" aria-label="Mark Lesion">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
+          <path d="M8 14.2c2.7-2.6 4.6-5.3 4.6-7.7a4.6 4.6 0 0 0-9.2 0c0 2.4 1.9 5.1 4.6 7.7Z"
+            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          <circle cx="8" cy="6.5" r="1.6" fill="currentColor"/>
+        </svg>
+      </button>
+    </div>
+    <div class="ct-lesion-row">
+      <p id="ct-lesion-status" class="ct-lesion-status" role="status"></p>
+      <button type="button" id="ct-clear-lesion" class="rail-icon-btn" hidden
+        title="Clear Lesion" aria-label="Clear Lesion">
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" focusable="false">
+          <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
   <section class="group route-target-panel" id="route-target-panel" hidden aria-label="RouteTarget">
     <h2>RouteTarget</h2>
     <dl class="readout"><dt>Target gap</dt><dd id="route-target-gap">—</dd></dl>
@@ -561,34 +612,18 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <p id="route-target-status" role="status"></p>
   </section>
 
-  <div class="group group-case">
-    <h2>Case</h2>
-    <dl class="readout"><dt>Source</dt><dd id="r-source">unknown</dd></dl>
-    <dl class="readout"><dt>Branches</dt><dd id="r-branches">—</dd></dl>
-    <dl class="readout"><dt>Generations</dt><dd id="r-gens">—</dd></dl>
-    <dl class="readout"><dt>Centreline</dt><dd id="r-length">—</dd></dl>
-    <p class="reviewed-note" id="reviewed-note" hidden></p>
-  </div>
-
   <div class="group" id="g-nav">
     <h2 id="g-nav-title">Position</h2>
     <dl class="readout" id="row-gen"><dt>Generation</dt><dd id="r-gen" class="warm">—</dd></dl>
     <dl class="readout" id="row-rad"><dt>Lumen radius</dt><dd id="r-rad">—</dd></dl>
     <dl class="readout" id="row-togo"><dt>To target</dt><dd id="r-togo">—</dd></dl>
     <dl class="readout" id="row-turns"><dt>Turns ahead</dt><dd id="r-turns">—</dd></dl>
-    <dl class="readout" id="row-ct-wl"><dt>Window</dt><dd id="ct-wl-readout">W 1500 / L -600</dd></dl>
-    <dl class="readout" id="row-ct-view"><dt>View</dt><dd id="ct-view-readout">Radiologist</dd></dl>
   </div>
 
   <div class="group group-depth">
     <h2>Depth</h2>
     <div class="ramp" id="ramp"></div>
     <div class="ramp-labels"><span>trachea</span><span>distal</span></div>
-  </div>
-
-  <div class="group" id="g-bridges" hidden>
-    <h2>Bridges</h2>
-    <div id="bridge-list"></div>
   </div>
 
   <div class="group group-controls">
@@ -690,21 +725,26 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <ol>
       <li>Open a Case and select "1 CT panes".
       <!-- prototype/renderer.template.html:1219-1224 --></li>
-      <li>Click Mark Lesion. The status reads "Click a CT pane to place the Lesion".
-      <!-- prototype/ct_panes.js#buildToolbar, #updateLesionStatus --></li>
-      <li>Click a CT pane to place the marker.
-      <!-- prototype/ct_panes.js#onPointerDown --></li>
-      <li>Drag away from the marker to set the diameter. The status shows the diameter in mm.
-      <!-- prototype/ct_panes.js#onPointerDown, #onPointerMove, #updateLesionStatus --></li>
-      <li>Click Confirm Lesion to save the lesion.
-      <!-- prototype/ct_panes.js#buildToolbar, #confirmLesion --></li>
-      <li>Click Cancel to stop marking without saving.
-      <!-- prototype/ct_panes.js#buildToolbar, #cancelMark --></li>
+      <li>Click the pin icon next to Manual Lesion. The status reads
+      "Click a point on any CT pane".
+      <!-- prototype/ct_panes.js#wireSidebarControls, #updateLesionStatus --></li>
+      <li>Click a CT pane to place the marker. Drag away from it to set the diameter.
+      The lesion is saved when you release the pointer.
+      <!-- prototype/ct_panes.js#onPointerDown, #onPointerMove, #onPointerUp --></li>
+      <li>The status shows "Lesion confirmed" and the diameter in mm.
+      The trail in the other panels is re-planned through the airway closest
+      to the Lesion.
+      <!-- prototype/ct_panes.js#updateLesionStatus; prototype/renderer.template.html#ensureSceneTrail --></li>
+      <li>Press Escape before clicking a pane to stop marking without saving.
+      <!-- prototype/ct_panes.js#cancelMark --></li>
     </ol>
-    <p>To remove a confirmed lesion, click Clear. To redo it, click Clear, then mark and confirm again.
-    <!-- prototype/ct_panes.js#buildToolbar, #clearLesion --></p>
-    <p>The read-only viewer hides the lesion box.
-    <!-- prototype/ct_panes.js#buildToolbar --></p>
+    <p>To remove a confirmed lesion, click the ✕ icon next to the status.
+    To redo it, click ✕, then mark again.
+    <!-- prototype/ct_panes.js#wireSidebarControls, #clearLesion --></p>
+    <p>Detected nodules are listed under Nodules. Click a row to confirm it, or its → to move there.
+    The Reset case icon in the Case header returns the case to the post-processing state.</p>
+    <p>In the read-only viewer, the Manual Lesion actions are disabled.
+    <!-- prototype/ct_panes.js#wireSidebarControls --></p>
   </section>
 
   <section class="help-section" aria-labelledby="help-routetarget">
@@ -806,8 +846,8 @@ body.walkthrough-active .walk-sim-label { display: block; }
     <p>The standalone viewer is the page at /. With LUNGNAV_VIEWER_ONLY=1 it is read-only.
     In that mode the app refuses writes and hides the edit controls.
     <!-- pipeline/paths.py:56-59; app/server.py:165-174; prototype/renderer.template.html:910-912, 4983 --></p>
-    <p>The read-only viewer hides the lesion box, disables target picking and does not start image generation.
-    <!-- prototype/ct_panes.js#buildToolbar; prototype/renderer.template.html:5327, 2477 --></p>
+    <p>The read-only viewer shows the Manual Lesion actions disabled, blocks target picking and does not start image generation.
+    <!-- prototype/ct_panes.js#wireSidebarControls; prototype/renderer.template.html:5327, 2477 --></p>
     <p>The desktop app opens the edit page /renderer.template.html. It shows Mark Lesion and the other edit controls.
     <!-- desktop/lib.js:150-155; desktop/main.js:742-743 --></p>
   </section>
@@ -1281,9 +1321,18 @@ async function ensureSceneTrail() {
       ]);
       if (!scene || !graph) return null;
       const layer = pickSceneNodule(scene.layers);
-      const targets = layer
-        ? await sceneNoduleTargets(base, layer)
-        : [farthestSceneLeaf(graph)].filter(Boolean);
+      // A confirmed manual Lesion replaces the scene nodule as the destination,
+      // so the trail reaches the airway point closest to that Lesion.
+      const lesionRas = A && A.lesion && Array.isArray(A.lesion.ras_mm)
+        ? A.lesion.ras_mm : null;
+      // routeToTarget reads target points as {x, y, z}.
+      const lesionScene = lesionRas
+        ? EndoRoute.rasToScene(lesionRas, scene.center_mm || [0, 0, 0]) : null;
+      const targets = lesionScene
+        ? [{ x: lesionScene[0], y: lesionScene[1], z: lesionScene[2] }]
+        : (layer
+          ? await sceneNoduleTargets(base, layer)
+          : [farthestSceneLeaf(graph)].filter(Boolean));
       if (!targets.length) return null;
       const r = EndoRoute.routeToTarget(graph, targets);
       if (!r) return null;
@@ -1314,11 +1363,15 @@ async function ensureSceneTrail() {
         target: toRel([r.target.x, r.target.y, r.target.z]),
         gap: r.gap,
         arc,
-        nodule: layer ? {
+        nodule: lesionRas ? {
+          id: null,
+          rel: toRel(centroid),
+          diameterMm: Number(A.lesion.diameter_mm) || null,
+        } : (layer ? {
           id: layer.id ?? null,
           rel: toRel(centroid),
           diameterMm: Number(layer.diameter_mm) || null,
-        } : null,
+        } : null),
       };
       return sceneTrail;
     } catch (err) {
@@ -1333,6 +1386,25 @@ function postEndoGoto(world) {
   if (frame && frame.contentWindow) {
     try { frame.contentWindow.postMessage({ type: "endo3d-goto-world", world }, location.origin); } catch (err) { /* not loaded */ }
   }
+}
+
+// The confirmed Lesion is the new destination for every panel. Null restores
+// the scene nodule (or the farthest leaf) as the target.
+function resetSceneTrail() {
+  sceneTrail = null;
+  sceneTrailPromise = null;
+  lastSceneNodule = null;
+}
+
+function postLesionToEndo() {
+  const frame = document.getElementById("endo3d-frame");
+  if (!frame || !frame.contentWindow) return;
+  const ras = A && A.lesion && Array.isArray(A.lesion.ras_mm)
+    ? A.lesion.ras_mm : null;
+  try {
+    frame.contentWindow.postMessage(
+      { type: "endo3d-set-lesion", ras_mm: ras }, location.origin);
+  } catch (err) { /* not loaded */ }
 }
 
 function drawSceneTrail(c) {
@@ -5493,6 +5565,8 @@ window.addEventListener("message", (ev) => {
       document.getElementById("endo3d-frame")
         ?.contentWindow.postMessage({ type: "endo3d-set-active", active: true }, location.origin);
     } catch (err) { /* not loaded */ }
+    // A confirmed Lesion is the destination for the Endoluminal trail too.
+    postLesionToEndo();
     // Hand the Anatomical position to a freshly loaded Endoluminal panel so
     // both open on the same point. Leave the default start (and split) alone.
     const pos = SharedPos.get();
@@ -5865,6 +5939,11 @@ async function ensureCtPanes() {
       },
       onLesionChange: (lesion) => {
         A.lesion = lesion;
+        // Re-plan the shared trail through the airway nearest the Lesion, so
+        // panels 2 to 4 show the new trace; clear returns to the nodule trail.
+        resetSceneTrail();
+        ensureSceneTrail().catch(() => null);
+        postLesionToEndo();
         refreshCasePayload()
           .then(() => refreshRouteTargetPanel())
           .catch(() => refreshRouteTargetPanel());
@@ -5977,18 +6056,13 @@ function render() {
     ctPanesApi.renderBridges();
   }
   const walkActive = variant === 4;
-  // Position metrics belong to Endoluminal; CT window and view belong to CT panes.
+  // Position metrics belong to the Endoluminal panel.
   const showPosition = variant === 1;
-  const showCtView = variant === 3;
   for (const id of ["row-gen", "row-rad", "row-togo", "row-turns"]) {
     document.getElementById(id).hidden = !showPosition;
   }
-  for (const id of ["row-ct-wl", "row-ct-view"]) {
-    document.getElementById(id).hidden = !showCtView;
-  }
-  document.getElementById("g-nav").hidden = !showPosition && !showCtView;
-  document.getElementById("g-nav-title").textContent =
-    showPosition ? "Position" : "CT";
+  document.getElementById("g-nav").hidden = !showPosition;
+  document.getElementById("g-nav-title").textContent = "Position";
   if (estimatedDefaultVariant !== variant) {
     estimatedDefaultVariant = variant;
     setShowEstimatedAirway(variant === 0 || variant === 2);
@@ -6073,6 +6147,9 @@ function setupRouteTargetPanel() {
       setRouteTargetStatus(A.route_target.reason, false);
     } else {
       setRouteTargetStatus("", false);
+    }
+    if (ctPanesApi && typeof ctPanesApi.setRoute === "function") {
+      ctPanesApi.setRoute(A.route);
     }
     if (ctPanesApi && typeof ctPanesApi.drawAll === "function") ctPanesApi.drawAll();
   }

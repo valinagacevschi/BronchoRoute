@@ -152,7 +152,7 @@ def _show(page, label: str, key: str) -> None:
         timeout=30_000,
     )
     if key == "ct-panes":
-        page.wait_for_selector(".ct-toolbar", timeout=60_000)
+        page.wait_for_selector("#g-manual-lesion", timeout=60_000)
     page.wait_for_timeout(50)
 
 
