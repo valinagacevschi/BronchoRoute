@@ -276,16 +276,25 @@ def test_export_stills(server: str):
         cprint("hide Save image on CT panes and walk-through", "cyan")
         flags = page.evaluate(
             """() => {
-              const hidden = () => document.getElementById("save-image").hidden;
+              const state = () => ({
+                save: document.getElementById("save-image-btn").hidden,
+                report: document.getElementById("report-btn").hidden,
+              });
               window.__p2_debug.setVariant(3);
-              const ct = hidden();
+              const ct = state();
               window.__p2_debug.setVariant(4);
-              const walk = hidden();
+              const walk = state();
               window.__p2_debug.setVariant(0);
-              return { ct, walk, anatomical: hidden() };
+              return { ct, walk, anatomical: state() };
             }"""
         )
-        assert flags == {"ct": True, "walk": True, "anatomical": False}
+        # The Export group stays open for Report (PDF) on every view; only
+        # the view-specific Save image button hides.
+        assert flags == {
+            "ct": {"save": True, "report": False},
+            "walk": {"save": True, "report": False},
+            "anatomical": {"save": False, "report": False},
+        }
         cprint("browser download", "cyan")
         page.locator("#save-image-btn").scroll_into_view_if_needed()
         with page.expect_download(timeout=60_000) as downloaded:

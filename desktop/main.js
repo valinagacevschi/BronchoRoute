@@ -41,6 +41,8 @@ const {
   isPngBytes,
   resolveSaveImageBaseDir,
   saveImageDefaultPath,
+  isSaveReportName,
+  saveReportDefaultPath,
   isSaveVideoName,
   isRecordSize,
   isJpegBytes,
@@ -453,7 +455,7 @@ async function openArchive(event, selectedPath) {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "Open Archive",
       properties: ["openFile", "openDirectory"],
-      filters: [{ name: "Archives", extensions: ["zip", "dcm", ""] }],
+      filters: [{ name: "Archives", extensions: ["zip", "rar", "dcm", ""] }],
     });
     if (result.canceled) {
       return;
@@ -505,6 +507,69 @@ async function saveImage(event, payload) {
 
 function installSaveImage() {
   ipcMain.handle("bronchoroute:save-image", (event, payload) => saveImage(event, payload));
+}
+
+async function saveReport(event, payload) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error("Save report request from an unknown window");
+  }
+  const caseId = payload && payload.caseId;
+  const defaultName = payload && payload.defaultName;
+  if (typeof caseId !== "string" || !/^local-\d{3}$/.test(caseId)) {
+    throw new Error("Invalid report case");
+  }
+  if (!isSaveReportName(defaultName)) {
+    throw new Error("Invalid report name");
+  }
+  if (allowedPort == null) {
+    throw new Error("The app server is not ready");
+  }
+  let defaultPath;
+  try {
+    const base = app.getPath("documents");
+    defaultPath = saveReportDefaultPath(base, defaultName);
+    fs.mkdirSync(path.dirname(defaultPath), { recursive: true });
+  } catch (err) {
+    throw new Error("Could not prepare the report folder");
+  }
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Save report",
+    defaultPath,
+    filters: [{ name: "PDF", extensions: ["pdf"] }],
+  });
+  if (result.canceled || typeof result.filePath !== "string" || result.filePath === "") {
+    return { saved: false };
+  }
+  const reportWindow = new BrowserWindow({
+    show: false,
+    width: 900,
+    height: 1200,
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+  try {
+    await reportWindow.loadURL(
+      `http://127.0.0.1:${allowedPort}/api/cases/${encodeURIComponent(caseId)}/report`,
+    );
+    const pdf = await reportWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: "A4",
+    });
+    fs.mkdirSync(path.dirname(result.filePath), { recursive: true });
+    fs.writeFileSync(result.filePath, pdf);
+  } catch (err) {
+    throw new Error("Could not save report");
+  } finally {
+    reportWindow.destroy();
+  }
+  return { saved: true };
+}
+
+function installReport() {
+  ipcMain.handle("bronchoroute:save-report", (event, payload) => saveReport(event, payload));
 }
 
 async function recordStart(event, payload) {
@@ -721,6 +786,7 @@ async function launch() {
   mainWindow = createWindow();
   installArchiveMenu();
   installSaveImage();
+  installReport();
   installRecord();
   installWeights();
   installRealismModel();

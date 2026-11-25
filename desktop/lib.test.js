@@ -39,6 +39,8 @@ const {
   isPngBytes,
   resolveSaveImageBaseDir,
   saveImageDefaultPath,
+  isSaveReportName,
+  saveReportDefaultPath,
   JPEG_MAX_BYTES,
   isSaveVideoName,
   isRecordSize,
@@ -287,6 +289,14 @@ test("builder includes only runtime resources and targets unsigned arm64 macOS",
   assert.ok(pipeline.filter.every((name) => !name.startsWith("test_") && !name.includes("*")));
   const root = build.extraResources.find((row) => row.to === "app");
   assert.deepEqual(root.filter, ["LICENSE", "THIRD_PARTY_NOTICES.md", "sponsors.json"]);
+  // Every local script the template loads must ship, or the packaged page 404s it.
+  const prototype = build.extraResources.find((row) => row.to === "app/prototype");
+  const template = fs.readFileSync(path.join(__dirname, "..", "prototype", "renderer.template.html"), "utf8");
+  const localScripts = [...template.matchAll(/<script src="(?!https?:|\/)([^":]+\.js)"><\/script>/g)].map((row) => row[1]);
+  assert.ok(localScripts.length > 0);
+  for (const name of localScripts) {
+    assert.ok(prototype.filter.includes(name), `extraResources omits ${name}`);
+  }
 });
 
 test("save image names accept only local-NNN view stills", () => {
@@ -317,6 +327,33 @@ test("save image names accept only local-NNN view stills", () => {
     12,
   ];
   for (const name of bad) assert.equal(isSaveImageName(name), false, String(name));
+});
+
+test("report names accept only local-NNN PDFs", () => {
+  const ok = [
+    "local-007_report_20261101-2350.pdf",
+    "local-999_report_19990101-0000.pdf",
+  ];
+  for (const name of ok) assert.equal(isSaveReportName(name), true, name);
+  const bad = [
+    "local-07_report_20261101-2350.pdf",
+    "local-001_report_20261101-2350.PDF",
+    "local-001_anatomical_20261101-2350.pdf",
+    "local-001_report_2026111-2350.pdf",
+    "local-001_report_20261101-2350.pdf.exe",
+    "../local-001_report_20261101-2350.pdf",
+    "",
+    null,
+    12,
+  ];
+  for (const name of bad) assert.equal(isSaveReportName(name), false, String(name));
+  const base = "/tmp/docs";
+  assert.equal(
+    saveReportDefaultPath(base, ok[0]),
+    path.join(base, "BronchoRoute", ok[0]),
+  );
+  assert.throws(() => saveReportDefaultPath("", ok[0]));
+  assert.throws(() => saveReportDefaultPath(base, "x.pdf"));
 });
 
 test("png bytes require the signature and stay under 50 MB", () => {
@@ -516,11 +553,12 @@ test("save video default path uses an injected movies directory", () => {
   assert.throws(() => resolveSaveVideoBaseDir("", "  "), /videos directory/);
 });
 
-test("start page URL opens the editing page with or without a Case", () => {
+test("start page URL opens panel 1 focused on the first nodule", () => {
   const origin = "http://127.0.0.1:8765";
   assert.equal(
     startPageUrl(origin, "local-001"),
-    `${origin}/renderer.template.html?case=local-001`,
+    `${origin}/renderer.template.html?case=local-001`
+      + "&variant=ct-panes&focus=nodule",
   );
   assert.equal(startPageUrl(origin, null), `${origin}/renderer.template.html`);
 });

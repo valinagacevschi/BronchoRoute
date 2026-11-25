@@ -27,6 +27,9 @@ contextBridge.exposeInMainWorld("bronchoroute", {
   saveImage(payload) {
     return ipcRenderer.invoke("bronchoroute:save-image", payload);
   },
+  saveReport(payload) {
+    return ipcRenderer.invoke("bronchoroute:save-report", payload);
+  },
   recordStart(payload) {
     return ipcRenderer.invoke("bronchoroute:record-start", payload);
   },

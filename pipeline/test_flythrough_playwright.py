@@ -167,6 +167,15 @@ def server(tmp_path: Path):
 
 
 def _open_endoluminal(page, server: str):
+    # The export button only shows with the desktop recorder bridge.
+    page.add_init_script(
+        """window.bronchoroute = {
+             recordStart: async () => ({ recordingId: 'stub', saved: true }),
+             recordFrame: async () => true,
+             recordStop: async () => true,
+             recordCancel: async () => true,
+           };"""
+    )
     page.goto(
         f"{server}/renderer.template.html?case=local-001&allow_review=1&debug=1&variant=endoluminal",
         wait_until="domcontentloaded",

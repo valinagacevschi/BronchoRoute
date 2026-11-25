@@ -1,3 +1,4 @@
+# Changes: read-only axial nodule contour artifact route for the CT panes (#73).
 # Changes: route target accepts generate_realism so the viewer checkbox controls generation (#68).
 # Changes: route depth PNG endpoint before the RGB route so kf-N.depth.png resolves (#66).
 # Changes: load optional realism dependencies only when realism is requested.
@@ -32,6 +33,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import logging
 import math
 import os
 import socket
@@ -43,25 +45,36 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
+import nibabel as nib
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.caseref import CASE_ID_RE, CaseRef
 from app.cases import (
+    CANDIDATE_SCORE_MAX,
+    CANDIDATE_SCORE_MIN,
+    MAX_CANDIDATES,
     RECORD_KINDS,
     ReviewBlocked,
     UnknownCase,
     append_record,
     case_payload,
+    clear_candidates,
     clear_lesion,
+    clear_node_mark,
+    confirm_candidate,
     confirm_existing_series,
     list_cases,
     load_versions,
     qualifying_route_start_terminals,
+    reset_case,
+    set_candidates,
     set_lesion,
+    set_node_mark,
     set_route_start,
     validate_lesion_diameter,
     validate_record_data,
@@ -99,7 +112,14 @@ from app.review import (
     set_bridge_decision,
     undo_correction,
 )
-from app.route_target import route_target_candidates, set_route_target
+from app.route_target import (
+    auto_pick_route_target,
+    clear_route_target,
+    ensure_route_target,
+    route_target_candidates,
+    route_to_node_mark,
+    set_route_target,
+)
 from app.signoff import SignoffArtifactError, apply_signoff, version_report_html
 from app.versions import (
     REPORT_CSP,
@@ -175,6 +195,16 @@ class _DeployGuards(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class _PrototypeNoCache(BaseHTTPMiddleware):
+    """Local prototype files change in place; never let the browser cache them."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.endswith((".js", ".css", ".html")):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     log_handler = initialize_sidecar()
@@ -187,6 +217,7 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(title="BronchoRoute", docs_url=None, redoc_url=None, lifespan=_lifespan)
 app.add_middleware(_DeployGuards)
+app.add_middleware(_PrototypeNoCache)
 app.include_router(models_router)
 
 
@@ -276,6 +307,38 @@ class LesionBody(BaseModel):
         return cleaned
 
 
+class NodeBody(LesionBody):
+    """A Lymph-node mark: a point with a diameter and a short label."""
+
+    label: str | None = Field(default=None, max_length=40)
+
+
+class CandidateItem(LesionBody):
+    """A detector suggestion: a lesion shape plus score and nodule measurements."""
+
+    score: float | None = Field(
+        default=None,
+        ge=CANDIDATE_SCORE_MIN,
+        le=CANDIDATE_SCORE_MAX,
+        allow_inf_nan=False,
+    )
+    id: int | None = Field(default=None, ge=1)
+    volume_mm3: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    lobe: str | None = None
+    to_airway_mm: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    size_mm: list[float] | None = Field(
+        default=None, min_length=3, max_length=3
+    )
+    review: bool = False
+
+
+class CandidatesBody(BaseModel):
+    candidates: list[CandidateItem] = Field(
+        min_length=1, max_length=MAX_CANDIDATES
+    )
+    source: str = "detector"
+
+
 class ImportScanBody(BaseModel):
     path: str
 
@@ -347,6 +410,13 @@ def _validation_detail(exc: ValidationError) -> str | list[str]:
             msg = msg[len("Value error, "):]
         msgs.append(msg)
     return msgs[0] if len(msgs) == 1 else msgs
+
+
+async def _json_body(request: Request) -> object:
+    try:
+        return await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
 
 
 class SeriesConfirmBody(BaseModel):
@@ -491,7 +561,7 @@ async def api_import_upload(request: Request):
                 if total > MAX_ARCHIVE_BYTES:
                     raise HTTPException(status_code=413, detail="Archive size limit exceeded")
                 target.write(chunk)
-        return scan_series(filename)
+        return await run_in_threadpool(scan_series, filename)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
@@ -584,7 +654,14 @@ def api_segment_register_existing(case_id: str):
         entry = register_segment_artifacts(
             case_id, clinician["clinician"], registered_existing=True
         )
-        return {"record": entry, "registered_existing": True}
+        auto = None
+        try:
+            from app.bridge_evidence import auto_decide_bridges
+
+            auto = auto_decide_bridges(case_id)
+        except Exception as exc:  # noqa: BLE001
+            auto = {"error": str(exc)}
+        return {"record": entry, "registered_existing": True, "bridges_auto": auto}
     except WorkflowBlocked as exc:
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
@@ -638,16 +715,22 @@ def api_route_candidates(case_id: str):
         raise _http_for_case(exc) from exc
 
 
+@app.delete("/api/cases/{case_id}/route-target")
+def api_clear_route_target(case_id: str):
+    """Clear the stored RouteTarget; the Lesion auto-pick owns the route again."""
+    try:
+        return clear_route_target(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
 @app.put("/api/cases/{case_id}/route-target")
 async def api_route_target(case_id: str, request: Request):
     """Parse body manually so NaN/inf yield a plain 422; gate runs under lock."""
     clinician = _require_clinician()
+    body = await _json_body(request)
     try:
-        body_raw = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
-    try:
-        body = RouteTargetBody.model_validate(body_raw)
+        body = RouteTargetBody.model_validate(body)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
     try:
@@ -836,6 +919,11 @@ def api_review_signoff(case_id: str, body: ReviewSignoffBody):
 
 @app.get("/api/cases/{case_id}/payload")
 def api_payload(case_id: str, allow_review: bool = Query(False)):
+    # RouteTarget is automatic: keep the best-ranked target filled in.
+    try:
+        ensure_route_target(case_id)
+    except (WorkflowBlocked, UnknownCase, FileNotFoundError, ValueError):
+        pass
     try:
         return case_payload(case_id, allow_review=allow_review)
     except ReviewBlocked as exc:
@@ -902,6 +990,31 @@ def api_masks(case_id: str):
     )
 
 
+@app.get("/api/cases/{case_id}/nodule-contours")
+def api_nodule_contours(case_id: str):
+    """Axial contour artifact written by the nodule stage (#71). Read-only."""
+    try:
+        ref = CaseRef.parse(case_id)
+    except (UnknownCase, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    path = ref.ts_out / "nodule_contours.json"
+    if not path.is_file():
+        # Optional overlay: an empty artifact keeps the panes unchanged and
+        # avoids a 404 console error in every Case without a nodule stage.
+        return JSONResponse({"shape": [], "nodules": []})
+    artifact = json.loads(path.read_text())
+    # The stage traces in the CT array frame; the browser shows a canonical
+    # crop. Send the CT affine so the viewer can bridge the two grids.
+    try:
+        artifact["affine"] = nib.load(ref.ct).affine.tolist()
+    except Exception as exc:  # noqa: BLE001 - optional bridge; the viewer falls back
+        logging.getLogger(__name__).warning(
+            "nodule contours: CT affine unavailable for %s: %s", case_id, exc
+        )
+    # A rebuild rewrites the artifact under the same path.
+    return JSONResponse(artifact, headers={"Cache-Control": "no-cache"})
+
+
 @app.put("/api/cases/{case_id}/lesion")
 async def api_put_lesion(case_id: str, request: Request):
     """Parse body manually so NaN/inf yield a plain 422 (JSON-safe detail)."""
@@ -912,26 +1025,25 @@ async def api_put_lesion(case_id: str, request: Request):
         raise HTTPException(status_code=409, detail=exc.reason) from exc
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
-    try:
-        body = await request.json()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+    body = await _json_body(request)
     try:
         parsed = LesionBody.model_validate(body)
     except ValidationError as exc:
-        msgs = []
-        for err in exc.errors():
-            msg = err.get("msg", "validation error")
-            if msg.startswith("Value error, "):
-                msg = msg[len("Value error, "):]
-            msgs.append(msg)
-        raise HTTPException(status_code=422, detail=msgs[0] if len(msgs) == 1 else msgs) from exc
+        raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
     try:
-        return set_lesion(
+        result = set_lesion(
             case_id, parsed.ras_mm, clinician["clinician"], parsed.diameter_mm
         )
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
+    # A new Lesion invalidates the previous choice; pick the new best route.
+    try:
+        result["route_target"] = auto_pick_route_target(
+            case_id, clinician["clinician"]
+        )
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    return result
 
 
 @app.delete("/api/cases/{case_id}/lesion")
@@ -939,6 +1051,113 @@ def api_delete_lesion(case_id: str):
     clinician = _require_clinician()
     try:
         return clear_lesion(case_id, clinician["clinician"])
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.put("/api/cases/{case_id}/nodes")
+async def api_add_node(case_id: str, request: Request):
+    """Add a Lymph-node mark. The shared crosshair supplies its position."""
+    clinician = _require_clinician()
+    body = await _json_body(request)
+    try:
+        parsed = NodeBody.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
+    try:
+        return set_node_mark(
+            case_id,
+            parsed.ras_mm,
+            clinician["clinician"],
+            parsed.diameter_mm,
+            parsed.label,
+        )
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.delete("/api/cases/{case_id}/nodes/{node_id}")
+def api_delete_node(case_id: str, node_id: int):
+    try:
+        return clear_node_mark(case_id, node_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/nodes/{node_id}/route")
+def api_route_to_node(case_id: str, node_id: int):
+    """Make a Lymph-node mark the active RouteTarget POI."""
+    clinician = _require_clinician()
+    try:
+        result = route_to_node_mark(case_id, node_id, clinician["clinician"])
+    except WorkflowBlocked as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    except (ReviewBlocked, UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    if result is None:
+        raise HTTPException(status_code=409, detail="no reachable airway target")
+    return {"route_target": result}
+
+
+@app.get("/api/cases/{case_id}/report")
+def api_case_report(case_id: str):
+    """Printable report of the current Case (Lesion, nodes, route)."""
+    from app.report import render_case_report
+
+    try:
+        html_body = render_case_report(case_id)
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+    return HTMLResponse(
+        html_body,
+        headers={"Content-Security-Policy": REPORT_CSP},
+    )
+
+
+@app.post("/api/cases/{case_id}/reset")
+def api_reset_case(case_id: str):
+    """Discard human decisions and return to the post-processing state."""
+    clinician = _require_clinician()
+    try:
+        return reset_case(case_id, clinician["clinician"])
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.put("/api/cases/{case_id}/candidates")
+async def api_put_candidates(case_id: str, request: Request):
+    """Store detector candidates. Suggestions only until one is confirmed."""
+    clinician = _require_clinician()
+    body = await _json_body(request)
+    try:
+        parsed = CandidatesBody.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=_validation_detail(exc)) from exc
+    try:
+        return set_candidates(
+            case_id,
+            [item.model_dump() for item in parsed.candidates],
+            parsed.source,
+            clinician["clinician"],
+        )
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.delete("/api/cases/{case_id}/candidates")
+def api_delete_candidates(case_id: str):
+    clinician = _require_clinician()
+    try:
+        return clear_candidates(case_id, clinician["clinician"])
+    except (UnknownCase, FileNotFoundError, ValueError) as exc:
+        raise _http_for_case(exc) from exc
+
+
+@app.post("/api/cases/{case_id}/candidates/{index}/confirm")
+def api_confirm_candidate(case_id: str, index: int):
+    clinician = _require_clinician()
+    try:
+        return confirm_candidate(case_id, index, clinician["clinician"])
     except (UnknownCase, FileNotFoundError, ValueError) as exc:
         raise _http_for_case(exc) from exc
 
@@ -1113,6 +1332,30 @@ def sponsors_file():
 def viewer_page():
     """Main page: left-rail renderer in read-only viewer mode."""
     return FileResponse(PROTOTYPE / "renderer.template.html")
+
+
+@app.get("/case-web/{case_id}/{name}")
+def case_web(case_id: str, name: str):
+    """Surface mesh assets for the 3D endoluminal view."""
+    try:
+        ref = CaseRef.parse(case_id)
+    except UnknownCase as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    base = (ref.case_json.parent / "web").resolve()
+    target = (base / name).resolve()
+    if base not in target.parents and target != base:
+        return JSONResponse({"error": "invalid path"}, status_code=404)
+    if not target.is_file():
+        # Optional assets: a Case without a built scene must not log a 404 in
+        # every viewer that probes for it.
+        return Response(status_code=204)
+    media = "application/octet-stream"
+    if name.endswith(".json"):
+        media = "application/json"
+    # A rebuild rewrites these files under the same paths; without this the
+    # browser's heuristic cache keeps serving the previous scene.
+    return FileResponse(target, media_type=media,
+                        headers={"Cache-Control": "no-cache"})
 
 
 app.mount(

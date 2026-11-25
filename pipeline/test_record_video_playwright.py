@@ -296,18 +296,14 @@ def test_record_frames_and_scheduler(server: str):
             """() => ({
               record: document.getElementById("record-btn").hidden,
               stop: document.getElementById("record-stop").hidden,
-              size: document.getElementById("record-size-label").hidden,
               save: document.getElementById("save-image").hidden,
-              resolution: document.getElementById("record-size").value,
             })"""
         )
         cprint(f"browser record chrome {hidden}", "cyan")
         assert hidden == {
             "record": True,
             "stop": True,
-            "size": True,
             "save": False,
-            "resolution": "1080",
         }
         for key, index, view_name, scale in VIEWS:
             cprint(f"frame {key}", "cyan")

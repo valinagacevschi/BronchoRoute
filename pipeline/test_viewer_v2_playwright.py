@@ -153,26 +153,29 @@ def test_viewer_v2_order_radiologist_orifices(server, tmp_path):
         si_err = abs(si["coronal"] - si["sagittal"]) / si_max
         assert si_err <= 0.02, f"S-I scale mismatch coronal={si['coronal']} sagittal={si['sagittal']} err={si_err:.3%}"
 
-        # Viewer mode: no write prompts in the CT toolbar.
-        write_prompts = page.evaluate(
+        # Viewer mode: the Lymph nodes actions are present but disabled.
+        viewer_actions = page.evaluate(
             """() => {
-              const tb = document.querySelector('.ct-toolbar');
-              if (!tb) return ['missing toolbar'];
-              const text = tb.innerText || '';
+              const mark = document.getElementById('ct-mark-lesion');
+              const text = (document.querySelector('.rail') || {}).innerText || '';
               const hits = [];
               for (const s of [
                 'Mark and confirm the Lesion first',
-                'Mark Lesion',
-                'Confirm Lesion',
                 'Confirm Start',
                 'Click in the axial',
               ]) {
                 if (text.includes(s)) hits.push(s);
               }
-              return hits;
+              return {
+                present: !!mark,
+                disabled: !!(mark && mark.disabled),
+                hits,
+              };
             }"""
         )
-        assert write_prompts == [], write_prompts
+        assert viewer_actions == {
+            "present": True, "disabled": True, "hits": [],
+        }, viewer_actions
 
         for label, name in [
             ("CT panes", "ct_panes"),

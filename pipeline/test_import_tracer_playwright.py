@@ -109,7 +109,7 @@ def test_archive_import(tracer_server, cancel):
         assert page.locator("#clinician-initials").count() == 0
         page.locator("#series-confirm").click()
         page.locator("#processing").wait_for(state="visible")
-        assert page.locator("#processing-steps li").count() == 4
+        assert page.locator("#processing-steps li").count() == 5
         page.screenshot(path=str(shots / "processing.png"))
         if cancel:
             # The cancel button is enabled only once the import has a job to cancel.

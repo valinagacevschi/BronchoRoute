@@ -1,0 +1,1050 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Airway Navigator</title>
+  <style>
+    :root { --bg:#0b0f17; --fg:#e9edf5; --muted:#8b94a7; --route:#63e6be; --nodule:#f2b632; }
+    html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); overflow:hidden;
+      font-family: Inter, -apple-system, system-ui, sans-serif; }
+    canvas { display:block; }
+    #title { display:none !important; }
+    #title b { color:var(--fg); }
+    #status { display:none !important; }
+    #hud { position:fixed; right:20px; bottom:20px; font:400 12px/1.35 Inter, -apple-system, system-ui, sans-serif;
+      color:#ffffff; white-space:pre; pointer-events:none; text-align:right;
+      text-shadow:0 1px 3px #000, 0 0 12px #000; }
+    #final { position:fixed; left:20px; right:20px; bottom:56px; display:none; gap:48px; pointer-events:none; }
+    #final div { font-size:13px; color:var(--muted); }
+    #final b { display:block; font-size:34px; color:var(--route); }
+    #final .gap b { color:var(--nodule); }
+    #legend { display:none !important; }
+    #legend i { display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 5px 0 12px; }
+    #legend i:first-child { margin-left:0; }
+    #clocks { position:fixed; left:16px; bottom:20px; width:190px; height:124px;
+      pointer-events:none; }
+  #mini { position:fixed; top:16px; right:16px; width:200px; height:250px; border-radius:10px;
+      border:1px solid #262d3b; display:none; pointer-events:none; }
+    #gaplabel { position:fixed; padding:2px 7px; border-radius:5px; background:#000c; color:#fff;
+      font:600 13px ui-monospace, Menlo, monospace; display:none; pointer-events:none; transform:translate(-50%,-50%); }
+    #error { position:fixed; inset:0; display:none; place-items:center; padding:16px; color:#ff8787; text-align:center; }
+  </style>
+</head>
+<body>
+  <div id="title"><b>TotalSegmentator</b> · airway navigator</div>
+  <div id="status"></div>
+  <div id="hud"></div>
+  <div id="final">
+    <div><b id="f-route"></b><span id="l-route">route</span></div>
+    <div><b id="f-branch"></b>branch points</div>
+    <div class="gap"><b id="f-gap"></b><span id="l-gap">short of the target</span></div>
+  </div>
+  <div id="legend"></div>
+  <canvas id="clocks" width="260" height="170"></canvas>
+  <div id="mini"></div>
+  <div id="gaplabel"></div>
+  <div id="error"></div>
+  <script type="importmap">
+    { "imports": {
+      "three": "./vendor/three.module.js",
+      "three/addons/": "./vendor/"
+    } }
+  </script>
+  <script src="./endo_route.js"></script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const $ = id => document.getElementById(id);
+    const PARAMS = new URLSearchParams(location.search);
+    const BASE = PARAMS.get('case') || '';
+    const A1 = PARAMS.get('mode') === 'a1'; // a1 video: start inside the airway, reveal the nodule at the end
+    const ROUTE = 0x2a1a12, BG_OUT = 0x0b0f17, BG_IN = 0x140d0a;
+    const LABELS = { airways:'airways', arteries:'arteries', veins:'veins', nodule:'target nodule' };
+
+    // ---------- renderer, cameras, scenes ----------
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.autoClear = false;
+    document.body.prepend(renderer.domElement);
+    const world = new THREE.Scene();
+    world.background = new THREE.Color(BG_OUT);
+    const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 1, 5000);
+    camera.position.set(0, 20, 420);
+    world.add(camera);
+    const insideCam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 5000);
+    insideCam.position.set(0, 20, 420);
+    world.add(insideCam);
+    world.add(new THREE.HemisphereLight(0xffffff, 0x334055, 1.1));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
+    keyLight.position.set(0.3, 0.5, 1);
+    camera.add(keyLight);
+    const headLight = new THREE.PointLight(0xfff1e6, 0, 0, 0);
+    insideCam.add(headLight);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    // Match Anatomical 3D: drag moves the view, Shift-drag orbits, the wheel zooms.
+    // OrbitControls swaps pan and rotate while Shift is held, so LEFT stays PAN.
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN,
+    };
+    const mini = new THREE.Scene();
+    mini.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2));
+    const miniCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -2000, 2000);
+
+    // ---------- load data ----------
+    async function getJSON(f) {
+      // Revalidate: a rebuild rewrites these files under the same names.
+      const r = await fetch(`${BASE}/${f}`, { cache: 'no-cache' });
+      if (!r.ok) throw new Error(`${BASE}/${f}: ${r.status}`);
+      return r.json();
+    }
+    let sceneInfo, graph;
+    try {
+      [sceneInfo, graph] = await Promise.all([getJSON('scene.json'), getJSON('graph.json')]);
+    } catch (e) {
+      $('error').style.display = 'grid';
+      $('error').textContent = `Could not load ${BASE}. Run prepare.py, then serve this folder: python -m http.server (${e.message})`;
+      throw e;
+    }
+    // The merged nodule entry stays for older viewers. When per-nodule ids
+    // exist, render only those, so the merged mesh does not draw twice.
+    const noduleLayers = sceneInfo.layers.filter(L => L.name === 'nodule');
+    const hasNoduleIds = noduleLayers.some(L => L.id != null);
+    const renderLayers = sceneInfo.layers.filter(
+      L => !(L.name === 'nodule' && L.id == null && hasNoduleIds));
+    const meshes = {};
+    const noduleMeshes = [];
+    await Promise.all(renderLayers.map(async L => {
+      const buf = await (await fetch(`${BASE}/${L.file}`, { cache: 'no-cache' })).arrayBuffer();
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(buf, 0, L.vertices * 3), 3));
+      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(buf, L.vertices * 12, L.triangles * 3), 1));
+      geo.computeVertexNormals();
+      const glass = L.opacity < 0.5;
+      const mat = new THREE.MeshStandardMaterial({
+        color: L.color, roughness: 0.5, metalness: 0, side: THREE.DoubleSide,
+        transparent: L.opacity < 1, opacity: L.opacity, depthWrite: !glass,
+      });
+      const m = new THREE.Mesh(geo, mat);
+      m.name = L.name;
+      m.userData.baseOpacity = L.opacity;
+      m.userData.isNodule = L.name === 'nodule';
+      m.userData.noduleId = L.id == null ? null : L.id;
+      m.renderOrder = glass ? 10 : 0;
+      world.add(m);
+      // Nodule entries share the layer name, so the id keeps them apart.
+      meshes[L.id == null ? L.name : `${L.name}-${L.id}`] = m;
+      if (m.userData.isNodule) noduleMeshes.push(m);
+    }));
+    noduleMeshes.sort((a, b) =>
+      (a.userData.noduleId ?? 0) - (b.userData.noduleId ?? 0));
+    window.__endoDebug = {
+      meshes,
+      noduleMeshes,
+      THREE,
+      camera,
+      insideCam,
+      controls,
+      markerPos: () => marker.position.toArray(),
+      markerNDC: () => marker.position.clone().project(camera).toArray(),
+      routeInfo: () => route && {
+        length: route.length,
+        end: route.end.toArray(),
+        target: route.target.toArray(),
+      },
+      // The shared trail and destination, in scene coords, for the Anatomical
+      // panel to draw the same route.
+      trail: () => route && {
+        path: route.path.slice(),
+        points: route.curve.getPoints(route.segments).map(v => [v.x, v.y, v.z]),
+        end: route.end.toArray(),
+        target: route.target.toArray(),
+        gap: route.gap,
+        nodule: sceneTarget ? (sceneTarget.userData.noduleId ?? null) : null,
+        center: sceneInfo.center_mm || [0, 0, 0],
+      },
+      targetPickAllowed: () => !inside,
+      viewMode: () => viewMode,
+      reveal: () => reveal,
+      progress: () => progress,
+      captureFrame: (w, h) => composeEndoFrame(w, h).toDataURL("image/png"),
+      routeLength: () => route && route.length,
+      nodeCount: () => nodeGroup.children.length,
+      nodesVisible: () => nodeGroup.visible,
+      nodeScreen: () => nodeGroup.children.map(m => {
+        const v = m.position.clone().project(camera);
+        return {
+          id: m.userData.nodeId,
+          visible: m.visible && v.z < 1,
+          x: (v.x * 0.5 + 0.5) * innerWidth,
+          y: (-v.y * 0.5 + 0.5) * innerHeight,
+        };
+      }),
+    };
+    const airways = meshes.airways;
+    const outsideAirMat = airways.material;
+    const insideAirMat = new THREE.MeshStandardMaterial({ color: 0xb06644, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
+    const revealAirMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.3, depthWrite: false });
+    $('legend').innerHTML = renderLayers.filter(L => LABELS[L.name])
+      .map(L => `<i style="background:${L.color}"></i>${
+        L.name === 'nodule' && L.id != null ? `${LABELS[L.name]} ${L.id}` : LABELS[L.name]
+      }`).join('') +
+      `<i style="background:#63e6be"></i>route`;
+
+    // minimap: airway tree from the front
+    const miniAir = new THREE.Mesh(airways.geometry, new THREE.MeshLambertMaterial({ color: 0x8a8f99 }));
+    mini.add(miniAir);
+    for (const m of noduleMeshes) mini.add(new THREE.Mesh(m.geometry, new THREE.MeshBasicMaterial({ color: 0xf2b632 })));
+    airways.geometry.computeBoundingBox();
+    {
+      const b = airways.geometry.boundingBox, c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3());
+      const half = Math.max(s.x / 2 / 0.8, s.y / 2) * 1.08;
+      Object.assign(miniCam, { left: -half * 0.8, right: half * 0.8, top: half, bottom: -half });
+      miniCam.position.set(c.x, c.y, 1000);
+      miniCam.updateProjectionMatrix();
+    }
+    const miniDot = new THREE.Mesh(new THREE.SphereGeometry(3), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    mini.add(miniDot);
+
+    // ---------- airway graph + shortest path ----------
+    // The trail is computed by prototype/endo_route.js, the same code the
+    // Anatomical panel uses, so both panels show one trail and destination.
+    const P = Float32Array.from(graph.pos);
+    const graphAdj = EndoRoute.adjacency(graph);
+    const deg = graphAdj.deg;
+    // Generation is the BFS depth from the trachea, like the Case route samples.
+    const generation = new Int32Array(graph.radius.length).fill(-1);
+    {
+      const queue = new Int32Array(graph.radius.length);
+      let head = 0, tail = 0;
+      generation[graph.start] = 0;
+      queue[tail++] = graph.start;
+      while (head < tail) {
+        const n = queue[head++];
+        for (let k = graphAdj.off[n]; k < graphAdj.off[n + 1]; k++) {
+          const m = graphAdj.nbr[k];
+          if (generation[m] !== -1) continue;
+          generation[m] = generation[n] + 1;
+          queue[tail++] = m;
+        }
+      }
+    }
+
+    // ---------- route state ----------
+    let route = null; // { curve, length, s[], radius[], branches[], frames, gap, end, target }
+    let sceneTarget = null; // nodule mesh the route was planned to
+    let lesionScene = null; // confirmed Lesion (or routed node) in scene coords
+    let progress = 0; // mm along the route
+
+    // Visual-axis rotation: near the lesion the camera turns toward it, so the
+    // distance readout is visible. Capped at 30 degrees and 45 degrees off-axis.
+    const AUTO_LOOK_MM = 40;
+    const AUTO_LOOK_COS = Math.cos(45 * Math.PI / 180);
+    const AUTO_LOOK_MAX_YAW = 30 * Math.PI / 180;
+    const autoLookTmp = new THREE.Vector3();
+    function autoLookAhead(p, ahead) {
+      if (!lesionScene) return ahead;
+      const toLesion = autoLookTmp.subVectors(lesionScene, p);
+      const dist = toLesion.length();
+      if (!(dist > 1e-6) || dist > AUTO_LOOK_MM) return ahead;
+      const fwd = ahead.clone().sub(p);
+      const fwdLen = fwd.length();
+      if (!(fwdLen > 1e-6)) return ahead;
+      fwd.divideScalar(fwdLen);
+      const unit = toLesion.clone().divideScalar(dist);
+      const along = unit.dot(fwd);
+      if (along < AUTO_LOOK_COS) return ahead;
+      const side = unit.sub(fwd.clone().multiplyScalar(along)).normalize();
+      const k = 0.65 * (AUTO_LOOK_MM - dist) / AUTO_LOOK_MM;
+      const target = fwd.clone().add(side.multiplyScalar(k)).normalize();
+      const yaw = Math.acos(Math.max(-1, Math.min(1, target.dot(fwd))));
+      if (yaw > AUTO_LOOK_MAX_YAW) {
+        target.copy(fwd).lerp(target, AUTO_LOOK_MAX_YAW / yaw).normalize();
+      }
+      return p.clone().add(target.multiplyScalar(fwdLen));
+    }
+    let inside = false; // single inside view
+    let split = false; // inside and outside side by side
+    let splitNeedsFit = false; // fit the outside half when it appears or navigation starts
+    let viewMode = "outside"; // inside | outside | split
+    const routeGroup = new THREE.Group(), ringGroup = new THREE.Group(), miniRoute = new THREE.Group();
+    const nodeGroup = new THREE.Group();
+    world.add(routeGroup, ringGroup, nodeGroup); mini.add(miniRoute);
+    function setNodeMarks(nodes) {
+      clearGroup(nodeGroup);
+      const centre = sceneInfo.center_mm || [0, 0, 0];
+      for (const node of Array.isArray(nodes) ? nodes : []) {
+        if (!node || !Array.isArray(node.ras_mm) || node.ras_mm.length < 3) continue;
+        const p = EndoRoute.rasToScene(node.ras_mm, centre);
+        const mesh = new THREE.Mesh(
+          new THREE.SphereGeometry(3.5, 16, 12),
+          new THREE.MeshBasicMaterial({ color: 0xe53935, depthTest: false }),
+        );
+        mesh.position.set(p[0], p[1], p[2]);
+        mesh.renderOrder = 30;
+        mesh.userData.isNode = true;
+        mesh.userData.nodeId = node.id;
+        mesh.userData.ras_mm = node.ras_mm;
+        nodeGroup.add(mesh);
+      }
+    }
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(2.2, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }));
+    marker.renderOrder = 21;
+    function clearGroup(g) {
+      for (const o of [...g.children]) { g.remove(o); if (o !== marker) { o.geometry?.dispose(); o.material?.dispose(); } }
+    }
+    function buildRoute(targets) {
+      const t0 = performance.now();
+      const r = EndoRoute.routeToTarget(graph, targets);
+      const ms = performance.now() - t0;
+      if (!r) return null;
+      const path = r.path;
+      // fit a curve through the shared, smoothed polyline
+      const pts = r.points.map(p => new THREE.Vector3(p[0], p[1], p[2]));
+      const s = [0];
+      for (let i = 1; i < pts.length; i++) s.push(s[i - 1] + pts[i].distanceTo(pts[i - 1]));
+      const curve = new THREE.CatmullRomCurve3(pts.filter((_, i) => i % 2 === 0 || i === pts.length - 1), false, 'centripetal');
+      const length = curve.getLength(), k = length / s[s.length - 1];
+      for (let i = 0; i < s.length; i++) s[i] *= k;
+      // branch points: graph junctions along the path, merging junctions closer than 3 mm
+      const branches = []; let count = 0, lastJ = -Infinity;
+      path.forEach((n, i) => {
+        if (i > 0 && deg[n] >= 3) { if (s[i] - lastJ > 3) count++; lastJ = s[i]; }
+        branches.push(count);
+      });
+      const segments = Math.max(16, Math.round(length));
+      return { curve, length, s, path, radius: path.map(n => graph.radius[n]),
+        gen: path.map(n => generation[n]), branches, ms,
+        frames: curve.computeFrenetFrames(segments, false), segments,
+        gap: r.gap,
+        end: new THREE.Vector3(r.end[0], r.end[1], r.end[2]),
+        target: new THREE.Vector3(r.target.x, r.target.y, r.target.z) };
+    }
+    const lookup = (arr, sv) => { // value of arr at arc length sv
+      const S = route.s; let lo = 0, hi = S.length - 1;
+      while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S[m] <= sv) lo = m; else hi = m; }
+      return arr[lo];
+    };
+    function drawRoute() {
+      clearGroup(routeGroup); clearGroup(ringGroup); clearGroup(miniRoute);
+      const { curve, length, segments } = route;
+      // glowing tube as wide as the airway, plus a thin bright core line
+      const tube = new THREE.TubeGeometry(curve, segments, 1, 16, false);
+      const pos = tube.attributes.position, c = new THREE.Vector3(), v = new THREE.Vector3();
+      for (let i = 0; i <= segments; i++) {
+        curve.getPointAt(i / segments, c);
+        const r = Math.max(0.8, lookup(route.radius, i / segments * length) * 1.3);
+        for (let j = 0; j <= 16; j++) {
+          const idx = i * 17 + j;
+          v.fromBufferAttribute(pos, idx).sub(c).multiplyScalar(r).add(c);
+          pos.setXYZ(idx, v.x, v.y, v.z);
+        }
+      }
+      tube.computeVertexNormals();
+      routeGroup.add(new THREE.Mesh(tube, new THREE.MeshStandardMaterial({
+        color: ROUTE, emissive: ROUTE, emissiveIntensity: 0.45, transparent: true, opacity: 0.5, depthWrite: false })));
+      // core line and position marker draw on top of everything, so the route never hides behind vessels
+      const core = new THREE.Mesh(new THREE.TubeGeometry(curve, segments, 0.6, 8, false),
+        new THREE.MeshBasicMaterial({ color: 0xb4f5dc, transparent: true, opacity: 0.9, depthTest: false }));
+      core.renderOrder = 20;
+      routeGroup.add(core, marker);
+      // gap from route end to target
+      const gapGeo = new THREE.BufferGeometry().setFromPoints([route.end, route.target]);
+      const gapLine = new THREE.Line(gapGeo, new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 1, gapSize: 1 }));
+      gapLine.computeLineDistances();
+      routeGroup.add(gapLine);
+      // rings for the inside view, every 6 mm, sized to the airway
+      for (let sv = 3; sv < length; sv += 6) {
+        const r = lookup(route.radius, sv) * 0.8;
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(r, Math.max(0.03, r * 0.022), 8, 48),
+          new THREE.MeshBasicMaterial({ color: ROUTE, transparent: true, opacity: 0.85 }));
+        ring.position.copy(curve.getPointAt(sv / length));
+        ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), curve.getTangentAt(sv / length));
+        ringGroup.add(ring);
+      }
+      miniRoute.add(new THREE.Mesh(new THREE.TubeGeometry(curve, segments, 2.2, 6, false),
+        new THREE.MeshBasicMaterial({ color: ROUTE })));
+    }
+    function setTarget(targets, label, moveCamera = true) {
+      const r = buildRoute(targets);
+      if (!r) { $('status').textContent = 'target is at the start of the airway tree, pick another'; return; }
+      route = r; progress = 0;
+      drawRoute();
+      $('status').textContent = `route to ${label} computed on the model's airway tree · ${r.ms.toFixed(0)} ms`;
+      if (!inside && moveCamera) { // put the camera in front of the start of the route
+        const p0 = route.curve.getPointAt(0);
+        controls.target.copy(p0);
+        camera.position.copy(p0).add(new THREE.Vector3(0, 25, 160));
+      }
+      if (inside) setInside(true); // rebuild the inside view; outside keeps the current camera
+    }
+
+    // ---------- view modes ----------
+    // Whole chest upright (patient standing) and fitted to the window.
+    let userOrbit = false;
+    controls.addEventListener('start', () => { if (!inside) userOrbit = true; });
+    function fitOutsideCamera(margin = 1 / 0.9) {
+      userOrbit = false;
+      navZoomed = false;
+      followP = null;
+      // Frame the airway tree to fill 90% of the shorter screen side.
+      const box = new THREE.Box3().expandByObject(airways);
+      if (box.isEmpty() || !(innerWidth > 0) || !(innerHeight > 0)) return;
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+      const byHeight = size.y / 2 / Math.tan(halfFov);
+      const byWidth = size.x / 2 / (Math.tan(halfFov) * camera.aspect);
+      const dist = Math.max(byHeight, byWidth) * margin + size.z / 2;
+      camera.up.set(0, 1, 0);
+      controls.target.copy(center);
+      camera.position.copy(center).add(new THREE.Vector3(0, 0, dist));
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
+    function applyViewState(mode) {
+      const isInside = mode === 'inside';
+      if (routeGroup.children[0]) routeGroup.children[0].visible = true;
+      marker.visible = !isInside;
+      // The destination node is an outside-view marker. Inside the lumen it
+      // would read as a dot through the wall before the scope arrives.
+      nodeGroup.visible = !isInside;
+      airways.material = isInside ? insideAirMat : outsideAirMat;
+      // Outside shows the airways and the target only; vessels and organs stay hidden.
+      for (const m of Object.values(meshes)) {
+        if (m === airways) continue;
+        m.visible = !isInside && !!m.userData.isNodule;
+      }
+      routeGroup.visible = !isInside; ringGroup.visible = isInside;
+      world.background.set(isInside ? BG_IN : BG_OUT);
+      world.fog = isInside ? new THREE.Fog(BG_IN, 8, 70) : null;
+      renderer.setClearColor(isInside ? BG_IN : BG_OUT, 1);
+      headLight.intensity = isInside ? 2.5 : 0;
+      keyLight.intensity = isInside ? 0.4 : 1.6;
+    }
+    function setViewMode(mode) {
+      if (mode !== 'inside' && mode !== 'outside' && mode !== 'split') return;
+      if (mode !== 'outside' && !route) mode = 'outside';
+      viewMode = mode;
+      inside = mode === 'inside';
+      split = mode === 'split';
+      reveal = false;
+      camera.fov = 40; camera.near = 1; camera.updateProjectionMatrix();
+      insideCam.fov = 70; insideCam.near = 0.05; insideCam.updateProjectionMatrix();
+      controls.enabled = mode !== 'inside';
+      $('mini').style.display = mode === 'inside' ? 'block' : 'none';
+      if (mode === 'outside') { applyViewState('outside'); fitOutsideCamera(); }
+      else if (mode === 'inside') { applyViewState('inside'); }
+      else if (mode === 'split') splitNeedsFit = true;
+    }
+    function setInside(on) { setViewMode(on && route ? 'inside' : 'outside'); }
+    function cycleViewMode() {
+      if (reveal) revealDismissed = true;
+      const order = ['inside', 'outside', 'split'];
+      const at = order.indexOf(viewMode);
+      setViewMode(order[(at + 1) % order.length]);
+    }
+    // end of the inside flight (a1 video): step outside, airway as glass, nodule and gap in view
+    let reveal = false;
+    let revealReturn = 'inside'; // view to restore when the route leaves the end
+    let revealDismissed = false; // V at the end leaves the reveal in place
+    const revealGoal = new THREE.Vector3();
+    function enterReveal() {
+      revealReturn = split ? 'split' : 'inside';
+      setInside(false);
+      reveal = true;
+      airways.material = revealAirMat;
+      for (const [n, m] of Object.entries(meshes)) m.visible = n === 'airways' || m.userData.isNodule;
+      routeGroup.children[0].visible = false; // wide glow tube; keep the core line and gap line
+      marker.visible = false;
+      $('mini').style.display = 'block';
+      const mid = route.end.clone().add(route.target).multiplyScalar(0.5);
+      const tangent = route.curve.getTangentAt(1);
+      const gapDir = route.target.clone().sub(route.end);
+      const side = new THREE.Vector3().crossVectors(tangent, gapDir);
+      if (side.lengthSq() < 1e-6) side.set(0, 0, 1);
+      controls.target.copy(mid);
+      revealGoal.copy(mid).add(side.setLength(Math.max(90, route.gap * 6)));
+      camera.position.copy(route.end); // start where the inside camera was, then pull back
+    }
+    function exitReveal() { setViewMode(revealReturn); }
+
+    // ---------- input ----------
+    const keys = {};
+    addEventListener('keydown', e => {
+      if (e.key >= '1' && e.key <= '4') {
+        parent.postMessage({ type: 'endo3d-shortcut', key: e.key }, location.origin);
+        e.preventDefault();
+        return;
+      }
+      keys[e.key] = true;
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') e.preventDefault();
+      if (e.key === 'v' || e.key === 'V') cycleViewMode();
+      if (e.key === 'r' || e.key === 'R') { progress = 0; }
+    });
+    addEventListener('keyup', e => { keys[e.key] = false; if (e.key === 'Shift') keys.Shift = false; });
+    addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+    const ray = new THREE.Raycaster(), down = new THREE.Vector2();
+    renderer.domElement.addEventListener('pointerdown', e => down.set(e.clientX, e.clientY));
+    renderer.domElement.addEventListener('pointerup', e => {
+      if (inside || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return; // drag = orbit
+      let ndcX;
+      let ndcY;
+      if (split) {
+        // Only the outside half is pickable; the inside half is navigation.
+        const half = Math.floor(innerWidth / 2);
+        if (e.clientX < half) return;
+        ndcX = (e.clientX - half) / (innerWidth - half) * 2 - 1;
+        ndcY = -e.clientY / innerHeight * 2 + 1;
+      } else {
+        ndcX = e.clientX / innerWidth * 2 - 1;
+        ndcY = -e.clientY / innerHeight * 2 + 1;
+      }
+      ray.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+      const pickable = [
+        ...Object.values(meshes).filter(
+          m => m.visible && !m.userData.isNode && m.userData.baseOpacity >= 0.5,
+        ),
+        ...nodeGroup.children.filter(m => m.visible),
+      ];
+      const hit = ray.intersectObjects(pickable, false)[0];
+      if (!hit) return;
+      const object = hit.object;
+      if (object.userData.isNode) {
+        const id = object.userData.nodeId;
+        setTarget([hit.point.clone()], `node ${id}`, false);
+        if (parent !== window) {
+          parent.postMessage({
+            type: 'endo3d-select-target',
+            kind: 'node',
+            id,
+            ras_mm: object.userData.ras_mm,
+          }, location.origin);
+        }
+        return;
+      }
+      if (object.userData.isNodule) {
+        const id = object.userData.noduleId;
+        const centre = sceneInfo.center_mm || [0, 0, 0];
+        if (!object.geometry.boundingSphere) object.geometry.computeBoundingSphere();
+        const middle = object.geometry.boundingSphere.center.clone();
+        object.localToWorld(middle);
+        const ras = EndoRoute.sceneToRas(
+          [middle.x, middle.y, middle.z], centre,
+        );
+        setTarget(noduleTargets(object), id == null ? 'the nodule' : `nodule ${id}`, false);
+        if (parent !== window) {
+          parent.postMessage({
+            type: 'endo3d-select-target',
+            kind: 'nodule',
+            id,
+            ras_mm: ras,
+          }, location.origin);
+        }
+      }
+    });
+    function noduleTargets(mesh) {
+      const a = mesh.geometry.attributes.position, out = [];
+      for (let i = 0; i < a.count; i++) out.push(new THREE.Vector3().fromBufferAttribute(a, i));
+      return out;
+    }
+    addEventListener('resize', () => {
+      if (!(innerWidth > 0) || !(innerHeight > 0)) return; // iframe still hidden
+      const aspect = innerWidth / innerHeight;
+      camera.aspect = aspect; camera.updateProjectionMatrix();
+      insideCam.aspect = aspect; insideCam.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      if (viewMode === 'outside' && !userOrbit) fitOutsideCamera();
+    });
+
+    // ---------- frame loop ----------
+    const clock = new THREE.Clock(), look = new THREE.Vector3(), tmp = new THREE.Vector3();
+    let lookInit = false, lastProgress = 0, navZoomed = false;
+    let followP = null; // route point the outside camera last followed
+    const upV = new THREE.Vector3(), rolledUpV = new THREE.Vector3(), camFwdV = new THREE.Vector3();
+    // The Frenet normal alone puts the lumen 90° counter-clockwise on screen, so
+    // the inside camera spins it clockwise about the view direction. cross(up,
+    // forward) is exactly that quarter turn.
+    function insideUp(normal, forward) {
+      rolledUpV.crossVectors(normal, forward);
+      if (rolledUpV.lengthSq() < 1e-6) return normal;
+      return rolledUpV.normalize();
+    }
+    function updateHud() {
+      if (!route) {
+        $('hud').textContent = BASE
+          ? 'no route target'
+          : 'click the nodule (or any vessel) to plan a route';
+        return;
+      }
+      const atEnd = progress >= route.length - 0.5;
+      const w = 2 * lookup(route.radius, progress), b = lookup(route.branches, progress);
+      $('hud').style.display = atEnd ? 'none' : 'block';
+      $('hud').textContent = `route ${progress.toFixed(0)} mm
+branch points ${b}
+airway ${w.toFixed(1)} mm wide`;
+      $('final').style.display = atEnd ? 'flex' : 'none';
+      $('f-route').textContent = A1 ? `${(2 * route.radius[route.radius.length - 1]).toFixed(1)} mm` : `${route.length.toFixed(0)} mm`;
+      $('l-route').textContent = A1 ? 'last airway, wide' : 'route';
+      $('l-gap').textContent = A1 ? 'to the nodule' : 'short of the target';
+      $('f-branch').textContent = route.branches[route.branches.length - 1];
+      $('f-gap').textContent = `${route.gap.toFixed(0)} mm`;
+      const label = $('gaplabel');
+      if (atEnd && viewMode === 'outside') {
+        tmp.copy(route.end).add(route.target).multiplyScalar(0.5).project(camera);
+        label.style.display = 'block';
+        label.style.left = `${(tmp.x + 1) / 2 * innerWidth}px`;
+        label.style.top = `${(1 - tmp.y) / 2 * innerHeight}px`;
+        label.textContent = `${route.gap.toFixed(0)} mm`;
+      } else label.style.display = 'none';
+    }
+    function frame() {
+      const dt = Math.min(clock.getDelta(), 0.1);
+      if (route) {
+        const speed = (keys.Shift ? 60 : 20) * dt;
+        if (keys.ArrowUp) progress = Math.min(route.length, progress + speed);
+        if (keys.ArrowDown) progress = Math.max(0, progress - speed);
+        const u = progress / route.length, p = route.curve.getPointAt(u);
+        miniDot.position.copy(p);
+        marker.position.copy(p);
+        // Split keeps the outside half fitted to the airway while navigating.
+        if (viewMode === 'split' && progress !== lastProgress) splitNeedsFit = true;
+        if (revealDismissed && progress < route.length - 0.5) revealDismissed = false;
+        if (!revealDismissed && (split || (inside && A1))
+            && progress >= route.length - 0.5) enterReveal();
+        else if (reveal && progress < route.length - 0.5) exitReveal();
+        if (reveal) {
+          if (camera.position.distanceTo(revealGoal) > 0.5)
+            camera.position.lerp(revealGoal, 1 - Math.exp(-dt * 2));
+        } else {
+          // The inside camera follows the route in every view so the clocks and
+          // the split half stay in sync with the navigation.
+          const ahead = route.curve.getPointAt(Math.min(1, u + 6 / route.length));
+          if (u > 0.999) ahead.copy(p).add(route.curve.getTangentAt(1));
+          const aim = autoLookAhead(p, ahead);
+          if (!lookInit) { look.copy(aim); lookInit = true; }
+          look.lerp(aim, 1 - Math.exp(-dt * 8));
+          insideCam.position.copy(p);
+          insideCam.up.copy(insideUp(
+            route.frames.normals[Math.round(u * route.segments)],
+            camFwdV.copy(look).sub(p).normalize()));
+          insideCam.lookAt(look);
+          // fade rings the camera is about to pass through
+          for (const ring of ringGroup.children) {
+            const d = ring.position.distanceTo(p);
+            ring.material.opacity = d < 1.5 ? 0 : Math.min(0.85, d / 6);
+          }
+          if (viewMode === 'outside') {
+            // Follow the route point; the first navigation step zooms in 2x.
+            if (progress !== lastProgress) {
+              if (!followP) followP = p.clone();
+              tmp.copy(p).sub(followP);
+              camera.position.add(tmp);
+              controls.target.add(tmp);
+              followP.copy(p);
+              if (!navZoomed && progress > 0) {
+                navZoomed = true;
+                tmp.copy(camera.position).sub(p);
+                const d = tmp.length() / 2;
+                camera.position.copy(p).add(tmp.setLength(d));
+                window.__endoDebug.lastZoom = {
+                  before: d * 2,
+                  after: camera.position.distanceTo(p),
+                };
+              }
+            }
+            // Once navigating, place the route point at 30% from the top.
+            if (navZoomed && progress > 0) {
+              const d = camera.position.distanceTo(p);
+              const lift = 0.4 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+              upV.set(0, 1, 0).applyQuaternion(camera.quaternion);
+              controls.target.copy(p).add(upV.multiplyScalar(-lift));
+            }
+            if (progress === 0 && navZoomed) { // start over at 1x, centred on the fit
+              fitOutsideCamera();
+              followP = null;
+            }
+            // keep the target readable through the airway surface while moving
+            const travelling = progress > 0;
+            for (const mesh of Object.values(meshes)) {
+              if (!mesh.userData.isNodule) continue;
+              mesh.material.depthTest = !travelling;
+              mesh.renderOrder = travelling ? 15 : 0;
+            }
+          }
+        }
+      }
+      if (route) lastProgress = progress;
+      if (!inside) controls.update();
+      updateHud();
+      const vw = innerWidth, vh = innerHeight;
+      renderer.setScissorTest(false);
+      renderer.setViewport(0, 0, vw, vh);
+      if (viewMode === 'split') {
+        const half = Math.floor(vw / 2);
+        const aspect = (vw - half) / vh;
+        for (const cam of [insideCam, camera]) {
+          if (cam.aspect !== aspect) { cam.aspect = aspect; cam.updateProjectionMatrix(); }
+        }
+        if (splitNeedsFit) { splitNeedsFit = false; fitOutsideCamera(); }
+        applyViewState('inside');
+        renderer.setScissorTest(true);
+        renderer.setScissor(0, 0, half, vh);
+        renderer.setViewport(0, 0, half, vh);
+        renderer.clear();
+        renderer.render(world, insideCam);
+        applyViewState('outside');
+        renderer.setScissor(half, 0, vw - half, vh);
+        renderer.setViewport(half, 0, vw - half, vh);
+        renderer.clear();
+        renderer.render(world, camera);
+        renderer.setScissorTest(false);
+        renderer.setViewport(0, 0, vw, vh);
+      } else {
+        for (const cam of [insideCam, camera]) {
+          if (cam.aspect !== vw / vh) { cam.aspect = vw / vh; cam.updateProjectionMatrix(); }
+        }
+        if (!reveal) applyViewState(viewMode === 'inside' ? 'inside' : 'outside');
+        renderer.clear();
+        renderer.render(world, viewMode === 'inside' ? insideCam : camera);
+      }
+      if (rec3d && rec3d.source) {
+        const nowMs = performance.now();
+        const step = 1000 / rec3d.fps;
+        const expected = Math.floor((nowMs - rec3d.startMs) / step);
+        if (expected > rec3d.sent) {
+          // Composing through readPixels is slower than the target fps. Send the
+          // same frame for every missed slot so the video keeps its wall-clock
+          // length instead of playing back short.
+          const slots = Math.min(6, expected - rec3d.sent);
+          rec3d.sent += slots;
+          try {
+            const out = composeEndoFrame(rec3d.width, rec3d.height);
+            const dataUrl = out.toDataURL("image/jpeg", 0.92);
+            for (let i = 0; i < slots; i += 1) {
+              rec3d.source.postMessage({
+                type: "endo3d-video-frame",
+                dataUrl,
+              }, rec3d.origin);
+            }
+          } catch (err) {
+            rec3d = null;
+          }
+        }
+      }
+      if (inside || reveal) {
+        const r = $('mini').getBoundingClientRect(), y = innerHeight - r.bottom;
+        renderer.setScissorTest(true);
+        renderer.setScissor(r.left, y, r.width, r.height);
+        renderer.setViewport(r.left, y, r.width, r.height);
+        renderer.setClearColor(0x151a24); renderer.clear(); renderer.setClearColor(0x000000);
+        renderer.render(mini, miniCam);
+      }
+      drawClocks();
+      // Report the live 3D position so Anatomical 3D and Topology follow.
+      const nowPos = performance.now();
+      if (route && active3d && nowPos - lastPosPost > 100) {
+        lastPosPost = nowPos;
+        const c = insideCam.position;
+        const totalBranches = route.branches[route.branches.length - 1];
+        parent.postMessage({
+          type: "endo3d-position",
+          pos: [c.x, c.y, c.z],
+          center: sceneInfo.center_mm || [0, 0, 0],
+          gen: lookup(route.gen, progress),
+          radius: lookup(route.radius, progress),
+          togo: Math.max(0, route.length - progress),
+          turns: Math.max(0, totalBranches - lookup(route.branches, progress)),
+        }, location.origin);
+      }
+      requestAnimationFrame(frame);
+    }
+
+    const clockCtx = document.getElementById('clocks').getContext('2d');
+    const clockFwd = new THREE.Vector3(), clockUp = new THREE.Vector3();
+    function drawClocks() {
+      const g = clockCtx, cw = 260, chh = 170;
+      g.clearRect(0, 0, cw, chh);
+      g.fillStyle = 'rgba(17, 27, 33, 0.88)';
+      g.beginPath();
+      g.roundRect(0, 0, cw, chh, 8);
+      g.fill();
+      g.font = '11px system-ui';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      insideCam.getWorldDirection(clockFwd);
+      clockUp.set(0, 1, 0).applyQuaternion(insideCam.quaternion);
+      // three.js mesh axes: x = patient left, y = superior, z = anterior
+      const patient = [
+        ['A', 0, -1], ['R', 1, 0], ['P', 0, 1], ['L', -1, 0],
+      ];
+      const dials = [
+        { x: 70, fwd: clockFwd },
+        { x: 190, fwd: clockUp },
+      ];
+      for (const dial of dials) {
+        const cy = 68, r = 40;
+        g.strokeStyle = '#a9bbc4';
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(dial.x, cy, r, 0, Math.PI * 2);
+        g.stroke();
+        g.fillStyle = '#f4f7f8';
+        for (const [label, dx, dy] of patient) {
+          g.fillText(label, dial.x + dx * (r + 10), cy + dy * (r + 10));
+        }
+        const ax = -dial.fwd.x;      // patient right
+        const az = dial.fwd.z;       // anterior
+        // A is at the top of the dial, so an anterior direction must draw up.
+        const ang = Math.atan2(ax, az);
+        g.strokeStyle = '#ffd166';
+        g.lineWidth = 2;
+        g.beginPath();
+        g.moveTo(dial.x, cy);
+        g.lineTo(dial.x + Math.sin(ang) * r * 0.78, cy - Math.cos(ang) * r * 0.78);
+        g.stroke();
+        g.fillStyle = '#48a9ff';
+        g.beginPath();
+        g.arc(dial.x, cy, 3, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.fillStyle = '#f4f7f8';
+      g.font = '11px system-ui';
+      g.fillText('Patient (supine)', 70, 128);
+      g.fillText('Scope view', 190, 128);
+    }
+
+    // Product export: render one frame and return the composed canvas.
+    // The save and record paths must not depend on the animation loop having
+    // just run. Put the inside camera on the route point before composing.
+    function aimInsideCamera() {
+      if (!route) return;
+      const u = Math.max(0, Math.min(1, progress / route.length));
+      const p = route.curve.getPointAt(u);
+      const ahead = route.curve.getPointAt(Math.min(1, u + 6 / route.length));
+      if (u > 0.999) ahead.copy(p).add(route.curve.getTangentAt(1));
+      const aim = autoLookAhead(p, ahead);
+      const n = route.frames.normals[Math.round(u * route.segments)];
+      insideCam.position.copy(p);
+      if (n && Number.isFinite(n.x) && Number.isFinite(n.y) && Number.isFinite(n.z)) {
+        insideCam.up.copy(insideUp(n, camFwdV.copy(aim).sub(p).normalize()));
+      } else {
+        insideCam.up.set(0, 1, 0);
+      }
+      insideCam.lookAt(aim);
+      insideCam.updateMatrixWorld(true);
+    }
+
+    function composeEndoFrame(width, height) {
+      // Render exactly what the panel shows: inside, outside, or both halves.
+      const vw = innerWidth, vh = innerHeight;
+      if (viewMode === 'inside' || viewMode === 'split') aimInsideCamera();
+      renderer.setScissorTest(false);
+      renderer.setViewport(0, 0, vw, vh);
+      if (viewMode === 'split') {
+        const half = Math.floor(vw / 2);
+        const aspect = (vw - half) / vh;
+        for (const cam of [insideCam, camera]) {
+          if (cam.aspect !== aspect) { cam.aspect = aspect; cam.updateProjectionMatrix(); }
+        }
+        applyViewState('inside');
+        renderer.setScissorTest(true);
+        renderer.setScissor(0, 0, half, vh);
+        renderer.setViewport(0, 0, half, vh);
+        renderer.clear();
+        renderer.render(world, insideCam);
+        applyViewState('outside');
+        renderer.setScissor(half, 0, vw - half, vh);
+        renderer.setViewport(half, 0, vw - half, vh);
+        renderer.clear();
+        renderer.render(world, camera);
+        renderer.setScissorTest(false);
+        renderer.setViewport(0, 0, vw, vh);
+      } else {
+        const aspect = vw / vh;
+        for (const cam of [insideCam, camera]) {
+          if (cam.aspect !== aspect) { cam.aspect = aspect; cam.updateProjectionMatrix(); }
+        }
+        if (!reveal) applyViewState(viewMode === 'inside' ? 'inside' : 'outside');
+        renderer.clear();
+        renderer.render(world, viewMode === 'inside' ? insideCam : camera);
+      }
+      const src = renderer.domElement;
+      const out = document.createElement("canvas");
+      out.width = width || src.width;
+      out.height = height || src.height;
+      const g = out.getContext("2d");
+      g.drawImage(src, 0, 0, out.width, out.height);
+      const base = src.getBoundingClientRect();
+      const sx = out.width / base.width;
+      const sy = out.height / base.height;
+      const clocks = document.getElementById("clocks");
+      if (clocks) {
+        const r = clocks.getBoundingClientRect();
+        g.drawImage(clocks, (r.left - base.left) * sx, (r.top - base.top) * sy,
+          r.width * sx, r.height * sy);
+      }
+      const hud = document.getElementById("hud");
+      if (hud && getComputedStyle(hud).display !== "none" && hud.textContent.trim()) {
+        const r = hud.getBoundingClientRect();
+        const style = getComputedStyle(hud);
+        g.font = `${style.fontWeight} ${parseFloat(style.fontSize) * sy}px ui-monospace, Menlo, monospace`;
+        g.textAlign = "right";
+        g.textBaseline = "alphabetic";
+        g.fillStyle = "#ffffff";
+        g.shadowColor = "#000";
+        g.shadowBlur = 4 * sy;
+        const lines = hud.textContent.split("\n");
+        lines.forEach((line, i) => {
+          g.fillText(line, (r.right - base.left) * sx,
+            (r.top - base.top) * sy + parseFloat(style.fontSize) * sy * (i + 0.9));
+        });
+        g.shadowBlur = 0;
+      }
+      return out;
+    }
+
+    let rec3d = null;
+    let lastPosPost = 0;
+    let active3d = false;
+    addEventListener("message", (ev) => {
+      if (ev.origin !== location.origin) return;
+      const data = ev.data;
+      if (!data) return;
+      if (data.type === "endo3d-capture" && ev.source) {
+        let dataUrl = null;
+        try { dataUrl = composeEndoFrame().toDataURL("image/png"); } catch (err) { dataUrl = null; }
+        ev.source.postMessage({ type: "endo3d-capture-result", dataUrl }, ev.origin);
+        return;
+      }
+      if (data.type === "endo3d-set-active") {
+        active3d = !!data.active;
+        return;
+      }
+      if (data.type === "endo3d-set-nodes") {
+        setNodeMarks(data.nodes);
+        return;
+      }
+      if (data.type === "endo3d-set-lesion") {
+        // Re-plan to the confirmed Lesion, or back to the scene nodule.
+        const ras = Array.isArray(data.ras_mm) && data.ras_mm.length === 3
+          ? data.ras_mm : null;
+        if (ras) {
+          const center = sceneInfo.center_mm || [0, 0, 0];
+          const s = EndoRoute.rasToScene(ras, center);
+          sceneTarget = null;
+          lesionScene = new THREE.Vector3(s[0], s[1], s[2]);
+          setTarget([new THREE.Vector3(s[0], s[1], s[2])], "the Lesion", false);
+        } else if (noduleMeshes.length) {
+          sceneTarget = noduleMeshes[0];
+          lesionScene = null;
+          const id = sceneTarget.userData.noduleId;
+          setTarget(noduleTargets(sceneTarget), id == null ? "the nodule" : `nodule ${id}`, false);
+        } else {
+          sceneTarget = null;
+          lesionScene = null;
+          let best = -1, bestD = -1;
+          for (let n = 0; n < deg.length; n++) {
+            if (deg[n] !== 1 || n === graph.start) continue;
+            const dx = P[3 * n] - P[3 * graph.start];
+            const dy = P[3 * n + 1] - P[3 * graph.start + 1];
+            const dz = P[3 * n + 2] - P[3 * graph.start + 2];
+            const d = dx * dx + dy * dy + dz * dz;
+            if (d > bestD) { bestD = d; best = n; }
+          }
+          if (best >= 0) {
+            setTarget([new THREE.Vector3(P[3 * best], P[3 * best + 1], P[3 * best + 2])], "auto", false);
+          }
+        }
+        return;
+      }
+      if (data.type === "endo3d-goto-world" && Array.isArray(data.world)) {
+        if (!route) return;
+        const center = sceneInfo.center_mm || [0, 0, 0];
+        const scene = EndoRoute.rasToScene(data.world, center);
+        const target = new THREE.Vector3(scene[0], scene[1], scene[2]);
+        let bestU = 0, bestD = Infinity;
+        for (let i = 0; i <= 200; i++) {
+          const u = i / 200;
+          const d = route.curve.getPointAt(u).distanceToSquared(target);
+          if (d < bestD) { bestD = d; bestU = u; }
+        }
+        if (!inside) setInside(true);
+        progress = Math.max(0, Math.min(route.length, bestU * route.length));
+        return;
+      }
+      if (data.type === "endo3d-route-info" && ev.source) {
+        const forks = [];
+        let last = 0;
+        for (let i = 1; i < route.s.length; i++) {
+          if (route.branches[i] > last) { last = route.branches[i]; forks.push(route.s[i]); }
+        }
+        ev.source.postMessage({
+          type: "endo3d-route-result", id: data.id,
+          length: route.length, forks,
+        }, ev.origin);
+        return;
+      }
+      if (data.type === "endo3d-render-at" && ev.source) {
+        const id = data.id;
+        (async () => {
+          if (!inside) setInside(true);
+          progress = Math.max(0, Math.min(route.length, Number(data.s) || 0));
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          let dataUrl = null;
+          try {
+            dataUrl = composeEndoFrame(Number(data.width) || 0, Number(data.height) || 0)
+              .toDataURL("image/jpeg", 0.92);
+          } catch (err) { dataUrl = null; }
+          ev.source.postMessage({ type: "endo3d-render-result", id, dataUrl }, ev.origin);
+        })();
+        return;
+      }
+      if (data.type === "endo3d-record-start") {
+        rec3d = { fps: Number(data.fps) || 30, width: Number(data.width) || 0,
+          height: Number(data.height) || 0, startMs: performance.now(), sent: 0,
+          origin: ev.origin, source: ev.source };
+        return;
+      }
+      if (data.type === "endo3d-record-stop") rec3d = null;
+    });
+
+    // start with the whole chest in view, outside layers applied
+    setInside(false);
+    if (noduleMeshes.length) {
+      sceneTarget = noduleMeshes[0];
+      const id = sceneTarget.userData.noduleId;
+      setTarget(noduleTargets(sceneTarget), id == null ? 'the nodule' : `nodule ${id}`, false);
+    }
+    if (A1 && !route) {
+      // No nodule mask: fly to the farthest airway leaf so the inside view has a route.
+      let best = -1, bestD = -1;
+      for (let n = 0; n < deg.length; n++) {
+        if (deg[n] !== 1 || n === graph.start) continue;
+        const dx = P[3 * n] - P[3 * graph.start];
+        const dy = P[3 * n + 1] - P[3 * graph.start + 1];
+        const dz = P[3 * n + 2] - P[3 * graph.start + 2];
+        const d = dx * dx + dy * dy + dz * dz;
+        if (d > bestD) { bestD = d; best = n; }
+      }
+      if (best >= 0) {
+        setTarget([new THREE.Vector3(P[3 * best], P[3 * best + 1], P[3 * best + 2])], 'auto', false);
+      }
+    }
+    // Panel 4 opens in split view; V then keeps the last chosen state.
+    if (BASE && route) setViewMode('split');
+    else if (A1 && route) setInside(true);
+    // Tell the parent the route is ready, so it can hand over the shared
+    // position that was set while the Anatomical panel was on screen.
+    if (window.parent !== window) {
+      try { parent.postMessage({ type: "endo3d-ready" }, location.origin); } catch (err) { /* detached */ }
+    }
+    frame();
+  </script>
+</body>
+</html>

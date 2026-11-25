@@ -13,6 +13,9 @@ from test_realism_viewer_playwright import (
 from test_viewer_v2_playwright import VIEWPORT, _playwright_or_skip
 
 
+pytestmark = pytest.mark.skip(reason="realistic image support is disabled for now")
+
+
 def png(colour, number):
     image = Image.new('RGB', (256, 256), colour)
     ImageDraw.Draw(image).text((15, 15), str(number), fill='white')

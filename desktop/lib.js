@@ -152,7 +152,9 @@ function startPageUrl(origin, caseId) {
   if (!caseId) {
     return base;
   }
-  return `${base}?case=${encodeURIComponent(caseId)}`;
+  // Launch on panel 1 with the first detected nodule under the crosshair.
+  return `${base}?case=${encodeURIComponent(caseId)}`
+    + "&variant=ct-panes&focus=nodule";
 }
 
 function requestFilterUrls(port) {
@@ -282,6 +284,22 @@ function saveImageDefaultPath(baseDir, defaultName) {
   return path.join(baseDir, "BronchoRoute", defaultName);
 }
 
+const SAVE_REPORT_NAME_RE = /^local-\d{3}_report_\d{8}-\d{4}\.pdf$/;
+
+function isSaveReportName(name) {
+  return typeof name === "string" && SAVE_REPORT_NAME_RE.test(name);
+}
+
+function saveReportDefaultPath(baseDir, defaultName) {
+  if (typeof baseDir !== "string" || baseDir.trim() === "") {
+    throw new Error("save report base directory must be set");
+  }
+  if (!isSaveReportName(defaultName)) {
+    throw new Error("invalid save report name");
+  }
+  return path.join(baseDir, "BronchoRoute", defaultName);
+}
+
 const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
 const JPEG_MAX_BYTES = 5 * 1024 * 1024;
 const SAVE_VIDEO_NAME_RE = /^local-\d{3}_(anatomical|anatomical-orbit|topology|topology-spin|endoluminal)_\d{8}-\d{4}\.mp4$/;
@@ -391,6 +409,8 @@ module.exports = {
   isPngBytes,
   resolveSaveImageBaseDir,
   saveImageDefaultPath,
+  isSaveReportName,
+  saveReportDefaultPath,
   JPEG_SIGNATURE,
   JPEG_MAX_BYTES,
   isSaveVideoName,

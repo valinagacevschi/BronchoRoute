@@ -1,3 +1,4 @@
+# Changes: run the non-fatal lung nodule stage after the graph step.
 # Changes: graph step receives the same-run pulmonary artery mask.
 # Changes: no-lungs and empty-graph reasons keep their own step names.
 # Changes: one plain failure sentence naming the step that stopped.
@@ -115,18 +116,30 @@ def _redact_data_root(line: str) -> str:
     return re.sub(pattern, "[path]", line)
 
 
-_STEP_NAMES = ("graph", "airway model", "segmentation", "reading")
+_STEP_NAMES = ("nodules", "graph", "airway model", "segmentation", "reading")
 
 
 def _step_in_log(lines: list[str]) -> str:
     return next((step for step in _STEP_NAMES if f"step: {step}" in lines), "reading")
 
 
+def _step_for_command(cmd: list[str]) -> str:
+    """Progress step named by the script in one job command."""
+    for script, step in (
+        ("build_graph.py", "graph"),
+        ("run_nodules.py", "nodules"),
+        ("build_endoluminal_web.py", "nodules"),
+    ):
+        if script in cmd:
+            return step
+    return "segmentation"
+
+
 def _last_logged_step(lines: list[str]) -> str:
     """Latest step line. Timeout and unexpected exits follow this, not a known reason."""
     step = "reading"
     for line in lines:
-        for name in ("reading", "segmentation", "airway model", "graph"):
+        for name in ("reading", "segmentation", "airway model", "graph", "nodules"):
             if line == f"step: {name}":
                 step = name
                 break
@@ -151,7 +164,7 @@ def _failure_message(job: "JobState", *, timed_out: bool = False) -> str:
 def redact_log_line(line: str) -> str:
     """Drop identifier lines; keep routes while hiding Archive paths."""
     if re.search(
-        r"patient[ _]?(?:name|id|birth)|birth[ _]?date|\bdob\b|archive|\.zip\b",
+        r"patient[ _]?(?:name|id|birth)|birth[ _]?date|\bdob\b|archive|\.(?:zip|rar)\b",
         line, re.IGNORECASE,
     ):
         return "[redacted]"
@@ -216,7 +229,7 @@ class JobState:
                 "kind": self.kind,
                 "status": "running" if self.import_id and not self._done.is_set() else self.status,
                 "elapsed_s": round(elapsed, 2),
-                "estimate_s": 390,
+                "estimate_s": 450,
                 "step": _step_in_log(self.log_lines),
                 "error": self.error,
                 "pid": self.pid,
@@ -388,6 +401,14 @@ def _segment_commands(ref: CaseRef) -> list[list[str]]:
             "--arteries", str(ref.ts_out / "airways_source" / "lung_arteries.nii.gz"),
             "-o", str(out_dir),
         ],
+        [
+            sys.executable, "run_nodules.py",
+            str(ref.ct), "-o", str(ts_out),
+            "--case-json", str(ref.case_json),
+            "--graph", str(out_dir / f"{ref.case_id}_graph.json"),
+            "--device", "mps",
+        ],
+        [sys.executable, "build_endoluminal_web.py", ref.case_id],
     ]
 
 
@@ -442,7 +463,7 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
     try:
         job.append_log("step: reading")
         for cmd in cmds:
-            job.append_log("step: graph" if "build_graph.py" in cmd else "step: segmentation")
+            job.append_log(f"step: {_step_for_command(cmd)}")
             with job._lock:
                 if job._cancelled.is_set():
                     raise RuntimeError("cancelled")
@@ -493,6 +514,12 @@ def _run_job(job: JobState, cmds: list[list[str]], clinician: str) -> None:
         if job._cancelled.is_set():
             raise RuntimeError("cancelled")
         register_segment_artifacts(job.case_id, clinician)
+        try:
+            from app.bridge_evidence import auto_decide_bridges
+
+            auto_decide_bridges(job.case_id)
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("bridge evidence failed")
         job.status = "succeeded"
         job.pid = None
         job.append_log("segmentation_done")
@@ -693,7 +720,8 @@ def initialize_sidecar() -> RotatingFileHandler | None:
                     words = shlex.split(command[len(sys.executable):])
                 else:
                     words = shlex.split(command)[1:]
-                scripts = {"run_totalsegmentator.py", "build_graph.py"}
+                scripts = {"run_totalsegmentator.py", "build_graph.py",
+                           "run_nodules.py"}
                 if not words or Path(words[0]).name not in scripts:
                     continue
                 try:
