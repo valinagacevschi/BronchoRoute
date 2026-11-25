@@ -16,7 +16,7 @@ from app.review import compute_effective_graph, effective_for_case, load_bridges
 from app.route_target import (
     densify_centreline, rank_route_target_candidates, snap_to_selectable_ct,
     resolve_edge_sample, plan_route_target_for_payload,
-    NOT_REACHABLE, NOT_ON_CT, resolve_route_end_for_payload,
+    resolve_route_end_for_payload,
 )
 
 
@@ -63,9 +63,11 @@ def test_rejected_stored_target_recovers(tmp_path, monkeypatch, target_edge):
     response = client.get(f"{base}/payload?allow_review=1")
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["route_target"]["stale"] is True
-    assert payload["route_target"]["reason"] in {NOT_REACHABLE, NOT_ON_CT}
-    assert payload["endpoint"] is None
+    # The lost target is replaced by the next best reachable point on load.
+    assert payload["route_target"]["stale"] is False
+    if target_edge == 2:
+        assert payload["route_target"]["edge_id"] != target_edge
+    assert payload["endpoint"] is not None
     assert all(payload["edges"][i]["oi"] in (0, 1) for i in payload["route"])
     assert payload["fly"]["s"][-1] <= 15.25 + 0.01
     proposals = client.get(f"{base}/route-candidates")
@@ -78,7 +80,6 @@ def test_rejected_stored_target_recovers(tmp_path, monkeypatch, target_edge):
     recovered = client.get(f"{base}/payload?allow_review=1")
     assert recovered.status_code == 200, recovered.text
     assert recovered.json()["route_target"]["stale"] is False
-    assert recovered.json()["route_target"]["edge_id"] == target_edge
     assert recovered.json()["endpoint"] is not None
 
 

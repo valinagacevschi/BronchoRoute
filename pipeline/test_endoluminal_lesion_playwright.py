@@ -480,3 +480,100 @@ def test_endoluminal_lesion_sphere_arrow_reached_and_absent(server):
         assert "Lesion (demo)" not in text
         assert not errors, errors
         browser.close()
+
+
+def test_auto_look_turns_toward_a_near_lesion(server):
+    """Visual-axis rotation: a lesion within 40 mm and 45° turns the view."""
+    sync_playwright = _playwright_or_skip()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport=VIEWPORT)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(
+            f"{server}/?case=local-001&variant=anatomical&debug=1&allow_review=1",
+            wait_until="domcontentloaded",
+            timeout=120_000,
+        )
+        page.wait_for_function(
+            "() => window.__p2_debug && window.__p2_debug.autoLookFor",
+            timeout=120_000,
+        )
+        page.evaluate("() => { window.AIRWAY.origin_mm = [0, 0, 0]; }")
+
+        def look(lesion_ras):
+            page.evaluate(
+                "ras => { window.AIRWAY.lesion = { ras_mm: ras, diameter_mm: 8 }; }",
+                lesion_ras,
+            )
+            return page.evaluate(
+                "() => window.__p2_debug.autoLookFor("
+                "[0, 0, 0], [0, 0, -1], [0, 1, 0], 0)"
+            )
+
+        cprint("near lesion turns the view", "cyan")
+        near = look([8.0, 0.0, -18.0])
+        assert near["on"] is True, near
+        assert 0 < near["yawDeg"] <= 30.01, near
+        assert near["dist"] <= 40.01, near
+
+        cprint("far lesion leaves the view alone", "cyan")
+        far = look([12.0, 0.0, -60.0])
+        assert far["on"] is False, far
+        assert far["yawDeg"] == 0
+
+        cprint("lesion behind the camera leaves the view alone", "cyan")
+        behind = look([2.0, 0.0, 20.0])
+        assert behind["on"] is False, behind
+        assert not errors, errors
+        browser.close()
+
+
+def test_distance_map_and_node_mark_rendering(server):
+    """The D toggle colours the airway, and node marks draw in Anatomical 3D."""
+    sync_playwright = _playwright_or_skip()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport=VIEWPORT)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(
+            f"{server}/?case=local-001&variant=anatomical&debug=1&allow_review=1",
+            wait_until="domcontentloaded",
+            timeout=120_000,
+        )
+        page.wait_for_function(
+            "() => window.__p2_debug && window.__p2_debug.distanceMap"
+            " && window.__p2_debug.distanceMap()",
+            timeout=120_000,
+        )
+        page.evaluate(
+            """() => {
+              window.AIRWAY.lesion = {
+                ras_mm: [0, 0, -60], diameter_mm: 10,
+              };
+              window.AIRWAY.node_marks = [{
+                id: 1, p: [0, 0, -80], ras_mm: [0, 0, -80],
+                diameter_mm: 10, label: 'Station 11R',
+              }];
+            }"""
+        )
+        page.keyboard.press("d")
+        page.wait_for_function(
+            "() => { const s = window.__p2_debug.distanceMap();"
+            " return s.on === true && s.draws > 0 && s.legend != null; }",
+            timeout=30_000,
+        )
+        state = page.evaluate("() => window.__p2_debug.distanceMap()")
+        assert state["draws"] > 0, state
+        assert state["legend"] is not None, state
+        assert state["legend"]["maxMm"] == 60
+
+        page.wait_for_function(
+            "() => window.__p2_debug.nodeMarks().length === 1",
+            timeout=30_000,
+        )
+        marks = page.evaluate("() => window.__p2_debug.nodeMarks()")
+        assert marks[0]["label"].startswith("Station 11R"), marks
+        assert not errors, errors
+        browser.close()

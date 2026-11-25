@@ -107,3 +107,31 @@ def test_lesion_diameter_default_bounds_replace_and_payload(client, harness):
     again = json.loads(harness["case"].read_text())
     assert "lesion2" not in again
     assert isinstance(again["lesion"], dict)
+
+
+def test_two_manual_lesions_are_kept_and_switch_active(client, harness):
+    """A second manual point adds a Lesion; the same point re-activates it."""
+    centre, shifted = _ready(client, harness)
+
+    first = client.put("/api/cases/local-001/lesion", json={"ras_mm": centre})
+    assert first.status_code == 200, first.text
+    assert len(first.json()["lesions"]) == 1
+
+    second = client.put("/api/cases/local-001/lesion", json={"ras_mm": shifted})
+    assert second.status_code == 200, second.text
+    assert len(second.json()["lesions"]) == 2
+    assert second.json()["lesion"]["ras_mm"] == pytest.approx(shifted)
+
+    again = client.put("/api/cases/local-001/lesion", json={"ras_mm": centre})
+    assert again.status_code == 200, again.text
+    assert len(again.json()["lesions"]) == 2
+    assert again.json()["lesion"]["ras_mm"] == pytest.approx(centre)
+
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert len(payload["lesions"]) == 2
+    assert payload["lesion"]["ras_mm"] == pytest.approx(centre)
+
+    cleared = client.delete("/api/cases/local-001/lesion")
+    assert cleared.status_code == 200, cleared.text
+    assert len(cleared.json()["lesions"]) == 1
+    assert cleared.json()["lesion"]["ras_mm"] == pytest.approx(shifted)

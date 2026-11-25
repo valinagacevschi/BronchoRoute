@@ -38,6 +38,7 @@ RECORD_KINDS = frozenset({
     "bifurcation_confirmed",
     "correction",
     "bridge_decision",
+    "case_reset",
     "note",
     "signoff",
 })
@@ -45,6 +46,72 @@ FORBIDDEN_KEY_SUBSTR = ("patient", "name", "birth", "mrn", "accession", "uid")
 MAX_DATA_BYTES = 8192
 MAX_STRING_CHARS = 500
 ROUTE_START_RADIUS_FRAC = 0.8
+MANUAL_LESION_SOURCE = "manual"
+NODULE_LESION_SOURCE = "nodule"
+NODULE_MATCH_MM = 0.5
+
+
+def lesion_entries(record: dict) -> list[dict]:
+    """Every confirmed Lesion, including a legacy record that stored only one."""
+    stored = record.get("lesions")
+    if isinstance(stored, list):
+        return [
+            item for item in stored
+            if isinstance(item, dict) and item.get("ras_mm") is not None
+        ]
+    lesion = record.get("lesion")
+    if isinstance(lesion, dict) and lesion.get("ras_mm") is not None:
+        return [lesion]
+    return []
+
+
+def _store_lesions(
+    record: dict, entries: list[dict], active: dict | None
+) -> None:
+    """Store the whole Lesion list and the active one under one case lock."""
+    if entries:
+        record["lesions"] = entries
+    else:
+        record.pop("lesions", None)
+    if isinstance(active, dict) and active.get("ras_mm") is not None:
+        record["lesion"] = active
+    else:
+        record.pop("lesion", None)
+
+
+def _ras_close(first: object, second: object) -> bool:
+    if not (
+        isinstance(first, (list, tuple)) and len(first) == 3
+        and isinstance(second, (list, tuple)) and len(second) == 3
+    ):
+        return False
+    return all(
+        abs(float(first[axis]) - float(second[axis])) <= NODULE_MATCH_MM
+        for axis in range(3)
+    )
+
+
+def lesion_source(record: dict) -> str:
+    """Where the stored Lesion came from: a person or a detected Nodule.
+
+    Records written before the source field existed are matched against the
+    stored candidates by position. A match means a detected Nodule.
+    """
+    lesion = record.get("lesion")
+    if not isinstance(lesion, dict):
+        return MANUAL_LESION_SOURCE
+    stored = lesion.get("source")
+    if stored in {MANUAL_LESION_SOURCE, NODULE_LESION_SOURCE}:
+        return str(stored)
+    block = record.get("candidates")
+    items = block.get("items") if isinstance(block, dict) else None
+    ras = lesion.get("ras_mm")
+    if isinstance(ras, list) and len(ras) == 3 and isinstance(items, list):
+        for item in items:
+            other = item.get("ras_mm") if isinstance(item, dict) else None
+            if _ras_close(ras, other):
+                return NODULE_LESION_SOURCE
+    return MANUAL_LESION_SOURCE
 
 
 def load_case_record(ref: CaseRef) -> dict:
@@ -136,6 +203,8 @@ def case_payload(case_id: str, allow_review: bool = False) -> dict:
             end_ras_mm=list(plan["end_ras_mm"]),
             stored_gap_mm=plan.get("target_gap_mm"),
             stored_inside_airway=plan.get("target_inside_airway"),
+            poi_ras_mm=plan.get("poi_ras_mm"),
+            poi_kind=plan.get("poi_kind"),
         )
         # Stored gap is the single source of truth.
         if plan.get("target_gap_mm") is not None:
@@ -195,6 +264,15 @@ def case_payload(case_id: str, allow_review: bool = False) -> dict:
     for rem in payload["removed"]:
         rem["selectable"] = False
         rem["selectable_until_mm"] = None
+    payload["lesions"] = [
+        {
+            **item,
+            "source": item.get("source") or lesion_source(record),
+        }
+        for item in lesion_entries(record)
+    ]
+    if isinstance(payload.get("lesion"), dict):
+        payload["lesion"]["source"] = lesion_source(record)
     return payload
 
 
@@ -434,7 +512,26 @@ def validate_lesion_diameter(diameter_mm: object) -> float:
     return value
 
 
-def validate_lesion_ras(case_id: str, ras_mm: object) -> list[float]:
+def _candidate_diameter_for_lesion(diameter_mm: object) -> float:
+    """Clamp a measured candidate to the Lesion contract.
+
+    A mask can measure a candidate above 60 mm. The stored candidate keeps its
+    measured value; only the confirmed Lesion takes the nearest allowed size.
+    """
+    if isinstance(diameter_mm, bool):
+        return validate_lesion_diameter(diameter_mm)
+    try:
+        measured = float(diameter_mm)
+    except (TypeError, ValueError):
+        return validate_lesion_diameter(diameter_mm)
+    if not math.isfinite(measured):
+        return validate_lesion_diameter(diameter_mm)
+    return validate_lesion_diameter(min(60.0, max(2.0, measured)))
+
+
+def validate_lesion_ras(
+    case_id: str, ras_mm: object, label: str = "lesion"
+) -> list[float]:
     if not isinstance(ras_mm, (list, tuple)) or len(ras_mm) != 3:
         raise ValueError("ras_mm must be a length-3 list")
     try:
@@ -445,7 +542,7 @@ def validate_lesion_ras(case_id: str, ras_mm: object) -> list[float]:
         raise ValueError("ras_mm values must be finite")
     meta = build_ct_crop(case_id)
     if not _ras_inside_crop(coords, meta):
-        raise ValueError("lesion ras_mm is outside the CT crop bounds")
+        raise ValueError(f"{label} ras_mm is outside the CT crop bounds")
     return coords
 
 
@@ -467,32 +564,202 @@ def _load_or_init_record(ref: CaseRef, path: Path) -> dict:
     raise FileNotFoundError(f"case.json not found for {ref.case_id}")
 
 
-def set_lesion(
-    case_id: str,
-    ras_mm: list[float],
-    clinician: str,
-    diameter_mm: float | None = None,
-) -> dict:
-    """Store one lesion (replace) and append lesion_confirmed under one case lock."""
-    from app.workflow import WorkflowStep
+def _update_record(case_id: str, event: str, mutate):
+    """Run one read-modify-write under the case lock.
 
-    coords = validate_lesion_ras(case_id, ras_mm)
-    diameter = validate_lesion_diameter(diameter_mm)
+    A None result means the mutation was a no-op and nothing is written.
+    """
     ref = CaseRef.parse(case_id)
     path = ref.case_json
-    at = _utc_now()
     with json_file_lock(path):
         record = _load_or_init_record(ref, path)
+        result = mutate(record)
+        if result is None:
+            return None
         from app.versions import note_change
 
-        note_change(record, "lesion")
+        note_change(record, event)
+        atomic_write_json(path, record)
+        return result
+
+
+MAX_CANDIDATES = 20
+CANDIDATE_SCORE_MIN = 0.0
+CANDIDATE_SCORE_MAX = 1.0
+MAX_NODE_MARKS = 12
+MAX_NODE_LABEL_CHARS = 40
+
+
+def _clean_nodule_id(value: object) -> int | None:
+    """Stable nodule id from the instance record, or None for a box-only candidate."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("candidate id must be an integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("candidate id must be an integer") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("candidate id must be an integer")
+    if number < 1:
+        raise ValueError("candidate id must be a positive integer")
+    return number
+
+
+def _clean_volume(value: object) -> float | None:
+    """Mask-derived volume in mm3, or None when the candidate has no mask."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("volume_mm3 must be a number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("volume_mm3 must be a number") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("volume_mm3 must be a non-negative number")
+    return number
+
+
+def _clean_box_size(value: object) -> list[float] | None:
+    """Detector box size in mm, or None when the proposal did not carry one."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError("size_mm must be a length-3 list")
+    try:
+        size = [float(v) for v in value]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("size_mm values must be numbers") from exc
+    if not all(math.isfinite(v) and v > 0 for v in size):
+        raise ValueError("size_mm values must be positive finite numbers")
+    return size
+
+
+def _clean_to_airway(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("to_airway_mm must be a number") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("to_airway_mm must be a non-negative number")
+    return number
+
+
+def _clean_candidate(case_id: str, item: object) -> dict:
+    """Validate one detection candidate against the CT crop."""
+    if not isinstance(item, dict):
+        raise ValueError("candidate must be an object")
+    ras = validate_lesion_ras(case_id, item.get("ras_mm"))
+    diameter = validate_lesion_diameter(item.get("diameter_mm"))
+    score = item.get("score")
+    if score is not None:
+        try:
+            score = float(score)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("candidate score must be a number") from exc
+        if not math.isfinite(score) or not (
+            CANDIDATE_SCORE_MIN <= score <= CANDIDATE_SCORE_MAX
+        ):
+            raise ValueError(
+                f"candidate score must be between {CANDIDATE_SCORE_MIN:g} and "
+                f"{CANDIDATE_SCORE_MAX:g}"
+            )
+    lobe = item.get("lobe")
+    if lobe is not None and not isinstance(lobe, str):
+        raise ValueError("candidate lobe must be a string")
+    return {
+        "ras_mm": ras,
+        "diameter_mm": diameter,
+        "score": score,
+        "id": _clean_nodule_id(item.get("id")),
+        "volume_mm3": _clean_volume(item.get("volume_mm3")),
+        "lobe": lobe,
+        "to_airway_mm": _clean_to_airway(item.get("to_airway_mm")),
+        "size_mm": _clean_box_size(item.get("size_mm")),
+        "review": bool(item.get("review", False)),
+    }
+
+
+def set_candidates(
+    case_id: str,
+    items: object,
+    source: str,
+    clinician: str,
+) -> dict:
+    """Store detector candidates as suggestions; they never become the lesion."""
+    if not isinstance(items, list) or not items:
+        raise ValueError("candidates must be a non-empty list")
+    if len(items) > MAX_CANDIDATES:
+        raise ValueError(f"at most {MAX_CANDIDATES} candidates")
+    cleaned = [_clean_candidate(case_id, item) for item in items]
+
+    def apply(record: dict) -> dict:
+        record["candidates"] = {
+            "source": str(source or "detector"),
+            "at": _utc_now(),
+            "by": clinician,
+            "items": cleaned,
+        }
+        return {"candidates": record["candidates"]}
+
+    return _update_record(case_id, "candidates", apply)
+
+
+def clear_candidates(case_id: str, clinician: str) -> dict:
+    def apply(record: dict) -> dict | None:
+        if "candidates" not in record:
+            return None
+        record.pop("candidates", None)
+        return {"candidates": None}
+
+    result = _update_record(case_id, "candidates_cleared", apply)
+    return result if result is not None else {"candidates": None}
+
+
+def confirm_candidate(case_id: str, index: object, clinician: str) -> dict:
+    """Promote one candidate to the confirmed lesion, keeping the detector list.
+
+    The Nodules sidebar shows every detected nodule for the life of the Case, so
+    a confirmation must not delete the candidate block.
+    """
+    from app.workflow import WorkflowStep
+
+    try:
+        position = int(index)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("candidate index must be an integer") from exc
+
+    def apply(record: dict) -> dict:
+        block = record.get("candidates")
+        items = block.get("items") if isinstance(block, dict) else None
+        if not isinstance(items, list) or not items:
+            raise ValueError("no candidates stored for this case")
+        if position < 0 or position >= len(items):
+            raise ValueError("candidate index out of range")
+        item = items[position]
+        coords = validate_lesion_ras(case_id, item["ras_mm"])
+        # Keep the candidate's measured value; the Lesion takes the nearest size
+        # inside its 2–60 mm contract.
+        diameter = _candidate_diameter_for_lesion(item.get("diameter_mm"))
+        at = _utc_now()
+        candidate_id = item.get("id")
+        lesion_id = (
+            f"nodule-{int(candidate_id)}" if candidate_id is not None
+            else f"nodule-{position + 1}"
+        )
         lesion = {
+            "id": lesion_id,
+            "candidate_id": candidate_id,
             "ras_mm": coords,
             "diameter_mm": diameter,
             "confirmed_by": clinician,
             "at": at,
+            "source": NODULE_LESION_SOURCE,
         }
-        record["lesion"] = lesion
         entry = {
             "step": int(WorkflowStep.LESION),
             "kind": "lesion_confirmed",
@@ -500,34 +767,288 @@ def set_lesion(
             "clinician": clinician,
             "at": at,
         }
+        entries = lesion_entries(record)
+        replaced = None
+        for index, existing in enumerate(entries):
+            if existing.get("id") == lesion_id or (
+                candidate_id is not None
+                and existing.get("candidate_id") == candidate_id
+            ):
+                replaced = index
+                break
+            # A record written before ids existed holds one untagged Lesion;
+            # a re-confirm at the same spot updates it instead of adding a twin.
+            if not existing.get("id") and not existing.get("candidate_id") and _ras_close(
+                existing.get("ras_mm"), coords
+            ):
+                replaced = index
+                break
+        if replaced is None:
+            entries.append(lesion)
+        else:
+            entries[replaced] = lesion
+        previous = record.get("lesion")
+        if not isinstance(previous, dict) or previous.get("id") != lesion_id:
+            # A new active Lesion invalidates the target chosen for the old one.
+            record.pop("route_target", None)
+        _store_lesions(record, entries, lesion)
         record.setdefault("records", []).append(entry)
-        atomic_write_json(path, record)
-        return {"lesion": lesion, "record": entry}
+        return {
+            "lesion": lesion,
+            "lesions": entries,
+            "record": entry,
+            "candidates": block,
+        }
+
+    return _update_record(case_id, "lesion", apply)
+
+
+def set_lesion(
+    case_id: str,
+    ras_mm: list[float],
+    clinician: str,
+    diameter_mm: float | None = None,
+) -> dict:
+    """Store a manually placed lesion and make it the active one."""
+    from app.workflow import WorkflowStep
+
+    coords = validate_lesion_ras(case_id, ras_mm)
+    diameter = validate_lesion_diameter(diameter_mm)
+
+    def apply(record: dict) -> dict:
+        at = _utc_now()
+        entries = lesion_entries(record)
+        used = {str(item.get("id")) for item in entries}
+        number = 1
+        while f"manual-{number}" in used:
+            number += 1
+        lesion = {
+            "id": f"manual-{number}",
+            "ras_mm": coords,
+            "diameter_mm": diameter,
+            "confirmed_by": clinician,
+            "at": at,
+            "source": MANUAL_LESION_SOURCE,
+        }
+        entry = {
+            "step": int(WorkflowStep.LESION),
+            "kind": "lesion_confirmed",
+            "data": {"ras_mm": coords, "diameter_mm": diameter},
+            "clinician": clinician,
+            "at": at,
+        }
+        # Placing the same manual point again moves the existing mark; it does
+        # not stack a second Lesion on top of the first.
+        for index, existing in enumerate(entries):
+            if (
+                existing.get("source") == MANUAL_LESION_SOURCE
+                and _ras_close(existing.get("ras_mm"), coords)
+            ):
+                lesion["id"] = existing.get("id") or lesion["id"]
+                entries[index] = lesion
+                break
+        else:
+            entries.append(lesion)
+        previous = record.get("lesion")
+        if not isinstance(previous, dict) or previous.get("id") != lesion["id"]:
+            # A newly active Lesion owns the route; drop a Lymph-node target.
+            record.pop("route_target", None)
+        _store_lesions(record, entries, lesion)
+        record.setdefault("records", []).append(entry)
+        return {"lesion": lesion, "lesions": entries, "record": entry}
+
+    return _update_record(case_id, "lesion", apply)
+
+
+RESET_KEEP_RECORD_KINDS = frozenset({"series_confirmed", "segmentation_done"})
+RESET_DROP_FIELDS = (
+    "lesion",
+    "lesions",
+    "node_marks",
+    "route_target",
+    "route_start",
+    "corrections",
+    "pending_return",
+    "review_signoff",
+    "versions",
+)
+
+
+def reset_case(case_id: str, clinician: str) -> dict:
+    """Return the Case to its post-processing state, keeping detected nodules.
+
+    Removes human decisions: Lesion, RouteTarget, RouteStart, corrections,
+    review sign-off, and bridge decisions by a person. Detector candidates,
+    the auto bridge decisions, and the pipeline records stay.
+    """
+    def apply(record: dict) -> dict:
+        for key in RESET_DROP_FIELDS:
+            record.pop(key, None)
+        decisions = record.get("bridge_decisions")
+        if isinstance(decisions, dict):
+            kept = {
+                key: value for key, value in decisions.items()
+                if isinstance(value, dict) and value.get("source") == "auto"
+            }
+            if kept:
+                record["bridge_decisions"] = kept
+            else:
+                record.pop("bridge_decisions", None)
+        records = []
+        for rec in record.get("records") or []:
+            if not isinstance(rec, dict):
+                continue
+            kind = rec.get("kind")
+            data = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+            if kind in RESET_KEEP_RECORD_KINDS or (
+                kind == "bridge_decision" and data.get("source") == "auto"
+            ):
+                records.append(rec)
+        entry = {
+            "step": 1,
+            "kind": "case_reset",
+            "data": {},
+            "clinician": clinician,
+            "at": _utc_now(),
+        }
+        records.append(entry)
+        record["records"] = records
+        return {"reset": True, "record": entry}
+
+    return _update_record(case_id, "case_reset", apply)
 
 
 def clear_lesion(case_id: str, clinician: str) -> dict:
-    """Clear lesion and append lesion_cleared under one case lock."""
+    """Clear the active manual Lesion and append lesion_cleared.
+
+    A Lesion confirmed from a detected Nodule is never deleted. It can only be
+    replaced by a new Lesion, which rewrites the record. Clearing the active
+    manual Lesion hands the active mark to the newest remaining Lesion.
+    """
     from app.workflow import WorkflowStep
 
-    ref = CaseRef.parse(case_id)
-    path = ref.case_json
-    at = _utc_now()
-    with json_file_lock(path):
-        record = _load_or_init_record(ref, path)
-        from app.versions import note_change
-
-        note_change(record, "lesion_cleared")
-        record.pop("lesion", None)
+    def apply(record: dict) -> dict:
+        if lesion_source(record) == NODULE_LESION_SOURCE:
+            raise ValueError(
+                "This Lesion came from a detected nodule and cannot be cleared. "
+                "Place a new Lesion to replace it."
+            )
+        active = record.get("lesion")
+        entries = lesion_entries(record)
+        active_id = active.get("id") if isinstance(active, dict) else None
+        remaining = []
+        for item in entries:
+            same = (
+                item is active
+                or (active_id is not None and item.get("id") == active_id)
+                or (
+                    active_id is None
+                    and _ras_close(item.get("ras_mm"), active.get("ras_mm")
+                                   if isinstance(active, dict) else None)
+                )
+            )
+            if not same:
+                remaining.append(item)
+        next_active = remaining[-1] if remaining else None
+        _store_lesions(record, remaining, next_active)
+        # The old target was scored against the cleared Lesion.
+        record.pop("route_target", None)
         entry = {
             "step": int(WorkflowStep.LESION),
             "kind": "lesion_cleared",
             "data": {},
             "clinician": clinician,
-            "at": at,
+            "at": _utc_now(),
         }
         record.setdefault("records", []).append(entry)
-        atomic_write_json(path, record)
-        return {"lesion": None, "record": entry}
+        return {"lesion": next_active, "lesions": remaining, "record": entry}
+
+    return _update_record(case_id, "lesion_cleared", apply)
+
+
+def _clean_node_label(value: object, node_id: int) -> str:
+    if value is None:
+        return f"Lymph node {node_id}"
+    if not isinstance(value, str):
+        raise ValueError("label must be a string")
+    label = " ".join(value.split())
+    if not label:
+        return f"Lymph node {node_id}"
+    if len(label) > MAX_NODE_LABEL_CHARS:
+        raise ValueError(
+            f"label must be {MAX_NODE_LABEL_CHARS} characters or fewer"
+        )
+    return label
+
+
+def set_node_mark(
+    case_id: str,
+    ras_mm: list[float],
+    clinician: str,
+    diameter_mm: float | None = None,
+    label: str | None = None,
+) -> dict:
+    """Add one Lymph-node mark to the Case, with a diameter and a short label."""
+    coords = validate_lesion_ras(case_id, ras_mm, label="node")
+
+    def apply(record: dict) -> dict:
+        marks = record.get("node_marks")
+        if not isinstance(marks, list):
+            marks = []
+        if len(marks) >= MAX_NODE_MARKS:
+            raise ValueError(f"a Case holds at most {MAX_NODE_MARKS} node marks")
+        used = {
+            int(mark["id"]) for mark in marks
+            if isinstance(mark, dict) and mark.get("id") is not None
+        }
+        node_id = 1
+        while node_id in used:
+            node_id += 1
+        mark = {
+            "id": node_id,
+            "ras_mm": coords,
+            "diameter_mm": validate_lesion_diameter(diameter_mm),
+            "label": _clean_node_label(label, node_id),
+            "confirmed_by": clinician,
+            "at": _utc_now(),
+        }
+        marks.append(mark)
+        record["node_marks"] = marks
+        return {"node_mark": mark}
+
+    return _update_record(case_id, "node_mark_added", apply)
+
+
+def clear_node_mark(case_id: str, node_id: object) -> dict:
+    try:
+        wanted = int(node_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("node id must be an integer") from exc
+
+    def apply(record: dict) -> dict:
+        marks = record.get("node_marks")
+        if not isinstance(marks, list):
+            raise ValueError(f"node mark {wanted} not found")
+        kept = [
+            mark for mark in marks
+            if not (isinstance(mark, dict) and int(mark.get("id", -1)) == wanted)
+        ]
+        if len(kept) == len(marks):
+            raise ValueError(f"node mark {wanted} not found")
+        if kept:
+            record["node_marks"] = kept
+        else:
+            record.pop("node_marks", None)
+        target = record.get("route_target")
+        if (
+            isinstance(target, dict)
+            and target.get("poi_kind") == f"node:{wanted}"
+        ):
+            # The deleted node owned the route; the Lesion owns it again.
+            record.pop("route_target", None)
+        return {"node_mark": None, "id": wanted}
+
+    return _update_record(case_id, "node_mark_cleared", apply)
 
 
 def validate_record_data(data: object) -> None:
@@ -627,16 +1148,28 @@ __all__ = [
     "append_record",
     "atomic_write_json",
     "case_payload",
+    "CANDIDATE_SCORE_MAX",
+    "CANDIDATE_SCORE_MIN",
+    "MAX_CANDIDATES",
+    "MAX_NODE_MARKS",
+    "clear_candidates",
     "clear_lesion",
+    "clear_node_mark",
+    "confirm_candidate",
     "confirm_existing_series",
     "default_aeropath_record",
+    "lesion_entries",
+    "lesion_source",
     "list_cases",
     "load_case_record",
     "load_versions",
     "qualifying_route_start_terminals",
     "read_case_json",
+    "reset_case",
     "route_start_info",
+    "set_candidates",
     "set_lesion",
+    "set_node_mark",
     "validate_lesion_diameter",
     "set_route_start",
     "validate_lesion_ras",

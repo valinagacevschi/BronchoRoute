@@ -13,10 +13,11 @@ dependencies = [
     "onnxruntime>=1.24.3",
     "opencv-python-headless>=4.10",
     "pydicom>=3.0.2",
+    "rarfile>=4.2",
     "scipy>=1.18.1",
     "simpleitk>=2.5.6",
     "termcolor>=3.3.0",
-    "totalsegmentator>=2.18.0",
+    "totalsegmentator @ git+https://github.com/wasserth/TotalSegmentator@v3.0.1",
     "uvicorn>=0.54.0",
 ]
 

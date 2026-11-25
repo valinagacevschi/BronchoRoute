@@ -1,3 +1,4 @@
+// Changes: load the axial nodule contour artifact and hand it to the candidate glyphs.
 // Changes: CT estimated airway is a #D2B4F0 stroke over a 1 px halo, faded no lower than 0.5.
 // Changes: estimated airway overlay uses the shared session toggle and the centreline slab.
 // Changes: bridge decisions beside CT controls and slice-slab midpoint rings.
@@ -166,6 +167,7 @@ window.CtPanes = (function () {
   const LESION_DIAMETER_DEFAULT = 10;
   const LESION_DIAMETER_MIN = 2;
   const LESION_DIAMETER_MAX = 60;
+  const NODE_MARK_2D = "#E53935";
 
   // Signed distance follows `increment` (one step of this pane's slice index).
   // On a RAS crop that step is +superior for axial, +anterior for coronal,
@@ -269,12 +271,13 @@ window.CtPanes = (function () {
       setCtView,
       ensureClinician,
       onLesionChange,
+      onNodeMark,
       onBridgeChange,
       debug,
       isViewActive,
       readOnly = false,
+      allowBridgeDecisions = !readOnly,
       showEstimatedAirway: readEstimated = () => false,
-      setShowEstimatedAirway: writeEstimated = null,
     } = opts;
 
     const originMm = airway.origin_mm || [0, 0, 0];
@@ -291,19 +294,25 @@ window.CtPanes = (function () {
     let windowL = -600;
     let ctView = getCtView() === "head" ? "head" : "feet";
     let overlays = {
-      airway: false,
+      airway: true,
       route: false,
       lesion: true,
       target: true,
+      candidates: true,
     };
     const estimatedDrawn = { axial: 0, coronal: 0, sagittal: 0 };
     let marking = false;
+    let markingKind = null; // "lesion" (tests/API) or "node" (the Lymph nodes +)
     let provisionalDiameter = LESION_DIAMETER_DEFAULT;
     let lesionDrag = null;
-    let routeTargetPickArmed = false;
     let highlightRouteOis = new Set();
     let provisional = null;
     let lesion = airway.lesion ? { ...airway.lesion, ras_mm: [...airway.lesion.ras_mm] } : null;
+    let lesions = Array.isArray(airway.lesions)
+      ? airway.lesions
+        .filter(item => item && item.ras_mm)
+        .map(item => ({ ...item, ras_mm: [...item.ras_mm] }))
+      : (lesion ? [lesion] : []);
     let focusedPane = "axial";
     let hoverPane = null;
     let wlDrag = null;
@@ -332,41 +341,67 @@ window.CtPanes = (function () {
     rootEl.innerHTML = "";
     rootEl.classList.add("ct-panes-root");
 
-    const toolbar = document.createElement("div");
-    toolbar.className = "ct-toolbar";
-    rootEl.appendChild(toolbar);
-
-    const bridgeList = document.createElement("div");
-    bridgeList.id = "bridge-list";
-    bridgeList.hidden = true;
-    rootEl.appendChild(bridgeList);
+    const candidates = window.CtCandidates.create({
+      caseId,
+      readOnly,
+      ensureClinician,
+      statusMessage,
+      diameterOf: lesionDiameterOf,
+      geometry: { sliceFrame, lesionSliceGeometry, worldToVoxelCont },
+      sharedPos,
+      lesionsOf: () => lesions,
+      activeLesionOf: () => lesion,
+      onConfirmed: (next, all) => {
+        lesion = next;
+        lesions = Array.isArray(all)
+          ? all.filter(item => item && item.ras_mm)
+          : (lesions.some(item => item.id === next.id)
+            ? lesions.map(item => (item.id === next.id ? next : item))
+            : [...lesions, next]);
+        provisional = null;
+        marking = false;
+        lesionDrag = null;
+        provisionalDiameter = lesionDiameterOf(next);
+        airway.lesion = next;
+        airway.lesions = lesions;
+        if (onLesionChange) onLesionChange(next);
+        updateLesionStatus();
+        drawAll();
+      },
+    });
 
     function renderBridges() {
+      const bridgeList = document.getElementById("bridge-list");
+      const group = document.getElementById("g-bridges");
+      if (!bridgeList) return;
       bridgeList.replaceChildren();
-      bridgeList.hidden = !bridges.some(b => b.matched);
-      if (bridgeList.hidden) return;
-      const title = document.createElement("strong");
-      title.textContent = "Bridges";
-      bridgeList.appendChild(title);
-      bridges.forEach((bridge, i) => {
+      const pending = bridges.filter(b => b.matched && !b.decision);
+      if (group) group.hidden = pending.length === 0;
+      if (pending.length === 0) return;
+      pending.forEach((bridge) => {
+        const i = bridges.indexOf(bridge);
         const row = document.createElement("div");
         row.className = "bridge-row";
         row.dataset.bridgeId = bridge.id;
         const label = document.createElement("span");
-        label.textContent = `Bridge ${i + 1} · gap ${Number(bridge.gap_mm).toFixed(1)} mm · `;
-        const state = document.createElement("span");
-        state.className = "bridge-state";
-        state.textContent = bridge.decision === "confirmed" ? "Confirmed"
-          : bridge.decision === "rejected" ? "Rejected" : "Unconfirmed";
-        label.appendChild(state);
+        const air = bridge.evidence && Number.isFinite(bridge.evidence.air_fraction)
+          ? ` · CT air ${Math.round(bridge.evidence.air_fraction * 100)}%` : "";
+        label.textContent = `Bridge ${i + 1}`;
+        label.appendChild(document.createTextNode(
+          ` · gap ${Number(bridge.gap_mm).toFixed(1)} mm${air}`,
+        ));
         row.appendChild(label);
-        for (const [action, text] of [["goto", "Go to"], ["confirm", "Confirm"], ["reject", "Reject"]]) {
+        for (const [action, text, label] of [
+          ["goto", "→", "Go to"], ["confirm", "✓", "Confirm"], ["reject", "✕", "Reject"],
+        ]) {
           if (!bridge.matched) continue;
-          if (readOnly && action !== "goto") continue;
+          if (!allowBridgeDecisions && action !== "goto") continue;
           const button = document.createElement("button");
           button.type = "button";
           button.className = `bridge-${action}`;
           button.textContent = text;
+          button.title = label;
+          button.setAttribute("aria-label", label);
           const decision = action === "confirm" ? "confirmed" : "rejected";
           button.disabled = action !== "goto" && (bridgeBusy || bridge.decision === decision);
           button.onclick = () => {
@@ -442,179 +477,180 @@ window.CtPanes = (function () {
       return !!(lesion && lesion.ras_mm);
     }
 
+    function overlayAvailable(key) {
+      if (key === "airway") return !!maskData;
+      if (key === "route") return !!(airway.route && airway.route.length);
+      if (key === "lesion") return lesionConfirmed();
+      if (key === "candidates") return !!(airway.candidates && airway.candidates.length);
+      if (key === "target") return !!(airway.endpoint || airway.route_target);
+      return true;
+    }
+
     function syncOverlayEnablement() {
-      // The Lesion is optional: airway and route overlays stay usable without one.
-      for (const el of toolbar.querySelectorAll("[data-overlay]")) {
-        el.disabled = false;
+      // Hide a toggle that has no data on this case instead of offering a dead control.
+      for (const el of document.querySelectorAll("#ct-overlay-keys [data-overlay-key]")) {
+        const available = overlayAvailable(el.dataset.overlayKey);
+        const item = el.closest(".ct-key-item") || el;
+        item.hidden = !available;
+        el.disabled = !available;
+      }
+      syncOverlaySeparators();
+    }
+
+    function syncLesionControls() {
+      const mark = document.getElementById("ct-mark-lesion");
+      if (mark) mark.disabled = readOnly || marking;
+      const clear = document.getElementById("ct-clear-lesion");
+      if (clear) {
+        // The read-only viewer keeps the control visible but disabled.
+        clear.hidden = !readOnly && (marking || !(lesion && lesion.ras_mm));
+        clear.disabled = readOnly
+          || lesionFromNodule()
+          || !(lesion && lesion.ras_mm);
       }
     }
 
-    function syncConfirmEnabled() {
-      const btn = toolbar.querySelector("#ct-confirm-lesion");
-      if (btn) btn.disabled = !provisional;
-      const cancel = toolbar.querySelector("#ct-cancel-mark");
-      if (cancel) cancel.disabled = !marking;
+    const OVERLAY_KEYS = {
+      airway: "A",
+      route: "R",
+      candidates: "C",
+      lesion: "L",
+      target: "T",
+    };
+
+    function syncOverlaySeparators() {
+      const items = [...document.querySelectorAll("#ct-overlay-keys .ct-key-item")]
+        .filter(item => !item.hidden);
+      items.forEach((item, index) => {
+        const sep = item.querySelector(".ct-key-sep");
+        if (sep) sep.hidden = index === items.length - 1;
+      });
     }
 
-    function buildToolbar() {
-      toolbar.innerHTML = "";
-      const presets = document.createElement("div");
-      presets.className = "ct-presets";
-      for (const [name, W, L] of [
-        ["Lung", 1500, -600],
-        ["Mediastinal", 400, 40],
-      ]) {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.textContent = name;
-        b.onclick = () => {
-          windowW = W;
-          windowL = L;
-          drawAll();
-        };
-        presets.appendChild(b);
+    function syncOverlayKeys() {
+      for (const el of document.querySelectorAll("#ct-overlay-keys [data-overlay-key]")) {
+        const on = !!overlays[el.dataset.overlayKey];
+        el.classList.toggle("on", on);
+        el.setAttribute("aria-pressed", on ? "true" : "false");
       }
-      const wl = document.createElement("span");
-      wl.className = "ct-wl";
-      wl.id = "ct-wl-readout";
-      presets.appendChild(wl);
+    }
 
-      const view = document.createElement("label");
-      view.className = "ct-view-toggle";
-      const sel = document.createElement("select");
-      sel.innerHTML =
-        '<option value="feet">View from feet (radiological)</option>' +
-        '<option value="head">View from head (bronchoscopist)</option>';
-      sel.value = ctView;
-      sel.onchange = async () => {
-        ctView = sel.value === "head" ? "head" : "feet";
-        try {
-          await setCtView(ctView);
-        } catch (err) {
-          statusMessage(String(err.message || err));
-        }
-        drawAll();
-      };
-      view.appendChild(sel);
-
-      const ov = document.createElement("div");
-      ov.className = "ct-overlays";
-      for (const [key, label] of [
+    function buildOverlayControls() {
+      const host = document.getElementById("ct-overlay-keys");
+      if (!host) return;
+      host.replaceChildren();
+      const entries = [
         ["airway", "Airway mask"],
         ["route", "Route"],
+        ["candidates", "Candidates"],
         ["lesion", "Lesion"],
         ["target", "RouteTarget"],
-        ["estimated", "Estimated airway"],
-      ]) {
-        const lab = document.createElement("label");
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.dataset.overlay = key;
-        if (key === "estimated") {
-          cb.checked = !!readEstimated();
-          cb.onchange = () => {
-            if (writeEstimated) writeEstimated(cb.checked);
-            else drawAll();
-          };
-        } else {
-          cb.checked = overlays[key];
-          cb.onchange = () => {
-            overlays[key] = cb.checked;
-            drawAll();
-          };
-        }
-        lab.appendChild(cb);
-        lab.appendChild(document.createTextNode(" " + label));
-        ov.appendChild(lab);
-      }
-
-      const lesionBox = document.createElement("div");
-      lesionBox.className = "ct-lesion-box";
-      const markBtn = document.createElement("button");
-      markBtn.type = "button";
-      markBtn.id = "ct-mark-lesion";
-      markBtn.textContent = "Mark Lesion";
-      markBtn.onclick = () => {
-        marking = true;
-        provisional = null;
-        provisionalDiameter = LESION_DIAMETER_DEFAULT;
-        lesionDrag = null;
-        statusMessage("Click a CT pane to place the Lesion");
-        syncConfirmEnabled();
-        drawAll();
-      };
-      const confirmBtn = document.createElement("button");
-      confirmBtn.type = "button";
-      confirmBtn.id = "ct-confirm-lesion";
-      confirmBtn.textContent = "Confirm Lesion";
-      confirmBtn.disabled = true;
-      confirmBtn.onclick = () => {
-        confirmLesion().catch(err => statusMessage(String(err.message || err)));
-      };
-      const cancelBtn = document.createElement("button");
-      cancelBtn.type = "button";
-      cancelBtn.id = "ct-cancel-mark";
-      cancelBtn.className = "secondary";
-      cancelBtn.textContent = "Cancel";
-      cancelBtn.disabled = true;
-      cancelBtn.onclick = () => cancelMark();
-      const clearBtn = document.createElement("button");
-      clearBtn.type = "button";
-      clearBtn.className = "secondary";
-      clearBtn.textContent = "Clear";
-      clearBtn.onclick = () => {
-        clearLesion().catch(err => statusMessage(String(err.message || err)));
-      };
-      const statusEl = document.createElement("span");
-      statusEl.className = "ct-lesion-status";
-      statusEl.id = "ct-lesion-status";
-      lesionBox.appendChild(markBtn);
-      lesionBox.appendChild(confirmBtn);
-      lesionBox.appendChild(cancelBtn);
-      lesionBox.appendChild(clearBtn);
-      lesionBox.appendChild(statusEl);
-
-      toolbar.appendChild(presets);
-      toolbar.appendChild(view);
-      toolbar.appendChild(ov);
-      if (!readOnly) {
-        toolbar.appendChild(lesionBox);
-      }
-      syncOverlayEnablement();
-      syncConfirmEnabled();
-      updateLesionStatus();
-      updateWlReadout();
+      ];
+      entries.forEach(([key, label]) => {
+        const item = document.createElement("span");
+        item.className = "ct-key-item";
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "ct-key";
+        b.dataset.overlayKey = key;
+        b.textContent = OVERLAY_KEYS[key];
+        b.title = label;
+        b.setAttribute("aria-label", label);
+        b.onclick = () => {
+          overlays[key] = !overlays[key];
+          syncOverlayKeys();
+          drawAll();
+        };
+        item.appendChild(b);
+        item.appendChild(document.createTextNode(" " + label));
+        const sep = document.createElement("span");
+        sep.className = "ct-key-sep";
+        sep.textContent = " · ";
+        item.appendChild(sep);
+        host.appendChild(item);
+      });
+      syncOverlayKeys();
+      syncOverlaySeparators();
     }
 
-    function updateWlReadout() {
-      const el = toolbar.querySelector("#ct-wl-readout");
-      if (el) el.textContent = `W ${Math.round(windowW)} / L ${Math.round(windowL)}`;
+    function wireSidebarControls() {
+      buildOverlayControls();
+
+      // The Lesion actions stay visible in the read-only viewer, disabled.
+      const markBtn = document.getElementById("ct-mark-lesion");
+      const clearBtn = document.getElementById("ct-clear-lesion");
+      const resetBtn = document.getElementById("ct-reset-case");
+      if (markBtn) {
+        markBtn.onclick = startNodeMark;
+      }
+      if (clearBtn) {
+        clearBtn.onclick = () => {
+          clearLesion().catch(err => statusMessage(String(err.message || err)));
+        };
+      }
+      if (resetBtn) {
+        resetBtn.hidden = readOnly;
+        resetBtn.onclick = () => {
+          resetCase().catch(err => statusMessage(String(err.message || err)));
+        };
+      }
+      const nodesGroup = document.getElementById("g-nodules");
+      if (nodesGroup) nodesGroup.hidden = readOnly;
+      const lesionGroup = document.getElementById("g-manual-lesion");
+      if (lesionGroup) lesionGroup.hidden = false;
+      candidates.mount(document.getElementById("g-nodules"));
+      syncOverlayEnablement();
+      syncLesionControls();
+      updateLesionStatus();
+      candidates.setItems(airway.candidates);
+    }
+
+    function lesionFromNodule() {
+      return !!(lesion && lesion.source === "nodule");
+    }
+
+    function startNodeMark() {
+      if (readOnly) return;
+      marking = true;
+      markingKind = "node";
+      provisional = null;
+      provisionalDiameter = LESION_DIAMETER_DEFAULT;
+      lesionDrag = null;
+      updateLesionStatus();
+      drawAll();
+    }
+
+    function clearStatusText() {
+      for (const id of ["node-mark-status", "ct-lesion-status"]) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = "";
+      }
     }
 
     function updateLesionStatus() {
-      const el = toolbar.querySelector("#ct-lesion-status");
-      if (!el) return;
+      let text = null;
       if (marking && provisional) {
-        el.textContent = `Ø ${provisionalDiameter.toFixed(1)} mm`;
-      } else if (lesion && lesion.ras_mm) {
-        const who = lesion.confirmed_by || "";
-        const when = lesion.at || "";
-        const dia = lesionDiameterOf(lesion).toFixed(1);
-        el.textContent = `Lesion confirmed · Ø ${dia} mm${who ? " · " + who : ""}${when ? " · " + when : ""}`;
+        text = `Ø ${provisionalDiameter.toFixed(1)} mm`;
       } else if (marking) {
-        el.textContent = "Click a CT pane to place the Lesion";
-      } else {
-        el.textContent = "";
+        text = "Click a point on any CT pane";
+      }
+      if (text != null) {
+        for (const id of ["node-mark-status", "ct-lesion-status"]) {
+          const el = document.getElementById(id);
+          if (el) el.textContent = text;
+        }
       }
       syncOverlayEnablement();
-      syncConfirmEnabled();
+      syncLesionControls();
     }
 
     function cancelMark() {
       marking = false;
+      markingKind = null;
       provisional = null;
       provisionalDiameter = LESION_DIAMETER_DEFAULT;
       lesionDrag = null;
+      clearStatusText();
       updateLesionStatus();
       drawAll();
     }
@@ -633,6 +669,10 @@ window.CtPanes = (function () {
         return;
       }
       if (!ok) return;
+      if (markingKind === "node") {
+        await confirmNodeMark();
+        return;
+      }
       let res;
       try {
         res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/lesion`, {
@@ -654,18 +694,58 @@ window.CtPanes = (function () {
       }
       const body = await res.json();
       lesion = body.lesion;
+      lesions = Array.isArray(body.lesions) ? body.lesions : [lesion];
       provisional = null;
       marking = false;
+      markingKind = null;
       lesionDrag = null;
       provisionalDiameter = lesionDiameterOf(lesion);
       airway.lesion = lesion;
+      airway.lesions = lesions;
+      clearStatusText();
       if (onLesionChange) onLesionChange(lesion);
       updateLesionStatus();
       drawAll();
     }
 
+    async function confirmNodeMark() {
+      let res;
+      try {
+        res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/nodes`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ras_mm: provisional,
+            diameter_mm: Math.round(provisionalDiameter * 10) / 10,
+          }),
+        });
+      } catch (err) {
+        statusMessage(String(err.message || err));
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        statusMessage(body.detail || `Confirm failed (${res.status})`);
+        return;
+      }
+      const body = await res.json();
+      provisional = null;
+      marking = false;
+      markingKind = null;
+      lesionDrag = null;
+      provisionalDiameter = LESION_DIAMETER_DEFAULT;
+      clearStatusText();
+      updateLesionStatus();
+      drawAll();
+      if (onNodeMark) onNodeMark(body.node_mark);
+    }
+
     async function clearLesion() {
       if (readOnly) return;
+      if (lesionFromNodule()) {
+        statusMessage("Detected nodule cannot be cleared");
+        return;
+      }
       let ok;
       try {
         ok = await ensureClinician();
@@ -688,19 +768,54 @@ window.CtPanes = (function () {
         statusMessage(body.detail || `Clear failed (${res.status})`);
         return;
       }
-      lesion = null;
+      const body = await res.json().catch(() => ({}));
+      lesion = body.lesion || null;
+      lesions = Array.isArray(body.lesions)
+        ? body.lesions
+        : (lesion ? [lesion] : []);
       provisional = null;
       marking = false;
       lesionDrag = null;
-      provisionalDiameter = LESION_DIAMETER_DEFAULT;
-      airway.lesion = null;
-      if (onLesionChange) onLesionChange(null);
-      buildToolbar();
+      provisionalDiameter = lesion
+        ? lesionDiameterOf(lesion)
+        : LESION_DIAMETER_DEFAULT;
+      airway.lesion = lesion;
+      airway.lesions = lesions;
+      if (onLesionChange) onLesionChange(lesion);
+      wireSidebarControls();
       drawAll();
     }
 
+    async function resetCase() {
+      if (readOnly) return;
+      const proceed = window.confirm(
+        "Reset the case to the state right after processing?"
+        + "\n\nThe Lesion, RouteTarget, RouteStart, bridge decisions, corrections,"
+        + " and sign-off are removed. Detected nodules stay."
+      );
+      if (!proceed) return;
+      let res;
+      try {
+        res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/reset`, {
+          method: "POST",
+        });
+      } catch (err) {
+        statusMessage(String(err.message || err));
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        statusMessage(body.detail || `Reset failed (${res.status})`);
+        return;
+      }
+      try {
+        sessionStorage.setItem("bronchoroute-reset-select-nodule", "1");
+      } catch (err) { /* reload still resets the panels */ }
+      location.reload();
+    }
+
     function statusMessage(msg) {
-      const el = toolbar.querySelector("#ct-lesion-status");
+      const el = document.getElementById("ct-lesion-status");
       if (el) el.textContent = String(msg);
     }
 
@@ -890,19 +1005,13 @@ window.CtPanes = (function () {
       };
     }
 
-    function lesionDistanceLabel(signedMm) {
+    function lesionDistanceLabel(signedMm, label) {
       const n = Math.round(signedMm);
       const sign = n > 0 ? "+" : "";
-      return `Lesion ${sign}${n} mm`;
+      return `${label || "Lesion"} ${sign}${n} mm`;
     }
 
-    function drawLesionGlyph(ctx, key, map, fit, fixed) {
-      const world = provisional || (lesion && lesion.ras_mm);
-      if (!overlays.lesion || !world) {
-        lesionDraw[key] = { kind: "none" };
-        return;
-      }
-      const diameter = provisional ? provisionalDiameter : lesionDiameterOf(lesion);
+    function drawOneLesion(ctx, map, fit, fixed, world, diameter, ink, label) {
       const frame = sliceFrame(map, fixed);
       const geom = lesionSliceGeometry(world, diameter, frame.planePoint, frame.increment);
       const ijk = worldToVoxelCont(world);
@@ -916,12 +1025,14 @@ window.CtPanes = (function () {
         signedDistanceMm: geom.signedDistanceMm,
         inPlaneRadiusMm: geom.inPlaneRadiusMm,
         diameterMm: diameter,
-        label: geom.through ? "Lesion" : lesionDistanceLabel(geom.signedDistanceMm),
+        label: geom.through
+          ? label
+          : lesionDistanceLabel(geom.signedDistanceMm, label),
         radiusPx: 0,
       };
       ctx.save();
-      ctx.strokeStyle = "#e85d4c";
-      ctx.fillStyle = "#e85d4c";
+      ctx.strokeStyle = ink;
+      ctx.fillStyle = ink;
       if (geom.through) {
         const radiusPx = geom.inPlaneRadiusMm / (fit.mmPerPx || 1);
         record.radiusPx = radiusPx;
@@ -949,7 +1060,93 @@ window.CtPanes = (function () {
         ctx.fillText(record.label, sx + 10, sy - 6);
       }
       ctx.restore();
-      lesionDraw[key] = record;
+      return record;
+    }
+
+    function drawLesionGlyph(ctx, key, map, fit, fixed) {
+      if (!overlays.lesion) {
+        lesionDraw[key] = { kind: "none" };
+        return;
+      }
+      if (provisional) {
+        const nodeMarking = marking && markingKind === "node";
+        lesionDraw[key] = drawOneLesion(
+          ctx, map, fit, fixed, provisional, provisionalDiameter,
+          nodeMarking ? NODE_MARK_2D : "#e85d4c",
+          nodeMarking ? "Node" : "Lesion",
+        );
+        return;
+      }
+      const list = (lesions.length ? lesions : (lesion ? [lesion] : []))
+        .filter(item => item && item.ras_mm);
+      if (!list.length) {
+        lesionDraw[key] = { kind: "none" };
+        return;
+      }
+      // Every confirmed Lesion stays visible; the active one owns the route
+      // and keeps the full-strength red ink.
+      const activeId = lesion && lesion.id;
+      let activeRecord = { kind: "none" };
+      list.forEach((item, index) => {
+        const active = (
+          item === lesion
+          || (activeId != null && item.id === activeId)
+          || (activeId == null && list.length === 1)
+        );
+        const record = drawOneLesion(
+          ctx, map, fit, fixed, item.ras_mm, lesionDiameterOf(item),
+          active ? "#e85d4c" : "#c9827a",
+          active ? "Lesion" : `Lesion ${index + 1}`,
+        );
+        if (active) activeRecord = record;
+      });
+      lesionDraw[key] = activeRecord;
+    }
+
+    function drawNodeMarksGlyph(ctx, key, map, fit, fixed) {
+      const marks = Array.isArray(airway.node_marks) ? airway.node_marks : [];
+      if (!marks.length) return;
+      const frame = sliceFrame(map, fixed);
+      for (const mark of marks) {
+        if (!mark || !Array.isArray(mark.ras_mm)) continue;
+        const diameter = Math.max(2, Number(mark.diameter_mm) || 7);
+        const geom = lesionSliceGeometry(
+          mark.ras_mm, diameter, frame.planePoint, frame.increment,
+        );
+        const ijk = worldToVoxelCont(mark.ras_mm);
+        const uv = map.uvFromIjk(ijk[0], ijk[1], ijk[2]);
+        const sx = fit.ox + uv.u * fit.drawW;
+        const sy = fit.oy + uv.v * fit.drawH;
+        const label = mark.label || `Node ${mark.id}`;
+        ctx.save();
+        ctx.strokeStyle = NODE_MARK_2D;
+        ctx.fillStyle = NODE_MARK_2D;
+        if (geom.through) {
+          const radiusPx = Math.max(
+            geom.inPlaneRadiusMm / (fit.mmPerPx || 1), 2,
+          );
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(sx, sy, radiusPx, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(sx, sy, 1.6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.font = "10px monospace";
+          ctx.fillText(label, sx + radiusPx + 5, sy - 4);
+        } else {
+          ctx.globalAlpha = 0.4;
+          ctx.lineWidth = 1.25;
+          const arm = 6;
+          ctx.beginPath();
+          ctx.moveTo(sx - arm, sy);
+          ctx.lineTo(sx + arm, sy);
+          ctx.moveTo(sx, sy - arm);
+          ctx.lineTo(sx, sy + arm);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
     }
 
     function drawPane(key) {
@@ -1193,24 +1390,26 @@ window.CtPanes = (function () {
       }
 
       drawLesionGlyph(ctx, key, map, fit, fixed);
+      drawNodeMarksGlyph(ctx, key, map, fit, fixed);
+      candidates.draw(ctx, {
+        key, map, fit, fixed,
+        visible: overlays.candidates,
+        diameterOf: lesionDiameterOf,
+      });
       bridgeDraw[key] = [];
       for (const bridge of bridges) {
+        if (bridge.decision) continue;
         const ijk = worldToVoxelCont(bridge.midpoint_ras_mm);
         if (Math.abs(ijk[map.fixedAxis] - fixed) > 0.5) continue;
         const uv = map.uvFromIjk(...ijk);
         const x = fit.ox + uv.u * fit.drawW;
         const y = fit.oy + uv.v * fit.drawH;
-        const color = bridge.decision === "confirmed" ? "#3a3"
-          : bridge.decision === "rejected" ? "#888" : "#d99520";
+        const color = "#d99520";
         ctx.save();
         ctx.strokeStyle = color;
         ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.arc(x, y, 9, 0, 2 * Math.PI);
-        if (bridge.decision === "rejected") {
-          ctx.moveTo(x - 7, y + 7);
-          ctx.lineTo(x + 7, y - 7);
-        }
         ctx.stroke();
         ctx.restore();
         bridgeDraw[key].push({ id: bridge.id, color, x, y });
@@ -1312,7 +1511,6 @@ window.CtPanes = (function () {
     }
 
     function drawAll() {
-      updateWlReadout();
       routeHighlightStrokes = 0;
       estimatedDrawn.axial = 0;
       estimatedDrawn.coronal = 0;
@@ -1360,29 +1558,6 @@ window.CtPanes = (function () {
         return;
       }
       setCrosshairWorld(world, "ct");
-      if (routeTargetPickArmed && !readOnly) {
-        // Server is the only snap — post the raw click RAS.
-        window.parent.postMessage(
-          { type: "route-target-pick", ras_mm: world },
-          location.origin,
-        );
-        return;
-      }
-      // Clicking an airway voxel selects the nearest graph edge for removal.
-      if (!readOnly && maskData) {
-        const ijk = worldToVoxelCont(world);
-        const ii = Math.round(ijk[0]), jj = Math.round(ijk[1]), kk = Math.round(ijk[2]);
-        const lab = sampleMask(ii, jj, kk);
-        if (lab === LABEL_CT || lab === LABEL_INTERP || lab === LABEL_MANUAL) {
-          const hit = nearestCentrelineWorld(airway, originMm, world);
-          if (hit && hit.edge && hit.edge.oi != null && hit.edge.selectable !== false) {
-            window.postMessage(
-              { type: "ct-select-edge", oi: hit.edge.oi },
-              location.origin,
-            );
-          }
-        }
-      }
     }
 
     function pointerNearLesion(paneKey, clientX, clientY) {
@@ -1428,8 +1603,12 @@ window.CtPanes = (function () {
     }
 
     function onPointerUp() {
+      const placed = !!(marking && provisional && lesionDrag && !readOnly);
       wlDrag = null;
       lesionDrag = null;
+      if (placed) {
+        confirmLesion().catch(err => statusMessage(String(err.message || err)));
+      }
     }
 
     function onWheel(e) {
@@ -1513,8 +1692,45 @@ window.CtPanes = (function () {
       return true;
     }
 
+    // The stage traces in the CT array frame; the browser shows a canonical
+    // crop. Map contour points through the CT affine into crop voxels. Without
+    // an affine, fall back to the crop offset when the grids share a shape.
+    function contourMapPoint(artifact) {
+      const affine = artifact && artifact.affine;
+      if (Array.isArray(affine) && affine.length === 4) {
+        return (x, y, k) => worldToVoxelCont(mat4MulVec(affine, [x, y, k, 1]));
+      }
+      const shape = artifact && artifact.shape;
+      if (!Array.isArray(shape) || shape.length !== 3) return null;
+      const crop = ctMeta.shape;
+      if (shape[0] === crop[0] && shape[1] === crop[1] && shape[2] === crop[2]) {
+        return (x, y, k) => [x, y, k];
+      }
+      const offset = ctMeta.crop_offset_voxels;
+      if (!Array.isArray(offset) || offset.length !== 3) return null;
+      return (x, y, k) => [x - offset[0], y - offset[1], k - offset[2]];
+    }
+
+    async function loadNoduleContours() {
+      try {
+        const res = await fetch(
+          `/api/cases/${encodeURIComponent(caseId)}/nodule-contours`,
+        );
+        if (!res.ok) {
+          candidates.setContours(null);
+          return;
+        }
+        const artifact = await res.json();
+        const mapPoint = contourMapPoint(artifact);
+        // An ambiguous grid must not draw the outline in the wrong place.
+        candidates.setContours(mapPoint ? artifact : null, mapPoint);
+      } catch (err) {
+        candidates.setContours(null);
+      }
+    }
+
     async function load() {
-      buildToolbar();
+      wireSidebarControls();
       try {
         const metaRes = await fetch(`/api/cases/${encodeURIComponent(caseId)}/ct/meta`);
         if (!metaRes.ok) throw new Error(`ct/meta ${metaRes.status}`);
@@ -1551,6 +1767,8 @@ window.CtPanes = (function () {
           }
         }
 
+        await loadNoduleContours();
+
         const presets = ctMeta.window_presets || {};
         if (presets.lung) {
           windowW = presets.lung.W;
@@ -1567,6 +1785,7 @@ window.CtPanes = (function () {
           );
         }
         loaded = true;
+        syncOverlayEnablement();
         setCrosshairWorld(start, "ct-init");
         await loadBridges();
       } catch (err) {
@@ -1608,8 +1827,6 @@ window.CtPanes = (function () {
     }
 
     function syncEstimatedAirway() {
-      const el = toolbar.querySelector('[data-overlay="estimated"]');
-      if (el) el.checked = !!readEstimated();
       drawAll();
     }
 
@@ -1624,9 +1841,13 @@ window.CtPanes = (function () {
       getCtView: () => ctView,
       setCtViewLocal(v) {
         ctView = v === "head" ? "head" : "feet";
-        const sel = toolbar.querySelector("select");
-        if (sel) sel.value = ctView;
         drawAll();
+      },
+      setCtViewByName(v) {
+        // Key presses are a view toggle, not a saved clinician preference.
+        ctView = v === "head" ? "head" : "feet";
+        drawAll();
+        return ctView;
       },
       getLetters(pane) {
         return planeMap(pane).letters;
@@ -1640,19 +1861,18 @@ window.CtPanes = (function () {
       isLoaded: () => loaded,
       getMeta: () => ctMeta,
       getLesion: () => (lesion ? { ...lesion, ras_mm: [...lesion.ras_mm] } : null),
+      getLesions: () => lesions.map(
+        item => ({ ...item, ras_mm: [...item.ras_mm] }),
+      ),
       getProvisional: () => (provisional ? [...provisional] : null),
       isMarking: () => marking,
-      setRouteTargetPickArmed(on) {
-        routeTargetPickArmed = readOnly ? false : !!on;
-      },
       armMarkLesion() {
         if (readOnly) return;
         marking = true;
         provisional = null;
         provisionalDiameter = LESION_DIAMETER_DEFAULT;
         lesionDrag = null;
-        statusMessage("Click a CT pane to place the Lesion");
-        syncConfirmEnabled();
+        updateLesionStatus();
         drawAll();
       },
       lesionDraws() {
@@ -1675,26 +1895,36 @@ window.CtPanes = (function () {
         );
         drawAll();
       },
+      setRoute(edgeIds) {
+        if (!airway) return;
+        airway.route = Array.isArray(edgeIds)
+          ? edgeIds.map(Number).filter((n) => Number.isFinite(n))
+          : [];
+        syncOverlayEnablement();
+        drawAll();
+      },
       overlaysEnabled() {
-        const airwayEl = toolbar.querySelector('[data-overlay="airway"]');
-        const routeEl = toolbar.querySelector('[data-overlay="route"]');
         return {
-          airwayDisabled: !!(airwayEl && airwayEl.disabled),
-          routeDisabled: !!(routeEl && routeEl.disabled),
+          airwayDisabled: !overlayAvailable("airway"),
+          routeDisabled: !overlayAvailable("route"),
           airway: overlays.airway,
           route: overlays.route,
           lesionConfirmed: lesionConfirmed(),
         };
       },
+      overlayAvailable,
+      toggleOverlay(key) {
+        if (!overlayAvailable(key)) return null;
+        overlays[key] = !overlays[key];
+        syncOverlayKeys();
+        drawAll();
+        return overlays[key];
+      },
+      mountOverlayKeys: buildOverlayControls,
+      renderBridges,
       setOverlay(key, on) {
-        if (key === "estimated") {
-          if (writeEstimated) writeEstimated(!!on);
-          else syncEstimatedAirway();
-          return;
-        }
         overlays[key] = !!on;
-        const el = toolbar.querySelector(`[data-overlay="${key}"]`);
-        if (el) el.checked = overlays[key];
+        syncOverlayKeys();
         drawAll();
       },
       syncEstimatedAirway,
@@ -1731,9 +1961,31 @@ window.CtPanes = (function () {
       setMarking(v) {
         if (readOnly) return;
         marking = !!v;
+        markingKind = marking ? "lesion" : null;
         if (marking) provisional = null;
-        syncConfirmEnabled();
         updateLesionStatus();
+      },
+      startNodeMark,
+      confirmCandidate(index) {
+        if (readOnly) return;
+        candidates.confirm(index);
+      },
+      setLesion(next, all) {
+        lesion = next && Array.isArray(next.ras_mm)
+          ? { ...next, ras_mm: [...next.ras_mm] }
+          : null;
+        lesions = Array.isArray(all)
+          ? all.filter(item => item && item.ras_mm)
+          : (lesion ? [lesion] : []);
+        provisional = null;
+        marking = false;
+        markingKind = null;
+        lesionDrag = null;
+        provisionalDiameter = lesionDiameterOf(lesion);
+        airway.lesion = lesion;
+        airway.lesions = lesions;
+        updateLesionStatus();
+        drawAll();
       },
       setProvisional(ras) {
         provisional = ras ? [...ras] : null;
@@ -1763,8 +2015,7 @@ window.CtPanes = (function () {
       nearestRoute: world => nearestCentrelineWorld(airway, originMm, world),
       setAirwayOverlay(on) {
         overlays.airway = !!on;
-        const cb = rootEl.querySelector('input[data-overlay="airway"]');
-        if (cb) cb.checked = overlays.airway;
+        syncOverlayKeys();
         drawAll();
       },
       paneCanvasRect(paneKey) {

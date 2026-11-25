@@ -136,7 +136,11 @@ def test_viewer_mode_no_writes_and_topology_layout(server, tmp_path):
         )
         page.wait_for_selector("#case-picker", state="visible", timeout=60_000)
         assert page.locator("#remove-branch-panel").count() == 0
-        assert page.locator("#ct-mark-lesion").count() == 0
+        # The Lymph nodes actions stay visible as a readout, disabled.
+        page.locator("#ct-mark-lesion").wait_for(state="visible", timeout=60_000)
+        assert page.locator("#ct-mark-lesion").is_disabled()
+        # The inert clear-Lesion X was removed from the Lymph nodes header.
+        assert page.locator("#ct-clear-lesion").count() == 0
 
         # Default view is CT panes (switcher order 1).
         page.wait_for_function(

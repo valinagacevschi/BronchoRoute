@@ -1,3 +1,5 @@
+# Changes: add _run_euler_from warm-start Euler for chained route frames, plus
+# image/tensor helpers (#67).
 # Changes: snap orifices to depth openings after render_depth; PROTOCOL realism-v2 (#60c).
 """Background realism frames: group close forks, cache by route/pose/model, stream PNGs."""
 
@@ -377,6 +379,65 @@ def _run_euler(
         .clip(0, 255)
         .astype(np.uint8)
     )
+
+
+def _rgb_to_image(rgb: np.ndarray) -> np.ndarray:
+    """Convert an HWC uint8 image to a float32 NCHW tensor in [-1, 1]."""
+    return (
+        rgb.astype(np.float32).transpose(2, 0, 1)[None] / np.float32(127.5)
+        - np.float32(1)
+    )
+
+
+def _image_to_rgb(image: np.ndarray) -> np.ndarray:
+    """Convert a float32 NCHW tensor in [-1, 1] to an HWC uint8 image."""
+    return (
+        ((image[0].transpose(1, 2, 0) + 1.0) * 127.5)
+        .round()
+        .clip(0, 255)
+        .astype(np.uint8)
+    )
+
+
+def _run_euler_from(
+    image_prev: np.ndarray,
+    encoded: np.ndarray,
+    t0: float,
+    steps: int,
+    seed: int,
+    cancel: threading.Event,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Warm-start Euler from image_prev. Returns (image tensor, rgb)."""
+    if stub_enabled():
+        if cancel.is_set():
+            return None
+        rgb = _stub_rgb(encoded)
+        return _rgb_to_image(rgb), rgb
+
+    depth_tensor = encoded.astype(np.float32)[None, None] / np.float32(127.5) - np.float32(
+        1
+    )
+    rng = np.random.default_rng(seed)
+    noise = rng.standard_normal((1, 3, 256, 256)).astype(np.float32)
+    image = (
+        np.float32(t0) * image_prev + np.float32(1.0 - t0) * noise
+    ).astype(np.float32)
+    session = _get_ort_session(resolve_model_path())
+    dt = np.float32((1.0 - t0) / steps)
+    for step in range(steps):
+        if cancel.is_set():
+            return None
+        velocity = session.run(
+            None,
+            {
+                "x": image,
+                "t": np.asarray([np.float32(t0) + step * dt], dtype=np.float32),
+                "depth": depth_tensor,
+            },
+        )[0]
+        image = image + dt * velocity
+    image = np.clip(image, -1.0, 1.0).astype(np.float32)
+    return image, _image_to_rgb(image)
 
 
 def _atomic_write_png(path: Path, rgb: np.ndarray) -> None:

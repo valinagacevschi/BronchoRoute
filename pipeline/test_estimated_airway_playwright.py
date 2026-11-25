@@ -127,27 +127,6 @@ def _shots() -> Path:
     return path
 
 
-def _assert_toggle_in_viewport(page) -> None:
-    """The layer control is on screen at 1440×900 and clear of the footer."""
-    viewport = page.viewport_size
-    footer = page.locator(".research-footer").bounding_box()
-    assert viewport == {"width": 1440, "height": 900}
-    assert footer is not None
-    for selector in ("#estimated-airway-toggle", "#g-layers"):
-        box = page.locator(selector).bounding_box()
-        assert box is not None and box["width"] > 0 and box["height"] > 0, selector
-        assert box["x"] >= -0.5 and box["y"] >= -0.5, (selector, box)
-        assert box["x"] + box["width"] <= viewport["width"] + 0.5, (selector, box)
-        assert box["y"] + box["height"] <= viewport["height"] + 0.5, (selector, box)
-        clear = (
-            box["x"] + box["width"] <= footer["x"] + 0.5
-            or footer["x"] + footer["width"] <= box["x"] + 0.5
-            or box["y"] + box["height"] <= footer["y"] + 0.5
-            or footer["y"] + footer["height"] <= box["y"] + 0.5
-        )
-        assert clear, (selector, box, footer)
-
-
 def test_anatomical_estimated_layer_toggles(server):
     sync_playwright = _playwright_or_skip()
     shots = _shots()
@@ -173,14 +152,12 @@ def test_anatomical_estimated_layer_toggles(server):
         except Exception:
             cprint(page.locator("body").inner_text()[:800], "red")
             raise
-        page.locator("#estimated-airway-toggle").wait_for(state="visible")
-        assert "Estimated airway" in page.locator("#g-layers").inner_text()
-        _assert_toggle_in_viewport(page)
+        assert page.evaluate("window.__p2_debug.estimatedLayer().visible")
         on_shot = shots / "estimated-on.png"
         page.screenshot(path=str(on_shot))
         cprint(f"screenshot {on_shot}", "cyan")
 
-        page.locator("#estimated-airway-toggle").click()
+        page.keyboard.press("e")
         page.wait_for_function(
             """() => {
               const layer = window.__p2_debug.estimatedLayer();
@@ -192,7 +169,7 @@ def test_anatomical_estimated_layer_toggles(server):
         page.screenshot(path=str(off_shot))
         cprint(f"screenshot {off_shot}", "cyan")
 
-        page.locator("#estimated-airway-toggle").click()
+        page.keyboard.press("e")
         page.wait_for_function(
             """() => {
               const layer = window.__p2_debug.estimatedLayer();
@@ -374,12 +351,11 @@ def test_real_local_001_estimated_layer(real_server):
             arg=count,
             timeout=30_000,
         )
-        _assert_toggle_in_viewport(page)
         on_shot = shots / "estimated-real-on.png"
         page.screenshot(path=str(on_shot))
         cprint(f"screenshot {on_shot}", "cyan")
 
-        page.locator("#estimated-airway-toggle").click()
+        page.keyboard.press("e")
         page.wait_for_function(
             """(expected) => {
               const layer = window.__p2_debug.estimatedLayer();
@@ -393,7 +369,7 @@ def test_real_local_001_estimated_layer(real_server):
         page.screenshot(path=str(off_shot))
         cprint(f"screenshot {off_shot}", "cyan")
 
-        page.locator("#estimated-airway-toggle").click()
+        page.keyboard.press("e")
         page.wait_for_function(
             """(expected) => {
               const layer = window.__p2_debug.estimatedLayer();
@@ -565,7 +541,7 @@ def test_estimated_airway_in_topology_and_ct(real_server):
                 "() => window.__p2_debug && window.__p2_debug.estimatedLayer()"
             )), "red")
             raise
-        _assert_toggle_in_viewport(page)
+        assert page.evaluate("window.__p2_debug.estimatedLayer().visible")
         baseline = _rail_stats(page)["rail"]
         _assert_rail(page, baseline)
         cprint(f"rail {baseline}", "cyan")
@@ -661,13 +637,13 @@ def test_estimated_airway_in_topology_and_ct(real_server):
             }""",
             timeout=180_000,
         )
-        assert page.locator("#g-layers").is_visible()
-        assert page.locator("#estimated-airway-toggle").is_checked()
-        checkbox = page.locator('input[data-overlay="estimated"]')
-        checkbox.wait_for(state="visible")
-        assert checkbox.is_checked()
-        assert "Estimated airway" in page.locator(".ct-overlays").inner_text()
-        _assert_toggle_in_viewport(page)
+        estimated_key = page.locator('[data-overlay-key="estimated"]')
+        estimated_key.wait_for()
+        assert estimated_key.get_attribute("aria-pressed") == "false"
+        assert page.evaluate("!window.__p2_debug.estimatedLayer().visible")
+        page.keyboard.press("e")
+        page.wait_for_function("() => window.__p2_debug.estimatedLayer().visible")
+        assert "Estimated airway" in page.locator("#ct-overlay-keys").inner_text()
         cluster = page.evaluate(
             """() => {
               const airway = window.AIRWAY;
@@ -907,7 +883,7 @@ def test_estimated_airway_in_topology_and_ct(real_server):
             arg=count,
             timeout=10_000,
         )
-        assert page.locator("#g-layers").is_visible()
+        assert page.evaluate("window.__p2_debug.estimatedLayer().visible")
         page.evaluate("() => window.__p2_debug.setVariant(2)")
         page.wait_for_function(
             """() => window.__p2_debug.getVariant() === "topology"
@@ -916,7 +892,7 @@ def test_estimated_airway_in_topology_and_ct(real_server):
         )
         _assert_rail(page, baseline)
 
-        page.locator("#estimated-airway-toggle").click()
+        page.keyboard.press("e")
         page.wait_for_function(
             """() => {
               const layer = window.__p2_debug.estimatedLayer();
@@ -934,24 +910,20 @@ def test_estimated_airway_in_topology_and_ct(real_server):
         page.wait_for_function(
             """(expected) => {
               const layer = window.__p2_debug.estimatedLayer();
-              const toggle = document.getElementById("g-layers");
               return window.__p2_debug.getVariant() === "anatomical"
-                && toggle && !toggle.hidden
-                && layer.visible === false && layer.segments === expected
-                && layer.drawnPoints === 0;
+                && layer.visible && layer.segments === expected
+                && layer.drawnPoints > 0;
             }""",
             arg=count,
             timeout=10_000,
         )
-        assert page.locator("#estimated-airway-toggle").is_checked() is False
+        assert page.evaluate("window.__p2_debug.estimatedLayer().visible")
 
         page.evaluate("() => window.__p2_debug.setVariant(3)")
         page.wait_for_function(
             """() => {
               const layer = window.__p2_debug.estimatedLayer();
-              const box = document.querySelector('input[data-overlay="estimated"]');
               return window.__p2_debug.getVariant() === "ct-panes"
-                && box && box.checked === false
                 && layer.ct.axial === 0 && layer.ct.coronal === 0 && layer.ct.sagittal === 0;
             }""",
             timeout=10_000,
@@ -975,7 +947,6 @@ def test_estimated_airway_in_topology_and_ct(real_server):
               };
               const layer = window.__p2_debug.estimatedLayer();
               return {
-                hidden: document.getElementById("g-layers").hidden,
                 variant: window.__p2_debug.getVariant(),
                 drawnPoints: layer.drawnPoints,
                 topology: layer.topology.drawn,
@@ -986,19 +957,18 @@ def test_estimated_airway_in_topology_and_ct(real_server):
             }"""
         )
         assert endoluminal["variant"] == "endoluminal"
-        assert endoluminal["hidden"] is True
         assert endoluminal["drawnPoints"] == 0
         assert endoluminal["topology"] == 0
         assert endoluminal["edgeEstimated"] is False
         assert endoluminal["flyEstimated"] is False
         assert endoluminal["flyHitsEstimated"] is False
-        assert page.locator("#g-layers").is_hidden()
+        assert page.evaluate("!window.__p2_debug.estimatedLayer().visible")
         cprint("endoluminal has no estimated layer", "cyan")
 
         page.evaluate("() => window.__p2_debug.setVariant(4)")
         page.wait_for_function(
             """() => window.__p2_debug.getVariant() === "walkthrough"
-              && document.getElementById("g-layers").hidden""",
+              && !window.__p2_debug.estimatedLayer().visible""",
             timeout=10_000,
         )
 
@@ -1007,10 +977,9 @@ def test_estimated_airway_in_topology_and_ct(real_server):
             "() => window.__p2_debug.getVariant() === 'ct-panes'",
             timeout=10_000,
         )
-        page.locator('input[data-overlay="estimated"]').click()
+        page.keyboard.press("e")
         page.wait_for_function(
-            """() => document.getElementById("estimated-airway-toggle").checked
-              && window.__p2_debug.estimatedLayer().visible""",
+            "() => window.__p2_debug.estimatedLayer().visible",
             timeout=10_000,
         )
         restored = page.evaluate(
@@ -1058,10 +1027,12 @@ def test_estimated_airway_in_topology_and_ct(real_server):
             pytest.fail(exc.read().decode("utf-8", "replace"))
         page.locator("#ct-mark-lesion").click()
         _click_ct_world(page, lesion)
-        page.locator("#ct-confirm-lesion").click()
         try:
             page.wait_for_function(
-                "() => document.querySelectorAll('.route-target-card').length > 0",
+                """() => {
+                  const rt = window.__p3_debug.airway().route_target;
+                  return !!(rt && !rt.stale && rt.rank === 1);
+                }""",
                 timeout=60_000,
             )
         except Exception:
@@ -1135,37 +1106,24 @@ def test_estimated_airway_in_topology_and_ct(real_server):
         )
         assert far and far["clearance"] > 4, far
         cprint(f"far estimated point clearance {far['clearance']:.1f} mm", "cyan")
-        page.locator("#route-target-pick").scroll_into_view_if_needed()
-        page.locator("#route-target-pick").click()
-        assert page.locator("#route-target-pick").get_attribute("aria-pressed") == "true"
-        _click_ct_world(page, far["world"])
-        page.wait_for_function(
-            """() => document.getElementById("route-target-status").textContent
-              .includes("not on CT-seen airway")""",
-            timeout=20_000,
-        )
-        snapped = page.evaluate(
-            """(world) => {
+        # The automatic target stays on the CT-seen centreline, never on the
+        # estimated airway that sits away from it.
+        chosen = page.evaluate(
+            """async () => {
+              const body = await (await fetch('/api/cases/local-001/route-candidates')).json();
               const target = window.__p3_debug.airway().route_target;
-              if (!target || !target.ras_mm) return { stored: false };
-              const d = Math.hypot(
-                target.ras_mm[0] - world[0],
-                target.ras_mm[1] - world[1],
-                target.ras_mm[2] - world[2],
-              );
-              return { stored: true, distance: d, ras: target.ras_mm };
-            }""",
-            far["world"],
+              return { top: body.candidates[0], target };
+            }"""
         )
-        assert snapped["stored"] is False or snapped["distance"] > 2, snapped
-        cprint(f"route target did not snap {snapped}", "cyan")
+        assert chosen["target"]["edge_id"] == chosen["top"]["edge_id"], chosen
+        assert chosen["target"]["target_gap_mm"] == chosen["top"]["target_gap_mm"], chosen
+        cprint(f"auto route target {chosen['target']['edge_id']}", "cyan")
 
-        page.locator('input[data-overlay="estimated"]').click()
+        page.keyboard.press("e")
         page.wait_for_function(
             """() => {
               const layer = window.__p2_debug.estimatedLayer();
-              const box = document.querySelector('input[data-overlay="estimated"]');
-              return box && box.checked === false && layer.visible === false
+              return layer.visible === false
                 && layer.ct.axial === 0 && layer.ct.coronal === 0 && layer.ct.sagittal === 0;
             }""",
             timeout=10_000,
@@ -1174,7 +1132,7 @@ def test_estimated_airway_in_topology_and_ct(real_server):
         page.wait_for_function(
             """() => window.__p2_debug.getVariant() === "topology"
               && window.__p2_debug.estimatedLayer().topology.drawn === 0
-              && document.getElementById("estimated-airway-toggle").checked === false""",
+              && !window.__p2_debug.estimatedLayer().visible""",
             timeout=10_000,
         )
         _assert_rail(page, baseline)

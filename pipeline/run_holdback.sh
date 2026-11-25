@@ -14,6 +14,7 @@ for n in 2 3 4 5 6; do
 
   if [ ! -f "ts_out/lobes_$n/lung_upper_lobe_left.nii.gz" ]; then
     uv run TotalSegmentator -i "$ct" -o "ts_out/lobes_$n" \
+      --task total_v2 \
       --roi_subset lung_upper_lobe_left lung_lower_lobe_left \
                    lung_upper_lobe_right lung_middle_lobe_right \
                    lung_lower_lobe_right \

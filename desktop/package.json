@@ -97,14 +97,18 @@
           "estimated_airway.py",
           "import_dicom.py",
           "make_prototype_data.py",
+          "nodule_candidates.py",
+          "nodule_contours.py",
           "paths.py",
           "repo_root.py",
           "review_signoff.py",
           "route_frame.py",
+          "run_nodules.py",
           "run_totalsegmentator.py",
           "series_rule.py",
           "snomed.py",
-          "pyproject.toml"
+          "pyproject.toml",
+          "build_endoluminal_web.py"
         ]
       },
       {
@@ -113,10 +117,15 @@
         "filter": [
           "renderer.template.html",
           "ct_panes.js",
+          "ct_candidates.js",
+          "fisheye-reproject.js",
+          "endo_route.js",
           "import.js",
           "import.css",
           "fonts/*.woff2",
-          "fonts/OFL*.txt"
+          "fonts/OFL*.txt",
+          "endoluminal.html",
+          "vendor/**"
         ]
       },
       {

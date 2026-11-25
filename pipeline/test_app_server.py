@@ -1,3 +1,4 @@
+# Changes: the nodule contour route serves the artifact read-only and empty when absent.
 # Changes: records/lesion no longer 412 for missing initials (auto-generated).
 # Changes: stamp a freshly built synthetic Case as the current pipeline version.
 # Changes: About, bundled LICENSE, notices, and sponsors are same-origin.
@@ -660,11 +661,16 @@ def test_payload_origin_and_lesion_roundtrip(client, harness):
 
     on_disk = json.loads(harness["case"].read_text())
     assert on_disk["lesion"]["ras_mm"] == pytest.approx(ras)
-    assert on_disk["records"][-1]["kind"] == "lesion_confirmed"
+    kinds = [rec["kind"] for rec in on_disk["records"]]
+    assert "lesion_confirmed" in kinds
+    # The lesion write also stores the best-ranked RouteTarget.
+    assert kinds[-1] == "route_target_chosen"
+    assert on_disk["route_target"]["rank"] == 1
 
     payload2 = client.get("/api/cases/local-001/payload?allow_review=true").json()
     assert payload2["lesion"]["ras_mm"] == pytest.approx(ras)
     assert payload2["lesion"]["confirmed_by"] == "Radiologist, A.B."
+    assert payload2["lesion"]["source"] == "manual"
 
     cleared = client.delete("/api/cases/local-001/lesion")
     assert cleared.status_code == 200
@@ -674,6 +680,341 @@ def test_payload_origin_and_lesion_roundtrip(client, harness):
     assert "lesion" not in on_disk2
     assert on_disk2["records"][-1]["kind"] == "lesion_cleared"
     assert client.get("/api/cases/local-001/payload?allow_review=true").json()["lesion"] is None
+
+
+def test_reset_case_keeps_nodules_and_drops_decisions(client, harness):
+    """Reset returns to post-processing: nodules and auto decisions stay."""
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    case = json.loads(harness["case"].read_text())
+    case["lesion"] = {"ras_mm": [1.0, 2.0, 3.0], "diameter_mm": 8.0,
+                      "confirmed_by": "Radiologist, A.B.", "at": "2026-01-01T00:00:02Z",
+                      "source": "manual"}
+    case["route_target"] = {"edge_id": 1, "sample_index": 0, "ras_mm": [1.0, 2.0, 3.0]}
+    case["route_start"] = {"node": 2, "confirmed": True}
+    case["corrections"] = [{"kind": "remove"}]
+    case["review_signoff"] = [{"kind": "signoff"}]
+    case["versions"] = [{"n": 1, "frozen": True}]
+    case["candidates"] = {"items": [{"ras_mm": [4.0, 5.0, 6.0], "diameter_mm": 7.0}]}
+    case["bridge_decisions"] = {
+        "auto-bridge": {"bridge_id": "auto-bridge", "decision": "confirmed", "source": "auto"},
+        "human-bridge": {"bridge_id": "human-bridge", "decision": "rejected", "source": "manual"},
+    }
+    case["records"] = [
+        {"step": 1, "kind": "series_confirmed", "data": {}, "clinician": "x",
+         "at": "2026-01-01T00:00:00Z"},
+        {"step": 3, "kind": "segmentation_done", "data": {}, "clinician": "x",
+         "at": "2026-01-01T00:00:01Z"},
+        {"step": 4, "kind": "bridge_decision",
+         "data": {"bridge_id": "auto-bridge", "decision": "confirmed", "source": "auto"},
+         "clinician": "auto", "at": "2026-01-01T00:00:01Z"},
+        {"step": 4, "kind": "bridge_decision",
+         "data": {"bridge_id": "human-bridge", "decision": "rejected", "source": "manual"},
+         "clinician": "Radiologist, A.B.", "at": "2026-01-01T00:00:02Z"},
+        {"step": 2, "kind": "lesion_confirmed", "data": {}, "clinician": "Radiologist, A.B.",
+         "at": "2026-01-01T00:00:02Z"},
+        {"step": 6, "kind": "route_target_chosen", "data": {},
+         "clinician": "Radiologist, A.B.", "at": "2026-01-01T00:00:02Z"},
+    ]
+    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+
+    res = client.post("/api/cases/local-001/reset")
+    assert res.status_code == 200, res.text
+    assert res.json()["reset"] is True
+    reset = json.loads(harness["case"].read_text())
+    for gone in ("lesion", "route_target", "route_start", "corrections",
+                 "review_signoff"):
+        assert gone not in reset, gone
+    # Old version history is gone; the reset event opens version 1 again.
+    assert [v["n"] for v in reset.get("versions") or []] == [1]
+    assert reset["versions"][0]["changes"] == ["case_reset"]
+    assert reset["candidates"]["items"][0]["ras_mm"] == [4.0, 5.0, 6.0]
+    assert list(reset["bridge_decisions"]) == ["auto-bridge"]
+    kinds = [r["kind"] for r in reset["records"]]
+    assert kinds == ["series_confirmed", "segmentation_done", "bridge_decision", "case_reset"]
+    assert reset["records"][-1]["clinician"] == "Radiologist, A.B."
+
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert payload["lesion"] is None
+    assert payload["route_target"] is None
+    assert len(payload["candidates"]) == 1
+
+
+def test_candidates_roundtrip_and_confirm(client, harness):
+    """Detector candidates stay suggestions until one is confirmed as the lesion."""
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    shape = meta["shape"]
+
+    def ras_at(frac):
+        ijk = np.array([
+            shape[0] * frac, shape[1] * frac, shape[2] * frac, 1.0,
+        ])
+        return (affine @ ijk)[:3].tolist()
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    case = json.loads(harness["case"].read_text())
+    case["records"] = [r for r in case.get("records", []) if r["kind"] != "lesion_confirmed"]
+    case.pop("lesion", None)
+    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+
+    outside = client.put(
+        "/api/cases/local-001/candidates",
+        json={"candidates": [{"ras_mm": [1e6, 1e6, 1e6], "diameter_mm": 6}]},
+    )
+    assert outside.status_code == 422
+
+    near = ras_at(0.45)
+    far = ras_at(0.55)
+    stored = client.put(
+        "/api/cases/local-001/candidates",
+        json={
+            "source": "lung_nodule_ct_detection",
+            "candidates": [
+                {"ras_mm": near, "diameter_mm": 6.0, "score": 0.91},
+                {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
+            ],
+        },
+    )
+    assert stored.status_code == 200
+    assert len(stored.json()["candidates"]["items"]) == 2
+
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert payload["lesion"] is None
+    assert len(payload["candidates"]) == 2
+    assert payload["candidates"][0]["score"] == pytest.approx(0.91)
+    assert payload["candidates"][0]["ras_mm"] == pytest.approx(near, abs=1e-3)
+
+    bad_index = client.post("/api/cases/local-001/candidates/5/confirm")
+    assert bad_index.status_code == 422
+
+    chosen = client.post("/api/cases/local-001/candidates/1/confirm")
+    assert chosen.status_code == 200
+    body = chosen.json()
+    assert body["lesion"]["ras_mm"] == pytest.approx(far)
+    assert body["lesion"]["diameter_mm"] == pytest.approx(9.0)
+
+    # The detector list stays: the Nodules sidebar shows every detected nodule
+    # for the life of the Case, even after one becomes the Lesion.
+    on_disk = json.loads(harness["case"].read_text())
+    assert len(on_disk["candidates"]["items"]) == 2
+    payload2 = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert payload2["lesion"]["ras_mm"] == pytest.approx(far)
+    assert payload2["lesion"]["source"] == "nodule"
+    assert len(payload2["candidates"]) == 2
+
+    # A Lesion confirmed from a detected Nodule is never cleared.
+    refused = client.delete("/api/cases/local-001/lesion")
+    assert refused.status_code == 422
+    assert "cannot be cleared" in refused.json()["detail"]
+    assert json.loads(harness["case"].read_text())["lesion"]["ras_mm"] == pytest.approx(far)
+    assert "lesion_cleared" not in [
+        rec["kind"] for rec in json.loads(harness["case"].read_text())["records"]
+    ]
+
+    client.delete("/api/cases/local-001/candidates")
+
+
+def test_two_candidates_confirm_as_two_lesions(client, harness):
+    """Confirming a second candidate adds a Lesion; re-confirming re-activates."""
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    shape = meta["shape"]
+
+    def ras_at(frac):
+        ijk = np.array([
+            shape[0] * frac, shape[1] * frac, shape[2] * frac, 1.0,
+        ])
+        return (affine @ ijk)[:3].tolist()
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    case = json.loads(harness["case"].read_text())
+    case["records"] = [r for r in case.get("records", []) if r["kind"] != "lesion_confirmed"]
+    case.pop("lesion", None)
+    case.pop("lesions", None)
+    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+    near = ras_at(0.45)
+    far = ras_at(0.55)
+    client.put("/api/cases/local-001/candidates", json={
+        "candidates": [
+            {"ras_mm": near, "diameter_mm": 6.0, "score": 0.91, "id": 1},
+            {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42, "id": 2},
+        ],
+    })
+
+    first = client.post("/api/cases/local-001/candidates/0/confirm")
+    assert first.status_code == 200, first.text
+    assert len(first.json()["lesions"]) == 1
+
+    second = client.post("/api/cases/local-001/candidates/1/confirm")
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert len(body["lesions"]) == 2
+    assert body["lesion"]["candidate_id"] == 2
+    assert body["lesion"]["ras_mm"] == pytest.approx(far)
+    on_disk = json.loads(harness["case"].read_text())
+    assert len(on_disk["lesions"]) == 2
+    assert on_disk["lesion"]["candidate_id"] == 2
+
+    # Re-confirming an earlier candidate makes it active, not a third Lesion.
+    again = client.post("/api/cases/local-001/candidates/0/confirm")
+    assert again.status_code == 200, again.text
+    assert len(again.json()["lesions"]) == 2
+    assert again.json()["lesion"]["candidate_id"] == 1
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    assert payload["lesion"]["candidate_id"] == 1
+    assert len(payload["lesions"]) == 2
+    assert {item["candidate_id"] for item in payload["lesions"]} == {1, 2}
+
+
+def test_confirm_overdiameter_candidate_clamps_lesion(client, harness):
+    """A mask candidate above 60 mm confirms as a valid Lesion, unrewritten."""
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    shape = meta["shape"]
+    ijk = np.array([shape[0] * 0.45, shape[1] * 0.45, shape[2] * 0.45, 1.0])
+    near = (affine @ ijk)[:3].tolist()
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    case = json.loads(harness["case"].read_text())
+    case["records"] = [r for r in case.get("records", []) if r["kind"] != "lesion_confirmed"]
+    case.pop("lesion", None)
+    # The nodule stage writes measured candidates straight to the Case record.
+    case["candidates"] = {
+        "source": "lung_nodules",
+        "at": "2026-01-01T00:00:00Z",
+        "by": "pipeline",
+        "items": [{"ras_mm": near, "diameter_mm": 64.5, "score": 0.91, "id": 7}],
+    }
+    harness["case"].write_text(json.dumps(case, indent=2) + "\n")
+    assert (
+        json.loads(harness["case"].read_text())["candidates"]["items"][0]["diameter_mm"]
+        == pytest.approx(64.5)
+    )
+
+    chosen = client.post("/api/cases/local-001/candidates/0/confirm")
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.json()["lesion"]["diameter_mm"] == pytest.approx(60.0)
+
+    on_disk = json.loads(harness["case"].read_text())
+    assert on_disk["lesion"]["diameter_mm"] == pytest.approx(60.0)
+    assert on_disk["records"][-1]["data"]["diameter_mm"] == pytest.approx(60.0)
+    # The detector list survives confirmation so the Nodules sidebar keeps it.
+    assert on_disk["candidates"]["items"][0]["diameter_mm"] == pytest.approx(64.5)
+
+
+def test_candidates_carry_nodule_measurements(client, harness):
+    """Mask measurements and the nodule id survive; box-only keeps detector diameter."""
+    meta = client.get("/api/cases/local-001/ct/meta").json()
+    affine = np.asarray(meta["affine"])
+    shape = meta["shape"]
+
+    def ras_at(frac):
+        ijk = np.array([shape[0] * frac, shape[1] * frac, shape[2] * frac, 1.0])
+        return (affine @ ijk)[:3].tolist()
+
+    client.put("/api/clinician", json={"role": "Radiologist", "initials": "A.B."})
+    near = ras_at(0.45)
+    far = ras_at(0.55)
+    stored = client.put(
+        "/api/cases/local-001/candidates",
+        json={
+            "source": "lung_nodule_ct_detection",
+            "candidates": [
+                {
+                    "ras_mm": near, "diameter_mm": 6.0, "score": 0.91,
+                    "id": 7, "volume_mm3": 113.1,
+                    "lobe": "lung_upper_lobe_left", "to_airway_mm": 4.5,
+                    "size_mm": [7.0, 6.0, 5.0],
+                },
+                {"ras_mm": far, "diameter_mm": 9.0, "score": 0.42},
+            ],
+        },
+    )
+    assert stored.status_code == 200
+    items = stored.json()["candidates"]["items"]
+    assert items[0]["id"] == 7
+    assert items[0]["volume_mm3"] == pytest.approx(113.1)
+    assert items[0]["lobe"] == "lung_upper_lobe_left"
+    assert items[0]["to_airway_mm"] == pytest.approx(4.5)
+    assert items[0]["size_mm"] == pytest.approx([7.0, 6.0, 5.0])
+    assert items[1]["id"] is None
+    assert items[1]["volume_mm3"] is None
+    assert items[1]["size_mm"] is None
+
+    payload = client.get("/api/cases/local-001/payload?allow_review=true").json()
+    measured, box_only = payload["candidates"]
+    assert measured["id"] == 7
+    assert measured["volume_mm3"] == pytest.approx(113.1)
+    assert measured["diameter_mm"] == pytest.approx(6.0)
+    assert measured["score"] == pytest.approx(0.91)
+    assert measured["lobe"] == "lung_upper_lobe_left"
+    assert measured["to_airway_mm"] == pytest.approx(4.5)
+    assert measured["size_mm"] == pytest.approx([7.0, 6.0, 5.0])
+    # A box-only candidate falls back to the detector diameter and has no volume.
+    assert box_only["id"] is None
+    assert box_only["volume_mm3"] is None
+    assert box_only["diameter_mm"] == pytest.approx(9.0)
+
+    negative_volume = client.put(
+        "/api/cases/local-001/candidates",
+        json={"candidates": [{"ras_mm": near, "volume_mm3": -1}]},
+    )
+    assert negative_volume.status_code == 422
+    bad_id = client.put(
+        "/api/cases/local-001/candidates",
+        json={"candidates": [{"ras_mm": near, "id": 0}]},
+    )
+    assert bad_id.status_code == 422
+    client.delete("/api/cases/local-001/candidates")
+
+
+def test_nodule_contours_artifact_is_served_read_only(client, harness, monkeypatch):
+    """The viewer reads the axial contour artifact; the route never writes."""
+    artifact = {
+        "shape": [24, 20, 16],
+        "nodules": [{
+            "id": 1,
+            "slices": [{
+                "slice_index": 5,
+                "polygons": [[[9.0, 7.0], [10.0, 7.0], [10.0, 8.0], [9.0, 8.0]]],
+            }],
+        }],
+    }
+    (harness["ts"] / "nodule_contours.json").write_text(json.dumps(artifact))
+
+    monkeypatch.setenv("LUNGNAV_VIEWER_ONLY", "1")
+    served = client.get("/api/cases/local-001/nodule-contours")
+    assert served.status_code == 200
+    body = served.json()
+    assert body["shape"] == artifact["shape"]
+    assert body["nodules"] == artifact["nodules"]
+    # The viewer needs the CT affine to bridge the traced grid to its crop.
+    assert body["affine"] == nib.load(harness["ct"]).affine.tolist()
+    monkeypatch.delenv("LUNGNAV_VIEWER_ONLY", raising=False)
+
+    (harness["ts"] / "nodule_contours.json").unlink()
+    empty = client.get("/api/cases/local-001/nodule-contours")
+    assert empty.status_code == 200
+    assert empty.json() == {"shape": [], "nodules": []}
+
+
+def test_nodule_contours_logs_a_missing_affine(client, harness, monkeypatch, caplog):
+    """An unreadable CT affine leaves the artifact usable and logs one warning."""
+    artifact = {"shape": [24, 20, 16], "nodules": []}
+    (harness["ts"] / "nodule_contours.json").write_text(json.dumps(artifact))
+
+    def unreadable(_path):
+        raise OSError("unreadable CT")
+
+    monkeypatch.setattr("app.server.nib.load", unreadable)
+    with caplog.at_level("WARNING", logger="app.server"):
+        served = client.get("/api/cases/local-001/nodule-contours")
+
+    assert served.status_code == 200
+    assert served.json() == artifact
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "affine" in warnings[0].getMessage()
 
 
 def test_about_licence_notices_and_sponsors(client):

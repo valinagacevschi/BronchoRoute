@@ -243,14 +243,17 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
                   start_node: int | None = None,
                   end_ras_mm: list[float] | None = None,
                   stored_gap_mm: float | None = None,
-                  stored_inside_airway: bool | None = None) -> dict:
+                  stored_inside_airway: bool | None = None,
+                  poi_ras_mm: list[float] | None = None,
+                  poi_kind: str | None = None) -> dict:
     """Build the renderer `window.AIRWAY` payload; raise ReviewBlocked if gated.
 
     CLI `--target` (interim): nearest centreline sample to `target` is the route
     end; `target` is also the POI for the gap line.
     Explicit `end_edge`/`end_sample` (Phase 4c): truncate at that sample; POI /
-    gap use case lesion when present, else `target`. Route starts at confirmed
-    RouteStart (`start_node`) when given, else graph root.
+    gap use case lesion when present, else `target`. A route to a Lymph node
+    passes that node in `poi_ras_mm`; `poi_kind` labels it. Route starts at
+    confirmed RouteStart (`start_node`) when given, else graph root.
     When `end_ras_mm` is set, fly ends at that exact point (appended after the
     last original vertex at or before `end_sample`). Stored gap fields win over
     recomputation when provided.
@@ -317,6 +320,11 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
     lesion_ras = None
     if isinstance(lesion_rec, dict) and lesion_rec.get("ras_mm") is not None:
         lesion_ras = [float(v) for v in lesion_rec["ras_mm"]]
+    poi_override = (
+        [float(v) for v in poi_ras_mm]
+        if isinstance(poi_ras_mm, (list, tuple)) and len(poi_ras_mm) == 3
+        else None
+    )
 
     truncated = False
     endpoint = target_gap = target_inside = None
@@ -336,7 +344,10 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
             endpoint = np.asarray(line[end_sample], dtype=float).copy()
         route = edge_route(edges, route_root, end_edge)
         target_node = edges[end_edge]["to"]
-        poi_ras = lesion_ras if lesion_ras is not None else target
+        poi_ras = (
+            poi_override if poi_override is not None
+            else (lesion_ras if lesion_ras is not None else target)
+        )
         if stored_gap_mm is not None:
             target_gap = float(stored_gap_mm)
             target_inside = (
@@ -358,7 +369,7 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
         route = edge_route(edges, route_root, end_edge)
         target_node = edges[end_edge]["to"]
         target_inside = target_gap <= edges[end_edge]["radius_mm"]
-        poi_ras = target
+        poi_ras = poi_override if poi_override is not None else target
         truncated = True
     else:
         target_node = order[-1] if order else graph["root_node_id"]
@@ -446,14 +457,55 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
         for distance, route_pos in zip(fs, fe)
     ]
 
+    candidates_out = []
+    block = case_record.get("candidates")
+    if isinstance(block, dict) and isinstance(block.get("items"), list):
+        for item in block["items"]:
+            if not isinstance(item, dict) or item.get("ras_mm") is None:
+                continue
+            candidates_out.append({
+                "ras_mm": [round(float(v), 3) for v in item["ras_mm"]],
+                "diameter_mm": lesion_diameter_mm(item),
+                "score": item.get("score"),
+                "id": item.get("id"),
+                "volume_mm3": item.get("volume_mm3"),
+                "lobe": item.get("lobe"),
+                "to_airway_mm": item.get("to_airway_mm"),
+                "size_mm": item.get("size_mm"),
+                "review": bool(item.get("review", False)),
+            })
+
     lesion_out = None
     if lesion_ras is not None:
         lesion_out = {
+            "id": lesion_rec.get("id") if isinstance(lesion_rec, dict) else None,
+            "candidate_id": (
+                lesion_rec.get("candidate_id")
+                if isinstance(lesion_rec, dict) else None
+            ),
             "ras_mm": lesion_ras,
             "diameter_mm": lesion_diameter_mm(lesion_rec if isinstance(lesion_rec, dict) else {}),
             "confirmed_by": lesion_rec.get("confirmed_by") if isinstance(lesion_rec, dict) else None,
             "at": lesion_rec.get("at") if isinstance(lesion_rec, dict) else None,
+            "source": lesion_rec.get("source") if isinstance(lesion_rec, dict) else None,
         }
+
+    confirmed = case_record.get("lesions")
+    if not isinstance(confirmed, list):
+        confirmed = [lesion_rec] if isinstance(lesion_rec, dict) else []
+    lesions_out = []
+    for item in confirmed:
+        if not isinstance(item, dict) or item.get("ras_mm") is None:
+            continue
+        lesions_out.append({
+            "id": item.get("id"),
+            "candidate_id": item.get("candidate_id"),
+            "ras_mm": [float(v) for v in item["ras_mm"]],
+            "diameter_mm": lesion_diameter_mm(item),
+            "confirmed_by": item.get("confirmed_by"),
+            "at": item.get("at"),
+            "source": item.get("source"),
+        })
 
     # Exact RouteTarget end: keep full precision on endpoint + last fly sample.
     if truncated and exact_end and endpoint is not None and len(fp):
@@ -475,12 +527,32 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
             else round(float(target_gap), 1)
         )
 
+    node_marks_out = []
+    for mark in case_record.get("node_marks") or []:
+        if not isinstance(mark, dict) or mark.get("ras_mm") is None:
+            continue
+        try:
+            ras = [float(v) for v in mark["ras_mm"]]
+        except (TypeError, ValueError):
+            continue
+        if len(ras) != 3:
+            continue
+        node_marks_out.append({
+            "id": mark.get("id"),
+            "p": rel(ras),
+            "ras_mm": ras,
+            "diameter_mm": lesion_diameter_mm(mark),
+            "label": mark.get("label"),
+        })
+
     return {
         "case": graph["case"],
         "source": source_label(case_id),
         "root": graph["root_node_id"],
         "origin_mm": [round(float(root[i]), 3) for i in range(3)],
         "lesion": lesion_out,
+        "lesions": lesions_out,
+        "candidates": candidates_out,
         "nodes": {str(k): {"p": rel(v["position_mm"]), "r": v["radius_mm"]}
                   for k, v in nodes.items()},
         "edges": out_edges,
@@ -488,6 +560,8 @@ def build_payload(graph: dict, case_record: dict, allow_review: bool,
         "route": route,
         "target": target_node,
         "poi": rel(poi_ras) if poi_ras is not None else None,
+        "poi_kind": poi_kind,
+        "node_marks": node_marks_out,
         "endpoint": endpoint_out,
         "target_gap_mm": gap_out,
         "target_inside_airway": target_inside if truncated else None,

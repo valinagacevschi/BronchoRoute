@@ -1,3 +1,5 @@
+# Changes: allow the open lung_nodules task for the nodule stage.
+# Changes: run the lobe step on total_v2 so TotalSegmentator 3 keeps v2 weights.
 # Changes: refuse TotalSegmentator tasks outside lung_vessels and total.
 # Changes: empty or missing lobe masks exit as segmentation: no lungs found.
 # Changes: emit airway-model progress before mask combination.
@@ -5,10 +7,14 @@
 """Run TotalSegmentator for airway and lobe masks.
 
 The airway fallback combines the lung_vessels task's lung_airways lumen with
-the total task's trachea, then keeps the largest 26-connected component. Pass
---legacy to use lung_vessels_LEGACY's lung_trachea_bronchia instead. The total
-task also produces the five lobe masks, which are merged into lobes.nii.gz;
-the trachea is deliberately excluded from that merge.
+the total_v2 task's trachea, then keeps the largest 26-connected component. Pass
+--legacy to use lung_vessels_LEGACY's lung_trachea_bronchia instead. The lobe
+step runs total_v2, because TotalSegmentator 3's total task ships new weights
+and renumbers class 26. total_v2 keeps the v2 weights already mirrored. It
+also produces the five lobe masks, which are merged into lobes.nii.gz;
+the trachea is deliberately excluded from that merge. The requested ROI set
+also includes heart, aorta and pulmonary_vein for the 3D context layers, so
+the step needs the cardiac part (Dataset293) in addition to the lobe parts.
 """
 
 import argparse
@@ -25,8 +31,10 @@ from paths import TS_OUT
 from snomed import LOBES as LOBE_TABLE
 
 LOBES = {info["key"]: value for value, info in LOBE_TABLE.items()}
-ROIS = [*LOBES, "trachea"]
-ALLOWED_TASKS = frozenset({"lung_vessels", "lung_vessels_LEGACY", "total"})
+ROIS = [*LOBES, "trachea", "heart", "aorta", "pulmonary_vein"]
+ALLOWED_TASKS = frozenset({
+    "lung_vessels", "lung_vessels_LEGACY", "total", "total_v2", "lung_nodules",
+})
 
 
 def require_task(task: str) -> str:
@@ -289,10 +297,11 @@ def main() -> None:
                adopt_cache=args.adopt_cache)
 
     lobe_dir = args.out / "lobes"
-    print("lobes and trachea (total task, six structures only)")
+    print(f"lobes, trachea and context ({len(ROIS)} structures, total_v2 task)")
     cmd = [sys.executable, "-m", "totalsegmentator.bin.TotalSegmentator",
            "-i", str(args.ct), "-o", str(lobe_dir),
-           "--roi_subset", *ROIS, "--device", args.device]
+           "--task", "total_v2", "--roi_subset", *ROIS,
+           "--device", args.device]
     if args.fast:
         cmd.append("--fast")
     if args.higher_order:
@@ -301,7 +310,7 @@ def main() -> None:
     # Lobe step never passes --legacy; keep it out of the cache key.
     lobe_options = {
         "ct": ct, "device": args.device, "fast": args.fast,
-        "higher_order_resampling": args.higher_order,
+        "higher_order_resampling": args.higher_order, "rois": list(ROIS),
     }
     run_cached(cmd, [lobe_dir / f"{name}.nii.gz" for name in ROIS],
                lobe_dir / "run.json", lobe_options,

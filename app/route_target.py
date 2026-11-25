@@ -444,6 +444,17 @@ def plan_route_target_for_payload(
     if route is None:
         return {"active": False, "stale": True, "reason": NOT_REACHABLE}
     ras = [float(v) for v in route_target["ras_mm"]]
+    poi_ras = route_target.get("poi_ras_mm")
+    if isinstance(poi_ras, (list, tuple)) and len(poi_ras) == 3:
+        poi_ras = [float(v) for v in poi_ras]
+    else:
+        lesion = case.get("lesion")
+        poi_ras = (
+            [float(v) for v in lesion["ras_mm"]]
+            if isinstance(lesion, dict) and lesion.get("ras_mm") is not None
+            else None
+        )
+    poi_kind = route_target.get("poi_kind") or "lesion"
     return {
         "active": True,
         "stale": False,
@@ -454,6 +465,8 @@ def plan_route_target_for_payload(
         "route": route,
         "target_gap_mm": route_target.get("target_gap_mm"),
         "target_inside_airway": route_target.get("target_inside_airway"),
+        "poi_ras_mm": poi_ras,
+        "poi_kind": poi_kind,
         "route_target": {
             "edge_id": route_target.get("edge_id"),
             "sample_index": route_target.get("sample_index"),
@@ -461,6 +474,12 @@ def plan_route_target_for_payload(
             "rank": route_target.get("rank"),
             "target_gap_mm": route_target.get("target_gap_mm"),
             "target_inside_airway": route_target.get("target_inside_airway"),
+            "generation": route_target.get("generation"),
+            "route_length_mm": route_target.get("route_length_mm"),
+            "lobe": route_target.get("lobe"),
+            "airway_name": route_target.get("airway_name"),
+            "poi_ras_mm": poi_ras,
+            "poi_kind": poi_kind,
             "confirmed": True,
             "stale": False,
         },
@@ -488,28 +507,42 @@ def set_route_target(
     edge_id: int | None = None,
     sample_index: int | None = None,
     ras_mm: list[float] | None = None,
+    poi_ras_mm: list[float] | None = None,
+    poi_kind: str | None = None,
 ) -> dict:
     """Confirm RouteTarget from a candidate or a snapped custom point.
 
-    A Lesion is the only requirement. Metrics and the write share one lock.
+    A Lesion is required unless the caller names the POI directly. A Lymph-node
+    route passes the node in `poi_ras_mm`; then the target gap is measured from
+    the node and no Lesion is needed. Metrics and the write share one lock.
     """
     ref = CaseRef.parse(case_id)
     path = ref.case_json
     at = _utc_now()
+    poi_override = (
+        [float(v) for v in poi_ras_mm]
+        if isinstance(poi_ras_mm, (list, tuple)) and len(poi_ras_mm) == 3
+        else None
+    )
     with json_file_lock(path):
         record = _load_or_init_record(ref, path)
         lesion = record.get("lesion")
-        if not isinstance(lesion, dict) or lesion.get("ras_mm") is None:
+        lesion_ras = (
+            [float(v) for v in lesion["ras_mm"]]
+            if isinstance(lesion, dict) and lesion.get("ras_mm") is not None
+            else None
+        )
+        if poi_override is None and lesion_ras is None:
             raise WorkflowBlocked(LESION_FIRST)
-        lesion_ras = [float(v) for v in lesion["ras_mm"]]
+        poi_ras = poi_override if poi_override is not None else lesion_ras
         eff = effective_for_case(case_id, record)
         graph = eff["graph"]
 
         rank: int | str
         if edge_id is not None and sample_index is not None:
             resolved = resolve_edge_sample(graph, int(edge_id), int(sample_index))
-            metrics = candidate_metrics_for_sample(graph, record, lesion_ras, resolved)
-            cands = rank_route_target_candidates(graph, record, lesion_ras)
+            metrics = candidate_metrics_for_sample(graph, record, poi_ras, resolved)
+            cands = rank_route_target_candidates(graph, record, poi_ras)
             rank = "custom"
             for i, c in enumerate(cands, 1):
                 if (
@@ -522,7 +555,7 @@ def set_route_target(
             snapped = snap_to_selectable_ct(graph, [float(v) for v in ras_mm])
             if snapped is None:
                 raise ValueError(NOT_ON_CT)
-            metrics = candidate_metrics_for_sample(graph, record, lesion_ras, snapped)
+            metrics = candidate_metrics_for_sample(graph, record, poi_ras, snapped)
             rank = "custom"
         else:
             raise ValueError("provide {edge_id, sample_index} or {ras_mm}")
@@ -541,6 +574,8 @@ def set_route_target(
             "interpolated_mm_on_route": metrics["interpolated_mm_on_route"],
             "lobe": metrics["lobe"],
             "airway_name": metrics["airway_name"],
+            "poi_ras_mm": [float(v) for v in poi_ras],
+            "poi_kind": poi_kind or "lesion",
         }
         entry = {
             "step": int(WorkflowStep.ROUTE_TARGET),
@@ -567,6 +602,110 @@ def set_route_target(
             "green",
         )
         return {"route_target": record["route_target"], "record": entry}
+
+
+AUTO_CLINICIAN = "BronchoRoute auto"
+
+
+def auto_pick_route_target(case_id: str, clinician: str | None = None) -> dict | None:
+    """Confirm the best-ranked candidate as the RouteTarget.
+
+    Ranking is the product rule: smallest target gap, then fewer generations,
+    then shorter route. Returns None when the case has no Lesion or no
+    reachable candidate.
+    """
+    ref = CaseRef.parse(case_id)
+    record = load_case_record(ref)
+    lesion = record.get("lesion")
+    if not isinstance(lesion, dict) or lesion.get("ras_mm") is None:
+        return None
+    eff = effective_for_case(case_id, record)
+    candidates = rank_route_target_candidates(
+        eff["graph"], record, [float(v) for v in lesion["ras_mm"]]
+    )
+    if not candidates:
+        return None
+    top = candidates[0]
+    who = clinician or str(lesion.get("confirmed_by") or AUTO_CLINICIAN)
+    result = set_route_target(
+        case_id,
+        who,
+        edge_id=int(top["edge_id"]),
+        sample_index=int(top["sample_index"]),
+    )
+    return result["route_target"]
+
+
+def clear_route_target(case_id: str, clinician: str | None = None) -> dict:
+    """Drop the stored RouteTarget so the Lesion auto-pick owns the route again."""
+    ref = CaseRef.parse(case_id)
+    path = ref.case_json
+    with json_file_lock(path):
+        record = _load_or_init_record(ref, path)
+        if record.pop("route_target", None) is not None:
+            from app.versions import note_change
+
+            note_change(record, "route_target")
+            atomic_write_json(path, record)
+    return {"route_target": None}
+
+
+def route_to_node_mark(
+    case_id: str, node_id: object, clinician: str | None = None
+) -> dict | None:
+    """Plan the airway route to a stored Lymph-node mark.
+
+    The Lesion stays in place; the node becomes the POI, so the target gap is
+    measured from the node. Returns None when no reachable candidate exists.
+    """
+    ref = CaseRef.parse(case_id)
+    record = load_case_record(ref)
+    try:
+        wanted = int(node_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("node id must be an integer") from exc
+    marks = record.get("node_marks")
+    node = None
+    if isinstance(marks, list):
+        for mark in marks:
+            if isinstance(mark, dict) and int(mark.get("id", -1)) == wanted:
+                node = mark
+                break
+    if node is None:
+        raise ValueError(f"node mark {wanted} not found")
+    node_ras = [float(v) for v in node["ras_mm"]]
+    eff = effective_for_case(case_id, record)
+    candidates = rank_route_target_candidates(eff["graph"], record, node_ras)
+    if not candidates:
+        return None
+    top = candidates[0]
+    who = clinician or str(node.get("confirmed_by") or AUTO_CLINICIAN)
+    result = set_route_target(
+        case_id,
+        who,
+        edge_id=int(top["edge_id"]),
+        sample_index=int(top["sample_index"]),
+        poi_ras_mm=node_ras,
+        poi_kind=f"node:{wanted}",
+    )
+    return result["route_target"]
+
+
+def ensure_route_target(case_id: str) -> dict | None:
+    """Keep a valid stored RouteTarget, otherwise auto-pick the best candidate."""
+    ref = CaseRef.parse(case_id)
+    record = load_case_record(ref)
+    eff = effective_for_case(case_id, record)
+    stored = record.get("route_target")
+    if (
+        isinstance(stored, dict)
+        and stale_reason_for_route_target(eff["graph"], record, stored) is None
+    ):
+        return stored
+    lesion = record.get("lesion")
+    if not isinstance(lesion, dict) or lesion.get("ras_mm") is None:
+        return None
+    return auto_pick_route_target(case_id)
 
 
 def resolve_route_end_for_payload(
@@ -611,8 +750,11 @@ __all__ = [
     "NOT_REACHABLE",
     "SNAP_MM",
     "TOP_N",
+    "auto_pick_route_target",
     "candidate_metrics_for_sample",
     "centreline_index_for_sample",
+    "clear_route_target",
+    "ensure_route_target",
     "last_original_index_at_or_before_arc",
     "list_selectable_ct_samples",
     "plan_route_target_for_payload",
@@ -621,6 +763,7 @@ __all__ = [
     "resolve_route_end_for_payload",
     "route_edges_from_start",
     "route_target_candidates",
+    "route_to_node_mark",
     "set_route_target",
     "snap_to_selectable_ct",
     "stale_reason_for_route_target",

@@ -433,7 +433,31 @@ def test_job_commands_use_current_python(harness):
     assert [cmd[:2] for cmd in commands] == [
         [sys.executable, "run_totalsegmentator.py"],
         [sys.executable, "build_graph.py"],
+        [sys.executable, "run_nodules.py"],
+        [sys.executable, "build_endoluminal_web.py"],
     ]
+    nodule = commands[2]
+    assert nodule[nodule.index("--case-json") + 1] == str(
+        CaseRef.parse("local-001").case_json
+    )
+    assert nodule[nodule.index("--graph") + 1].endswith("local-001_graph.json")
+    assert commands[3][2] == "local-001"
+
+
+def test_job_commands_name_their_progress_step():
+    from app.jobs import _step_for_command
+
+    assert _step_for_command([sys.executable, "run_totalsegmentator.py"]) == "segmentation"
+    assert _step_for_command([sys.executable, "build_graph.py"]) == "graph"
+    assert _step_for_command([sys.executable, "run_nodules.py"]) == "nodules"
+    assert _step_for_command([sys.executable, "build_endoluminal_web.py"]) == "nodules"
+
+
+def test_latest_step_prefers_nodules_over_graph():
+    from app.jobs import _step_in_log
+
+    lines = ["step: reading", "step: segmentation", "step: graph", "step: nodules"]
+    assert _step_in_log(lines) == "nodules"
 
 
 def test_job_conflict_across_cases(client, harness, monkeypatch):

@@ -89,7 +89,7 @@ def test_topology_rotation(server):
         page.wait_for_function("() => document.querySelector(\"#topo-angle\") || document.body.innerText.includes(\"Could not load\")", timeout=120_000)
         assert not errors, errors
         angle.wait_for()
-        assert angle.inner_text() == "Rotation 0°"
+        assert angle.inner_text() == "0°"
 
         def shot(degrees):
             path = shots / f"topology_{degrees}.png"
@@ -97,14 +97,15 @@ def test_topology_rotation(server):
             print(path)
 
         shot(0)
-        page.keyboard.press("]")
-        page.keyboard.press("]")
-        page.keyboard.press("]")
-        assert angle.inner_text() == "Rotation 45°"
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowRight")
+        assert angle.inner_text() == "45°"
         shot(45)
         page.locator("#case-picker").click()
-        page.keyboard.press("]")
-        assert angle.inner_text() == "Rotation 45°"
+        # A focused form control swallows the rotation keys.
+        page.keyboard.press("r")
+        assert angle.inner_text() == "45°"
         page.keyboard.press("Escape")
         page.keyboard.press("Tab")
         page.mouse.move(900, 450)
@@ -113,7 +114,7 @@ def test_topology_rotation(server):
         page.mouse.move(700, 650, steps=12)
         page.mouse.up()
         page.keyboard.up("Shift")
-        assert angle.inner_text() != "Rotation 45°"
+        assert angle.inner_text() != "45°"
         before = angle.inner_text()
         pan = page.evaluate("() => window.__p2_debug.topology().pan")
         page.mouse.move(900, 450)
@@ -124,39 +125,39 @@ def test_topology_rotation(server):
         assert page.evaluate("() => window.__p2_debug.topology().pan") != pan
         page.mouse.wheel(0, 100)
         assert angle.inner_text() == before
-        page.locator("#topo-reset").click()
-        assert angle.inner_text() == "Rotation 0°"
-        page.locator("#topo-spin").click()
+        page.keyboard.press("r")
+        assert angle.inner_text() == "0°"
+        page.keyboard.press("a")
         page.wait_for_timeout(1000)
-        degrees = float(angle.inner_text().split()[1][:-1])
+        degrees = float(angle.inner_text()[:-1])
         assert 20 <= degrees <= 45
-        page.keyboard.press("[")
+        page.keyboard.press("ArrowLeft")
         stopped = angle.inner_text()
         page.wait_for_timeout(250)
         assert angle.inner_text() == stopped
-        assert page.locator("#topo-spin").get_attribute("aria-pressed") == "false"
-        page.locator("#topo-reset").click()
+        page.keyboard.press("r")
+        assert angle.inner_text() == "0°"
         # Read geometry only; all state changes use actual input.
         point = page.evaluate("() => window.__p2_debug.topology().points[0]")
         page.mouse.click(point["x"], point["y"])
         picked = page.evaluate("() => SharedPos.get()")
         assert page.evaluate("() => window.__p2_debug.topology().pickedEdge") == point["edge"]
         for _ in range(6):
-            page.keyboard.press("]")
+            page.keyboard.press("ArrowRight")
         rotated = page.evaluate("() => window.__p2_debug.topology().points[0]")
         page.mouse.click(rotated["x"], rotated["y"])
         assert page.evaluate("() => SharedPos.get()") == picked
         assert page.evaluate("() => window.__p2_debug.topology().pickedEdge") == point["edge"]
         for _ in range(6):
-            page.keyboard.press("]")
-        assert angle.inner_text() == "Rotation 180°"
+            page.keyboard.press("ArrowRight")
+        assert angle.inner_text() == "180°"
         shot(180)
-        page.keyboard.press("]")
-        assert angle.inner_text() == "Rotation -165°"
+        page.keyboard.press("ArrowRight")
+        assert angle.inner_text() == "-165°"
         page.locator("#switcher button", has_text="Anatomical").click()
-        page.keyboard.press("]")
+        page.keyboard.press("ArrowRight")
         page.locator("#switcher button", has_text="Topology").click()
-        assert angle.inner_text() == "Rotation 0°"
+        assert angle.inner_text() == "0°"
         browser.close()
 
 

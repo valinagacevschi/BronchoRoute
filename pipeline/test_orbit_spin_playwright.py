@@ -77,6 +77,15 @@ def server(tmp_path: Path):
 
 
 def _open_view(page, server: str, variant: str):
+    # Export buttons only show with the desktop recorder bridge.
+    page.add_init_script(
+        """window.bronchoroute = {
+             recordStart: async () => ({ recordingId: 'stub', saved: true }),
+             recordFrame: async () => true,
+             recordStop: async () => true,
+             recordCancel: async () => true,
+           };"""
+    )
     page.goto(
         f"{server}/renderer.template.html?case=local-001&allow_review=1&debug=1&variant={variant}",
         wait_until="domcontentloaded",

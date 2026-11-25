@@ -36,6 +36,16 @@ still open. Set `BRONCHOROUTE_FORCE_WEIGHTS=1` to show that download in dev, and
 `scripts/mirror-weights.py --pack --dry-run` lists the datasets. `--pack` writes stored zips
 and updates the manifest. `--upload` prints `gh release` commands and does not run them.
 
+## Realism model
+
+The realism model (`broncho-flow-int8.onnx`, 580 MB) downloads into
+`<data root>/models/realism` from the Settings "Realistic fork views" row.
+The download needs a per-user bearer key: "Model access key" in the same
+Settings row, stored encrypted in the keychain-backed key store. Set
+`BRONCHOROUTE_MODELS_BASE_URL` to download from a mirror other than the
+GitHub Release. Dev/`npm start` can use a local pipeline tree's model file
+directly; the download verifies size and SHA-256 before the file is used.
+
 ## Updates
 
 A packaged app checks GitHub Releases for `valinagacevschi/BronchoRoute` once after the

@@ -3,6 +3,8 @@ pipeline/data/
 pipeline/ts_out/
 pipeline/out/
 pipeline/.venv
+# Model weights are downloaded, never committed.
+pipeline/models/
 pipeline/app_state/
 pipeline/tmp/
 pipeline/logs/
@@ -18,3 +20,6 @@ desktop/dist/
 
 # Standalone Python build artifacts.
 desktop/build/
+
+# Local agent memory; never tracked.
+.trail/

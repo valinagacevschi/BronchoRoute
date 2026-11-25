@@ -304,6 +304,36 @@ def test_p3_ct_panes(server, case_id):
                   && Math.abs(coronalPos.left.y - (coronalPos.fit.oy + coronalPos.fit.drawH/2)) < 1,
               };
 
+              // (c2) V toggles the view; A/R/C toggle overlays and light the key
+              const press = k => dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+              press('v');
+              const headView = ct.getCtView();
+              press('v');
+              const feetView = ct.getCtView();
+              const airwayStart = ct.overlaysEnabled().airway;
+              press('a');
+              const airwayOff = ct.overlaysEnabled().airway;
+              press('a');
+              const airwayOn = ct.overlaysEnabled().airway;
+              press('r');
+              const states = ct.overlaysEnabled();
+              const airwayKey = document.querySelector('[data-overlay-key="airway"]');
+              const airwayStyle = getComputedStyle(airwayKey);
+              out.checks.keys = {
+                headView, feetView,
+                airway: { start: airwayStart, off: airwayOff, on: airwayOn },
+                overlays: { airway: states.airway, route: states.route },
+                keyOn: airwayKey.classList.contains('on'),
+                keyWeight: airwayStyle.fontWeight, keyColor: airwayStyle.color,
+                ok: headView === 'head'
+                  && feetView === 'feet'
+                  && airwayStart === true && airwayOff === false && airwayOn === true
+                  && states.route === true
+                  && airwayKey.classList.contains('on')
+                  && airwayStyle.fontWeight === '700'
+                  && airwayStyle.color === 'rgb(255, 255, 255)',
+              };
+
               // (d) ALL 10 sampled route points within 1 voxel of label 1 or 2
               let routeOk = 0, routeN = 0;
               const routeEdges = A.route || [];
@@ -351,7 +381,7 @@ def test_p3_ct_panes(server, case_id):
                 ok: !!(st && sc && st.y < sc.y),
               };
 
-              // Arrow keys inert outside CT view
+              // Arrow keys outside CT view navigate the shared position
               const slicesBefore = { ...ct.getSlices() };
               d.setVariant(0);
               await new Promise(r => setTimeout(r, 50));
@@ -361,9 +391,11 @@ def test_p3_ct_panes(server, case_id):
               await new Promise(r => setTimeout(r, 50));
               out.checks.arrowsOutside = {
                 before: slicesBefore, mid: slicesMid,
-                ok: slicesMid.axial === slicesBefore.axial
-                  && slicesMid.coronal === slicesBefore.coronal
-                  && slicesMid.sagittal === slicesBefore.sagittal,
+                // Arrows outside CT now navigate the shared airway position;
+                // CT panes follow that position, so slices track the move.
+                ok: slicesMid.axial !== slicesBefore.axial
+                  || slicesMid.coronal !== slicesBefore.coronal
+                  || slicesMid.sagittal !== slicesBefore.sagittal,
               };
 
               // (f) Mark Lesion in the coronal pane → Confirm → panes → DELETE

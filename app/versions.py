@@ -311,6 +311,20 @@ def build_snapshot_dict(
             "ras_mm": lesion.get("ras_mm"),
             "diameter_mm": lesion.get("diameter_mm", 10),
         } if lesion else None,
+        "lesions": [
+            {
+                "id": item.get("id"),
+                "ras_mm": item.get("ras_mm"),
+                "diameter_mm": item.get("diameter_mm", 10),
+                "source": item.get("source"),
+            }
+            for item in (
+                case.get("lesions")
+                if isinstance(case.get("lesions"), list)
+                else ([lesion] if lesion else [])
+            )
+            if isinstance(item, dict)
+        ],
         "route_start": {
             "node": route_start.get("node"),
             "ras_mm": route_start.get("ras_mm"),
@@ -455,6 +469,27 @@ def render_version_report(
     else:
         spacing_txt = _fmt_mm(spacing) if spacing is not None else "—"
 
+    frozen_lesions = (
+        snap.get("lesions")
+        if isinstance(snap.get("lesions"), list)
+        else ([lesion] if lesion else [])
+    )
+    lesion_rows = "".join(
+        "<tr>"
+        f"<td>{index}</td>"
+        f"<td>{_esc(_fmt_ras(item.get('ras_mm')))}</td>"
+        f"<td>{_esc(_fmt_mm(item.get('diameter_mm')))} mm</td>"
+        "</tr>"
+        for index, item in enumerate(frozen_lesions, 1)
+        if isinstance(item, dict)
+    )
+    lesions_html = (
+        "<table><tr><th>#</th><th>RAS mm</th><th>Diameter</th></tr>"
+        + lesion_rows
+        + "</table>"
+        if len(frozen_lesions) > 1 else ""
+    )
+
     body = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -511,6 +546,7 @@ def render_version_report(
   <h2>Lesion</h2>
   <p>{_esc(_fmt_ras(lesion.get("ras_mm") if lesion else None))}<br>
      diameter {_esc(_fmt_mm(lesion.get("diameter_mm") if lesion else None))} mm</p>
+  {lesions_html}
 
   <h2>RouteStart</h2>
   <p>node {_esc(route_start.get("node") if route_start else "—")}
